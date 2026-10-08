@@ -34,13 +34,15 @@ def main() -> int:
         # A smoke check must not send local data to any model service.
         env.pop("WORKTWIN_GATEWAY_URL", None)
         env.pop("WORKTWIN_GATEWAY_TOKEN", None)
-        process = subprocess.Popen(
-            [str(executable)],
-            cwd=str(executable.parent),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        native_log = Path(temp) / "native-stdout.log"
+        with native_log.open("wb") as capture:
+            process = subprocess.Popen(
+                [str(executable)],
+                cwd=str(executable.parent),
+                env=env,
+                stdout=capture,
+                stderr=subprocess.STDOUT,
+            )
         last_error: Exception | None = None
         try:
             deadline = time.monotonic() + 90
@@ -65,9 +67,11 @@ def main() -> int:
                     time.sleep(1)
             raise RuntimeError(f"Packaged executable did not serve the dashboard: {last_error}")
         except (RuntimeError, AssertionError) as exc:
-            logfile = Path(temp) / "worktwin-launch.log"
-            if logfile.exists():
-                print("Recent launch diagnostics:\n" + logfile.read_text(encoding="utf-8")[-3500:], file=sys.stderr)
+            for logfile in (Path(temp) / "worktwin-launch.log", native_log):
+                if logfile.exists() and logfile.stat().st_size:
+                    print(f"Recent {logfile.name} diagnostics:\\n"
+                          + logfile.read_text(encoding="utf-8", errors="replace")[-5000:],
+                          file=sys.stderr)
             print(f"FAIL: {exc}", file=sys.stderr)
             return 1
         finally:
