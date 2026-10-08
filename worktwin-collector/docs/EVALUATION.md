@@ -50,7 +50,7 @@ Keep the dataset out of this public repository.
 |---|---|---|
 | [Langfuse Experiments](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk) | Dataset → evaluation run → per-item score → CI regression gate | **None**. A small offline runner is implemented independently. |
 | [Ragas Faithfulness](https://github.com/vibrantlabsai/ragas/blob/main/docs/concepts/metrics/available_metrics/faithfulness.md) | Explicitly separate structural citations from actual claim-level grounding | **None**. Faithfulness score is not computed. |
-| [Rowboat](https://github.com/rowboatlabs/rowboat) | Earlier design direction of knowledge-first, browsable personal memory | **None** in this version. |
+| [Rowboat](https://github.com/rowboatlabs/rowboat) | Earlier design direction of knowledge-first, browsable personal memory | 评测器未复用代码；1.0 的 Markdown 解析有小范围 Apache-2.0 移植，见 OSS.md。 |
 
 Actual runtime open-source libraries **used as dependencies**: FastAPI and
 Starlette TestClient, SQLite, Python standard library; the collector already
@@ -59,6 +59,7 @@ not vendored or copied from a competing application's source.
 
 ## Explicit non-goals
 
-This iteration does not add multi-employee identity, remote digital-twin URLs,
-centralized RBAC, source ACL inheritance, DLP, signed installers, or full
-LLM-as-a-judge scoring. The local session token is not enterprise SSO.
+The evaluation suite does not verify enterprise identity, centralized RBAC,
+source ACL inheritance, DLP, signed installers, or full LLM-as-a-judge scoring.
+1.0 adds remote digital-twin capability URLs, covered by separate sharing tests.
+The local session token is not enterprise SSO.

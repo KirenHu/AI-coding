@@ -47,7 +47,7 @@ def main():
                     return {'status':r.status_code,'body':r.text}
                 page.expose_function('__bridge',bridge)
                 page.set_content(html)
-                page.evaluate("window.fetch=async(path,opts={})=>{const r=await window.__bridge(path,opts);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})}")
+                page.evaluate("() => {window.fetch=async(path,opts={})=>{const r=await window.__bridge(path,opts);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})};}")
                 page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text())
                 page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
                 expect(page.get_by_text('连接企业知识服务')).to_be_visible()
@@ -90,7 +90,7 @@ def main():
                     shared_html=r.get('/share').text
                     script=re.search(r'<script>(.*?)</script>',shared_html,re.S).group(1)
                     receiver.set_content(shared_html.replace('<script>'+script+'</script>',''))
-                    receiver.evaluate("window.fetch=async(path,opts={})=>{const r=await window.__bridge(path,opts);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})}")
+                    receiver.evaluate("() => {window.fetch=async(path,opts={})=>{const r=await window.__bridge(path,opts);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})};}")
                     receiver.add_script_tag(content=script.replace("new URLSearchParams(location.hash.slice(1)).get('access')||''",json.dumps(token)).replace("history.replaceState(null,'',location.pathname);",''))
                     expect(receiver.locator('#name')).to_have_text('项目交接分身')
                     receiver.locator('#question').fill('审批怎么实现？')

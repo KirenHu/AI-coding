@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import json
 import re
 import zipfile
@@ -88,7 +89,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                inference_client: GatewayClient | None = None, publishing_client=None) -> FastAPI:
     db = Database(path or database_path())
     collector = Collector(db, interval=interval)
-    saved_url, saved_token = db.setting("enterprise_url"), db.setting("enterprise_token")
+    saved_url = db.setting("enterprise_url") or os.getenv('WORKTWIN_SERVER_URL', '')
+    saved_token = db.setting("enterprise_token") or os.getenv('WORKTWIN_SERVER_TOKEN', '')
     model_client = inference_client or (GatewayClient(url=saved_url, token=saved_token) if saved_url else GatewayClient())
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url else None))
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
@@ -495,7 +497,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(400,'无法连接企业服务，请检查地址或凭据') from exc
         if publisher.client.configured and (new_client.url != publisher.client.url or new_client.token != publisher.client.token):
             with db.connect() as con:
-                if con.execute('SELECT count(*) FROM publications WHERE enabled=1').fetchone()[0]:
+                if (con.execute('SELECT count(*) FROM publications WHERE enabled=1').fetchone()[0]
+                        or db.setting('publication_error')):
                     raise HTTPException(409,'请先停止所有分身分享并同步成功，再切换企业服务')
         db.set_setting('enterprise_url',new_client.url)
         db.set_setting('enterprise_token',new_client.token)
