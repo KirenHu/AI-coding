@@ -52,6 +52,9 @@ class KnowledgeWorker:
         if not self.client.configured:
             return {"state": "not_configured"}
         with self.db.connect() as con:
+            # The read and state transition must be one serialized claim.
+            # Multiple worker instances must not pay for the same model job.
+            con.execute("BEGIN IMMEDIATE")
             row = con.execute("""SELECT j.id job_id,j.document_id,j.content_sha,d.content,
                     COALESCE(s.adapter,s.kind) adapter
                     FROM ai_jobs j JOIN documents d ON d.id=j.document_id

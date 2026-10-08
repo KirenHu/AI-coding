@@ -80,6 +80,13 @@ class Collector:
                 name = row["name"]
                 affected = {int(r[0]) for r in con.execute("""SELECT DISTINCT e.knowledge_id FROM knowledge_evidence e
                     JOIN documents d ON d.id=e.document_id WHERE d.source_id=?""", (source_id,))}
+                # Historical knowledge revisions do not encode per-source citations.
+                # When one contributing source is revoked, old revision text may
+                # still contain facts from it even if another citation remains.
+                # Fail closed: discard those historical snapshots, keep the
+                # current article under review until its owner re-confirms it.
+                con.executemany("DELETE FROM knowledge_history WHERE knowledge_id=?",
+                                [(k,) for k in affected])
                 con.execute("DELETE FROM sources WHERE id=?", (source_id,))
                 # Extracted AND subsequently hand-edited items remain source-bound.
                 # Without evidence they must not survive a revoked permission.
