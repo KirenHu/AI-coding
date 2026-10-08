@@ -28,6 +28,7 @@ jobs:
           python-version: '3.12'
       - run: pip install -e '.[test]'
       - run: python -m pytest -q
+      - run: PYTHONPATH=. python scripts/evaluate_twin.py --mode mock
       - run: PYTHONPATH=. python scripts/acceptance_benchmark.py
       - run: PYTHONPATH=. python scripts/http_acceptance.py
 
