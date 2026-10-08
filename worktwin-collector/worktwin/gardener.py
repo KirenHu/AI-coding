@@ -57,7 +57,7 @@ def _eligible(con, knowledge_id: int | None = None) -> dict | None:
                (r.last_version != k.version AND
                 r.attempted_at <= datetime('now', ?)))
         ORDER BY k.updated_at,k.id LIMIT 1
-        """, (knowledge_id, knowledge_id, MAX_NOTE_BODY_CHARS, MIN_BODY_CHARS, MIN_EVIDENCE, CURATION_COOLDOWN)).fetchone()
+        """, (MAX_NOTE_BODY_CHARS, knowledge_id, knowledge_id, MIN_BODY_CHARS, MIN_EVIDENCE, CURATION_COOLDOWN)).fetchone()
     return dict(row) if row else None
 
 
