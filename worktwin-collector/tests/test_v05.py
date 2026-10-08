@@ -135,7 +135,13 @@ def test_lost_one_of_multiple_sources_sets_sticky_review_hold(tmp_path):
         with app.state.db.connect() as con:
             second_id=con.execute('SELECT id FROM documents WHERE source_id=?',(sid2,)).fetchone()[0]
             con.execute('INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)',(kid,second_id,quote))
+            # A merged article may have a revision containing facts from the
+            # source being revoked, even if other live evidence still exists.
+            con.execute('INSERT INTO knowledge_history(knowledge_id,version,kind,title,body,status) VALUES(?,?,?,?,?,?)',
+                        (kid,0,'decision','旧版路由','仅来自即将撤销来源的私密规则','confirmed'))
+        assert client.get(f'/api/knowledge/{kid}/history',headers=auth).json()
         assert client.delete(f'/api/sources/{sid}',headers=auth).status_code==200
+        assert client.get(f'/api/knowledge/{kid}/history',headers=auth).json()==[]
         entry=next(k for k in client.get('/api/knowledge',headers=auth).json() if k['id']==kid)
         assert entry['needs_review']==1 and entry['review_hold']==1
         twin=client.post('/api/twins',headers=auth,json={'name':'测试'}).json()['id']
