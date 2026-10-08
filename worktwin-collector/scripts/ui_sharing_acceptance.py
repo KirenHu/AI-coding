@@ -64,12 +64,24 @@ def main():
                 expect(page.get_by_text('审批节点说明').first).to_be_visible()
                 page.get_by_text('审批节点说明').first.click()
                 expect(page.locator('.markdown-body strong')).to_have_text('统一工作流引擎')
+                h={'X-Worktwin-Token':re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',html).group(1)}
+                kid=c.get('/api/knowledge',headers=h).json()[0]['id']
+                linked=c.post('/api/knowledge',headers=h,json={'title':'审批细则','body':'各部门按既有权限发起审批。','status':'confirmed'}).json()['id']
+                page.get_by_role('button',name='编辑内容').click()
+                page.locator('#edit-k-body').fill(f'## 当前方案\n\n审批复用**统一工作流引擎**。\n\n参见 [[K{linked}|关联审批细则]]。')
+                page.get_by_role('button',name='保存知识').click()
+                page.get_by_text('审批节点说明').first.click()
+                expect(page.locator('.history-version summary')).to_contain_text('v1')
+                page.locator(f'.markdown-body a[href="#knowledge-{linked}"]').click()
+                expect(page.locator('.drawer-title')).to_have_text('审批细则')
+                page.locator(f'[data-open-knowledge="{kid}"]').click()
+                expect(page.locator('.drawer-title')).to_have_text('审批节点说明')
                 page.get_by_role('button',name='关闭').last.click()
                 page.locator('[data-page=twins]').click()
                 page.get_by_role('button',name='创建数字分身').click()
                 page.locator('#twin-name').fill('项目交接分身')
                 page.get_by_role('button',name='创建并选择知识').click()
-                page.locator('[data-select-entry]').check()
+                page.locator(f'[data-select-entry="{kid}"]').check()
                 page.get_by_role('button',name='保存授权').click()
                 expect(page.get_by_text('已选择 1 篇')).to_be_visible()
                 page.get_by_role('button',name='启用分享').click()
@@ -108,9 +120,10 @@ def main():
                     receiver.locator('#ask').click()
                     expect(receiver.locator('#answer')).to_contain_text('已到期或已撤销')
                     assert not errors,errors
+                page.locator('#share-url').evaluate("el => el.value='测试链接已隐藏'")
                 page.screenshot(path=str(ROOT/'release'/'WorkTwin-1.0-sharing.png'),full_page=True)
                 browser.close()
-            print(json.dumps({'result':'PASS','connection':'PASS','markdown':'PASS','share_link':'PASS','recipient_ask':'PASS','owner_offline':'PASS','revocation':'PASS','javascript_errors':errors}))
+            print(json.dumps({'result':'PASS','connection':'PASS','markdown':'PASS','knowledge_links':'PASS','version_history':'PASS','share_link':'PASS','recipient_ask':'PASS','owner_offline':'PASS','revocation':'PASS','javascript_errors':errors}))
         finally:
             local.should_exit=True;remote.should_exit=True;lt.join(5);rt.join(5)
 
