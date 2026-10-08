@@ -47,13 +47,13 @@ def main():
         try:
             for _ in range(80):
                 try:
-                    if httpx.get(url + '/api/health', timeout=.7).status_code == 200:
+                    if httpx.get(url + '/api/health', timeout=.7, trust_env=False).status_code == 200:
                         break
                 except httpx.HTTPError:
                     time.sleep(.1)
             else:
                 raise RuntimeError('Local API failed to start')
-            client = httpx.Client(base_url=url, timeout=25)
+            client = httpx.Client(base_url=url, timeout=25, trust_env=False)
             try:
                 html = client.get('/').text
                 html = html.replace('<link rel="stylesheet" href="/assets/styles.css" />', '')

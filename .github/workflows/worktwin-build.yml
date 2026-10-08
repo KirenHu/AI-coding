@@ -1,23 +1,21 @@
-name: WorkTwin tests and native smoke builds
+name: WorkTwin 1.0 acceptance and release
 
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'worktwin-collector/**'
-      - '.github/workflows/worktwin-build.yml'
+    paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
+  push:
+    branches: [main]
+    paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
 
 concurrency:
-  group: worktwin-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: worktwin-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 permissions:
   contents: read
-
 defaults:
   run:
     working-directory: worktwin-collector
-
 jobs:
   python-test:
     runs-on: ubuntu-latest
@@ -26,29 +24,49 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -e '.[test]'
+      - run: pip install -e '.[test]' build playwright
       - run: python -m pytest -q
-      - run: PYTHONPATH=. python scripts/evaluate_twin.py --mode mock
+      - run: PYTHONPATH=. python scripts/evaluate_twin.py
       - run: PYTHONPATH=. python scripts/acceptance_benchmark.py
       - run: PYTHONPATH=. python scripts/http_acceptance.py
-
+      - run: node --check worktwin/static/app.js
+      - run: python -m playwright install --with-deps chromium
+      - name: Browser acceptance of collection, editing and authorization
+        run: PYTHONPATH=. python scripts/ui_acceptance.py
+      - name: Browser acceptance of knowledge updates
+        run: PYTHONPATH=. python scripts/ui_proposals_acceptance.py
+      - name: Browser acceptance of remote sharing and owner offline use
+        run: PYTHONPATH=. python scripts/ui_sharing_acceptance.py
+      - name: Build source and standard Python distribution
+        run: |
+          python -m build
+          mkdir -p release
+          git archive HEAD:worktwin-collector --format=zip -o release/WorkTwin-Collector-1.0.0-source.zip
+          cp dist/*.whl dist/*.tar.gz release/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WorkTwin-source-and-wheel
+          path: worktwin-collector/release/*
+          if-no-files-found: error
   macos:
     needs: python-test
-    runs-on: macos-14
+    strategy:
+      matrix:
+        runner: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: zsh desktop/build-macos.sh
-      - name: Verify packaged application starts and serves the local UI
+      - name: Verify the packaged application starts
         run: python scripts/smoke_desktop.py dist/WorkTwin.app/Contents/MacOS/WorkTwin
       - uses: actions/upload-artifact@v4
         with:
-          name: WorkTwin-macOS-unsigned
+          name: WorkTwin-${{ matrix.runner }}-unsigned
           path: worktwin-collector/release/*.dmg
           if-no-files-found: error
-
   windows:
     needs: python-test
     runs-on: windows-2022
@@ -59,10 +77,37 @@ jobs:
           python-version: '3.12'
       - shell: pwsh
         run: ./desktop/build-windows.ps1
-      - name: Verify packaged application starts and serves the local UI
+      - name: Verify the packaged application starts
         run: python scripts/smoke_desktop.py dist/WorkTwin/WorkTwin.exe
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release
+          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.0.0-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: WorkTwin-Windows-unsigned
-          path: worktwin-collector/dist/WorkTwin/
+          path: worktwin-collector/release/*.zip
           if-no-files-found: error
+  release:
+    needs: [python-test, macos, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create checksums and publish the verified 1.0 release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release-assets
+          sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
+          cd ..
+          if ! gh release view worktwin-v1.0.0 >/dev/null 2>&1; then
+            gh release create worktwin-v1.0.0 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.0.0" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
+          fi

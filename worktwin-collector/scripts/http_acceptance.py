@@ -42,13 +42,13 @@ def main():
             url = f'http://127.0.0.1:{port}'
             for _ in range(80):
                 try:
-                    if httpx.get(url + '/api/health', timeout=1).status_code == 200:
+                    if httpx.get(url + '/api/health', timeout=1,trust_env=False).status_code == 200:
                         break
                 except httpx.HTTPError:
                     time.sleep(.1)
             else:
                 raise RuntimeError('WorkTwin loopback service did not start')
-            with httpx.Client(base_url=url, timeout=12) as client:
+            with httpx.Client(base_url=url, timeout=12,trust_env=False) as client:
                 html = client.get('/').text
                 token = re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', html).group(1)
                 h = {'X-Worktwin-Token': token}

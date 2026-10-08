@@ -33,10 +33,10 @@ def main():
         try:
             for _ in range(80):
                 try:
-                    if httpx.get(base+'/api/health',timeout=.5).status_code==200:break
+                    if httpx.get(base+'/api/health',timeout=.5,trust_env=False).status_code==200:break
                 except httpx.HTTPError:time.sleep(.1)
             else:raise RuntimeError('HTTP server unavailable')
-            with httpx.Client(base_url=base,timeout=15) as client:
+            with httpx.Client(base_url=base,timeout=15,trust_env=False) as client:
                 html=client.get('/').text
                 token=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',html).group(1)
                 headers={'X-Worktwin-Token':token}

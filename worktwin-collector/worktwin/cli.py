@@ -58,7 +58,10 @@ def main():
         threading.Timer(1.0,lambda: webbrowser.open(f"http://127.0.0.1:{args.port}")).start()
     print(f"WorkTwin 本地工作台：http://127.0.0.1:{args.port}")
     print(f"数据仅保存在：{database_path()}")
-    uvicorn.run(create_app(),host="127.0.0.1",port=args.port,access_log=False)
+    app=create_app()
+    server=uvicorn.Server(uvicorn.Config(app,host="127.0.0.1",port=args.port,access_log=False))
+    app.state.shutdown_callback=lambda: setattr(server,'should_exit',True)
+    server.run()
 
 
 if __name__ == "__main__":

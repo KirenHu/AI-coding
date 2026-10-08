@@ -1,0 +1,9 @@
+services:
+  enterprise:
+    build: .
+    ports: ["127.0.0.1:8789:8789"]
+    env_file: enterprise.env
+    volumes: ["worktwin-data:/data"]
+    restart: unless-stopped
+volumes:
+  worktwin-data:

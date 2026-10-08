@@ -1,3 +1,2 @@
-"""WorkTwin Collector — private, local-first work knowledge collector."""
-
-__version__ = "0.6.0"
+"""WorkTwin Collector — local knowledge and controlled sharing."""
+__version__ = "1.0.0"

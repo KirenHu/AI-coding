@@ -107,6 +107,7 @@ def evaluate(*, mode: str = "mock") -> dict[str, Any]:
         with TestClient(app) as client:
             headers = _token(client)
             public_source = _register_source(client, headers, shared, "产品")
+            client.put(f"/api/sources/{public_source}/ai",headers=headers,json={"allow_ai":True}).raise_for_status()
             _register_source(client, headers, private, "人事")
             scan = app.state.collector.scan_all()
             documents = client.get("/api/documents", headers=headers).json()
