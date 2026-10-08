@@ -97,7 +97,7 @@ def review_flags(con: sqlite3.Connection, ids: set[int] | list[int] | None = Non
              WHERE e.knowledge_id=knowledge.id AND e.is_current=1 AND e.superseded=0))
             OR EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=knowledge.id
                       AND e.is_current=0 AND e.superseded=0)
-            OR EXISTS(SELECT 1 FROM knowledge_proposals p WHERE p.target_id=knowledge.id AND p.status='pending')
+            OR EXISTS(SELECT 1 FROM knowledge_proposals p WHERE p.target_id=knowledge.id AND p.status='pending' AND p.origin!='curation')
             THEN 1 ELSE 0 END""")
     else:
         for kid in set(ids):
@@ -106,7 +106,7 @@ def review_flags(con: sqlite3.Connection, ids: set[int] | list[int] | None = Non
                  WHERE e.knowledge_id=knowledge.id AND e.is_current=1 AND e.superseded=0))
                 OR EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=knowledge.id
                           AND e.is_current=0 AND e.superseded=0)
-                OR EXISTS(SELECT 1 FROM knowledge_proposals p WHERE p.target_id=knowledge.id AND p.status='pending')
+                OR EXISTS(SELECT 1 FROM knowledge_proposals p WHERE p.target_id=knowledge.id AND p.status='pending' AND p.origin!='curation')
                 THEN 1 ELSE 0 END WHERE id=?""", (kid,))
 
 
