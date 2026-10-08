@@ -2,7 +2,7 @@
 import multiprocessing
 import sys
 
-from worktwin.__main__ import main
+from worktwin.cli import main
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
