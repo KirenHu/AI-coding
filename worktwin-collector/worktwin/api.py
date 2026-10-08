@@ -82,7 +82,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         collector.stop()
         knowledge_worker.stop()
 
-    app = FastAPI(title="WorkTwin Collector", version="0.5.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="WorkTwin Collector", version="0.6.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     # A malicious website must not be able to access personal documents via
     # DNS rebinding or unauthenticated cross-origin browser requests.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
@@ -336,7 +336,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def knowledge_proposals():
         with db.connect() as con:
             return [dict(r) for r in con.execute("""SELECT p.id,p.document_id,p.target_id,p.target_version,p.action,
-                p.kind,p.title,p.body,p.quote,p.reason,p.status,p.created_at,p.content_sha,
+                p.kind,p.title,p.body,p.quote,p.reason,p.origin,p.status,p.created_at,p.content_sha,
                 k.title previous_title,k.body previous_body,k.version previous_version,
                 d.title source_title,d.project,d.sha256 current_sha
                 FROM knowledge_proposals p

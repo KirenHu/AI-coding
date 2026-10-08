@@ -9,6 +9,7 @@ from .inference import GatewayClient, extract_knowledge
 from .knowledge import store_candidates
 from .parsers import split_chunks
 from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
+from .gardener import KnowledgeGardener
 
 
 class KnowledgeWorker:
@@ -20,6 +21,7 @@ class KnowledgeWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.processing = False
+        self.gardener = KnowledgeGardener(db, client=self.client)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -44,9 +46,18 @@ class KnowledgeWorker:
             if self.client.configured and not self._stop.is_set():
                 # A bounded batch avoids a growing backlog while limiting the
                 # number of enterprise model calls per scheduling cycle.
+                result = "idle"
                 for _ in range(3):
-                    if self._stop.is_set() or self.process_next()['state'] in ('idle', 'not_configured'):
+                    if self._stop.is_set():
                         break
+                    result = self.process_next()["state"]
+                    if result in ("idle", "not_configured"):
+                        break
+                # Maintenance is lower priority than fresh capture: one note
+                # per idle cycle and no call if extraction is still backed up.
+                if result == "idle" and not self._stop.is_set():
+                    self.gardener.client = self.client
+                    self.gardener.process_next()
 
     def process_next(self) -> dict:
         if not self.client.configured:

@@ -132,9 +132,17 @@ CREATE TABLE IF NOT EXISTS knowledge_proposals (
   fingerprint TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','dismissed')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  resolved_at TEXT
+  resolved_at TEXT,
+  origin TEXT NOT NULL DEFAULT 'consolidation'
 );
 CREATE INDEX IF NOT EXISTS ix_knowledge_proposals_status ON knowledge_proposals(status,created_at);
+-- A per-note scheduler receipt: one low-priority curation attempt per version.
+CREATE TABLE IF NOT EXISTS knowledge_curation_runs (
+  knowledge_id INTEGER PRIMARY KEY REFERENCES knowledge(id) ON DELETE CASCADE,
+  last_version INTEGER NOT NULL,
+  attempted_at TEXT NOT NULL,
+  status TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS twins (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -171,7 +179,7 @@ class Database:
             "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0"},
             "documents": {"project": "TEXT NOT NULL DEFAULT ''"},
             "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0"},
-            "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1"},
+            "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1", "origin": "TEXT NOT NULL DEFAULT 'consolidation'"},
             "ai_jobs": {"next_run_at": "TEXT"},
             "knowledge_evidence": {"is_current": "INTEGER NOT NULL DEFAULT 1", "occurred_at":"TEXT", "superseded":"INTEGER NOT NULL DEFAULT 0"},
         }
