@@ -4,9 +4,9 @@ cd "$(dirname "$0")/.."
 python3 -m venv .build-venv
 source .build-venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e '.[package]'
+python -m pip install '.[package]'
 pyinstaller --clean --noconfirm --onedir --windowed --name WorkTwin \
-  --collect-data worktwin --collect-submodules uvicorn \
+  --collect-data worktwin --collect-submodules worktwin --collect-submodules uvicorn \
   desktop/launcher.py
 mkdir -p release
 hdiutil create -volname 'WorkTwin Collector' -srcfolder dist/WorkTwin.app \
