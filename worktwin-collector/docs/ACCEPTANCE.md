@@ -1,4 +1,6 @@
-# WorkTwin Collector 1.0 验收范围
+# WorkTwin Collector 1.0.1 验收范围
+
+macOS v1.0.1 增补：在 macOS ARM/Intel Runner 验证实际 **DMG 容器完整性、挂载 App 的 codesign --verify --deep --strict、复制 App 后代码签名、打包程序的 HTTP/SQLite 启停**，并明确记录 Gatekeeper 对 ad-hoc 签名的拒绝。该组检查不能替代 Apple Developer ID 签名、公证或用户实际首次下载双击测试；见 [安装排查](MACOS_INSTALL.md)。
 
 所有自动数据为临时合成资料，模型为确定性测试实现或本机模拟 HTTP 供应商，不调用真实付费模型。测试运行真实 SQLite、FastAPI/uvicorn 与浏览器脚本，不以静态页面替代后端。
 
