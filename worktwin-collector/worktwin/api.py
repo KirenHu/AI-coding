@@ -27,6 +27,7 @@ from .inference import GatewayClient
 from .jobs import KnowledgeWorker
 from .search import search
 from .reconcile import review_flags, resolve_proposal
+from .answer_policy import check_answer
 
 STATIC = Path(__file__).parent / "static"
 
@@ -539,10 +540,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                  max_tokens=1600)
         except Exception as exc:
             raise HTTPException(502,"企业模型请求失败，请联系管理员或稍后重试") from exc
-        cited_ids = {int(number) for number in re.findall(r"\[K(\d+)\]", answer)}
-        return {"answer": answer, "context_count": len(selected),
+        result = check_answer(answer, {k["id"] for k in selected})
+        return {"answer": result.answer, "answer_status": result.state,
+                "context_count": len(selected),
                 "citations": [{"knowledge_id": k['id'], "title": k['title']}
-                              for k in selected if k['id'] in cited_ids]}
+                              for k in selected if k['id'] in result.cited_ids]}
 
     @app.get("/api/export-markdown", dependencies=[Depends(authorized)])
     def export_markdown():
