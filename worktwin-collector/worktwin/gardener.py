@@ -21,6 +21,7 @@ WIKILINKS = re.compile(r"\[\[([^\]]+)\]\]")
 CURATION_COOLDOWN = "-7 days"
 MIN_EVIDENCE = 3
 MIN_BODY_CHARS = 1600
+MAX_NOTE_BODY_CHARS = 8000
 
 
 def _eligible(con, knowledge_id: int | None = None) -> dict | None:
@@ -31,7 +32,7 @@ def _eligible(con, knowledge_id: int | None = None) -> dict | None:
         LEFT JOIN knowledge_curation_runs r ON r.knowledge_id=k.id
         WHERE k.source_bound=1 AND k.status IN ('draft','confirmed')
           AND k.kind IN ('decision','fact','process') AND k.needs_review=0
-          AND k.review_hold=0
+          AND k.review_hold=0 AND length(k.body)<=?
           AND (? IS NULL OR k.id=?)
           AND (length(k.body)>=? OR k.version>=3 OR
                (SELECT count(*) FROM knowledge_evidence e
@@ -56,7 +57,7 @@ def _eligible(con, knowledge_id: int | None = None) -> dict | None:
                (r.last_version != k.version AND
                 r.attempted_at <= datetime('now', ?)))
         ORDER BY k.updated_at,k.id LIMIT 1
-        """, (knowledge_id, knowledge_id, MIN_BODY_CHARS, MIN_EVIDENCE, CURATION_COOLDOWN)).fetchone()
+        """, (knowledge_id, knowledge_id, MAX_NOTE_BODY_CHARS, MIN_BODY_CHARS, MIN_EVIDENCE, CURATION_COOLDOWN)).fetchone()
     return dict(row) if row else None
 
 
@@ -132,7 +133,7 @@ class KnowledgeGardener:
         )
         payload = json.dumps({
             "title": note["title"], "kind": note["kind"],
-            "current_body": note["body"][:14000],
+            "current_body": note["body"],
             "evidence": [{"quote": x["quote"][:1200], "occurred_at": x["occurred_at"]}
                          for x in quotes],
         }, ensure_ascii=False)
