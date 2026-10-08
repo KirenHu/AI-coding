@@ -140,3 +140,14 @@ def test_legacy_sqlite_gets_curation_schema(tmp_path):
     with upgraded.connect() as con:
         assert "origin" in {r[1] for r in con.execute("PRAGMA table_info(knowledge_proposals)")}
         assert con.execute("SELECT name FROM sqlite_master WHERE name='knowledge_curation_runs'").fetchone()
+
+
+def test_gardener_skips_oversized_notes_instead_of_truncating(tmp_path):
+    app, folder, model, _ = setup(tmp_path)
+    with TestClient(app) as client:
+        access, _, kid = prep(client, app, folder, True)
+        with app.state.db.connect() as con:
+            con.execute("UPDATE knowledge SET body=? WHERE id=?",
+                        ("这篇知识包含多个重要决策，不能在发送模型前截断。\n" * 350, kid))
+        assert app.state.knowledge_worker.gardener.process_next()["state"] == "idle"
+        assert not model.calls
