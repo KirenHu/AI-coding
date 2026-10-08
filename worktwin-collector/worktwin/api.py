@@ -82,7 +82,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         collector.stop()
         knowledge_worker.stop()
 
-    app = FastAPI(title="WorkTwin Collector", version="0.5.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="WorkTwin Collector", version="0.6.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     # A malicious website must not be able to access personal documents via
     # DNS rebinding or unauthenticated cross-origin browser requests.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
