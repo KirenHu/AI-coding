@@ -22,6 +22,7 @@ CURATION_COOLDOWN = "-7 days"
 MIN_EVIDENCE = 3
 MIN_BODY_CHARS = 1600
 MAX_NOTE_BODY_CHARS = 8000
+DAILY_CURATION_LIMIT = 8
 
 
 def _eligible(con, knowledge_id: int | None = None) -> dict | None:
@@ -107,6 +108,11 @@ class KnowledgeGardener:
             return {"state": "not_configured"}
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            daily_count = con.execute("""
+                SELECT count(*) FROM knowledge_curation_runs
+                 WHERE attempted_at>=date('now')""").fetchone()[0]
+            if daily_count >= DAILY_CURATION_LIMIT:
+                return {"state": "daily_limit"}
             note = _eligible(con)
             if note is None:
                 return {"state": "idle"}
