@@ -1,46 +1,26 @@
-# WorkTwin Collector v0.5 验收报告
+# WorkTwin Collector 1.0 验收范围
 
-## 验收口径
+所有自动数据为临时合成资料，模型为确定性测试实现或本机模拟 HTTP 供应商，不调用真实付费模型。测试运行真实 SQLite、FastAPI/uvicorn 与浏览器脚本，不以静态页面替代后端。
 
-- 仅对已经完成的**本地真实运行代码**、本机 HTTP 服务及通过真实浏览器执行的 UI 交互做结论。
-- 为保护隐私，所有数据均为临时生成的合成资料。测试模型为离线模拟供应商；**未连接真实付费模型**。
-- UI 采用 Chromium 实际执行 HTML/CSS/JS，并点击交互控制。部分隔离沙箱禁止 Chromium 导航到 localhost，采用 Playwright 的 HTTP 桥接将浏览器请求转发到**真实**本地 FastAPI API，而非静态 mock。
+| 验收 | 实现与检查 |
+|---|---|
+| 后端回归 | 59 项 pytest：采集/适配器、证据、更新/养护、任务恢复、来源权限、问答范围、共享与撤销、预算、链接和 Markdown 安全 |
+| 合成回答评测 | 8 项：知识引用、无依据拒答、撤权、隐私隔离；结果不代表生产准确率 |
+| 批量与 HTTP | 80 份合成资料增量/幂等扫描；独立 HTTP 网关模拟供应商调用 |
+| 浏览器主流程 | 授权目录、编辑知识、创建分身、勾选授权、来源撤销 |
+| 浏览器知识更新 | 新旧对照、接受/忽略、版本和失效提案 |
+| 浏览器共享闭环 | UI 连接企业服务、Markdown 显示、发布/创建链接、接收者问答、本人进程退出后继续问答、远程撤销后拒绝访问 |
+| 分发 | wheel/sdist/source；macOS arm64/x86_64、Windows x64 打包启动 smoke |
 
-## 测试项
-
-| 类别 | 验收内容 | 状态 |
-|---|---|---|
-| 后端自动测试 | 数据源、Codex/Claude、来源证据、版本、权限、分身、任务处理与网关 | PASS（34 项自动化测试） |
-| 采集批量基准 | 30 条合成 Codex 会话 + 50 个项目文档；重复扫描不生成重复文档 | PASS |
-| 本地 HTTP 服务 | localhost 启动、主机头限制、API 授权、本地资料采集与全文检索 | PASS |
-| 知识编辑 | 新建、编辑、版本、来源引用状态 | PASS |
-| 分身权限 | 勾选知识、取消来源后撤权、未授权来源信息隔离 | PASS |
-| 企业 BYOK 链路 | 独立 uvicorn 网关向本机模拟服务发送 HTTP 请求，返回结构化知识与试问答案 | PASS |
-| 前端 Chromium | 三导航入口、授权目录、资料采集、文档编辑、创建分身、勾选授权、知识更新提案审核 | PASS |
-| JavaScript | 浏览器 pageerror 监听、Node 语法检查 | PASS |
-| Python 安装 | 标准 wheel 构建及隔离安装启动测试 | PASS（标准 wheel 在独立代码目录完成真实 API 启动和 SQLite 写入） |
-
-## 执行方式
+发布必须通过仓库 `.github/workflows/worktwin-build.yml` 的 Python、三个浏览器脚本和三个平台打包启动任务。成功后 main 的工作流生成 Release 与 SHA256 文件。运行状态以对应 GitHub Actions 记录为准；这里记录验收定义，不预先宣称未运行任务成功。
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install -e '.[test]' build playwright
 ./scripts/verify_release.sh
-# 额外安装 Playwright + Chromium 后
-CHROMIUM_PATH=/usr/bin/chromium python scripts/ui_acceptance.py
+python -m playwright install --with-deps chromium
+PYTHONPATH=. python scripts/ui_acceptance.py
+PYTHONPATH=. python scripts/ui_proposals_acceptance.py
+PYTHONPATH=. python scripts/ui_sharing_acceptance.py
 ```
 
-## v0.5 扩展的验收点
-
-- 模型给出的旧知识关联只能进入更新提案，不能自动覆盖；人工接受前，分身无法检索被标记待复核的知识。
-- 人工接受后版本递增、保留旧内容和历史引用，但不把已被替换的证据发送给模型。
-- 更新前旧资料或原知识版本变化时拒绝接受过期提案。
-- 多来源知识在任意来源被撤销后，即使仍有其他证据，必须重新人工确认。
-- 模型请求失败后按 30s / 60s / 120s 重试，上游错误响应的敏感信息不会被记录，四次后允许人工重试。
-- 相同短句在不同项目不合并为一条跨权限知识。
-
-## 真实限制
-
-- 未在 macOS 实机完成 .app 安装／权限弹窗／系统唤醒测试，也未交付签名公证安装包。
-- 未在真实企业网关、企业统一身份、预算与审计环境中完成部署。
-- 未对真实大模型总结结果做大规模准确率与幻觉率评测；JSON 校验与逐字引文检验**不等于语义正确性保证**。
-- 未打通「分享给另一位真实员工」的云端服务。v0.4 的分身问答仅在员工本人设备的本地界面使用。
+没有验收：真实付费模型提炼/养护质量、真实员工资料的准确率和归因率、组织 SSO、DLP、物理 Mac/Windows 长期运行/睡眠/唤醒与系统弹窗、已签名/公证安装包、自动升级。打包程序 smoke 证明其能启动 API 和访问前端资源，不证明上述系统行为。

@@ -65,7 +65,8 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
            'WORKTWIN_BYOK_BASE_URL': f'http://127.0.0.1:{provider.server_port}/v1',
            'WORKTWIN_BYOK_API_KEY': 'enterprise-provider-only-secret',
            'WORKTWIN_BYOK_MODEL': 'centrally-billed-model',
-           'WORKTWIN_ENTERPRISE_TOKENS': 'pilot-employee-access'}
+           'WORKTWIN_ENTERPRISE_TOKENS': 'pilot-employee-access',
+           'WORKTWIN_SERVER_DATA_DIR': str(tmp_path/'server-data')}
     process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'worktwin.gateway:create_gateway',
                                 '--factory', '--host', '127.0.0.1', '--port', str(gateway_port),
                                 '--no-access-log'], env=env, cwd=Path(__file__).parents[1],
@@ -74,13 +75,13 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
         gateway_url = f'http://127.0.0.1:{gateway_port}'
         for _ in range(80):
             try:
-                if httpx.get(gateway_url + '/health', timeout=.7).status_code == 200:
+                if httpx.get(gateway_url + '/health', timeout=.7, trust_env=False).status_code == 200:
                     break
             except httpx.HTTPError:
                 time.sleep(.1)
         else:
             raise AssertionError('Enterprise gateway did not start')
-        assert httpx.post(gateway_url+'/v1/chat/completions',json={'messages':[]},timeout=5).status_code == 401
+        assert httpx.post(gateway_url+'/v1/chat/completions',json={'messages':[]},timeout=5, trust_env=False).status_code == 401
         source = tmp_path / 'consented'
         private = tmp_path / 'unconsented'
         source.mkdir(); private.mkdir()

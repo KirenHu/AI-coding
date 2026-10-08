@@ -1,84 +1,42 @@
-# WorkTwin Collector · v0.4 技术架构
+# WorkTwin 1.0 架构
 
-## 产品目标与边界
-
-构建一个本地优先的采集与知识组织客户端。员工只管理「信息采集」「我的知识库」「我的数字分身」；本地采集/增量处理/个人习惯提取作为后台能力，不设计额外的终端用户管理入口。
+员工本地进程负责授权采集、索引、知识编辑、审核与发布同步；企业进程持有模型供应商 Key、执行费用控制和保存允许分享的知识快照。UI 只有信息采集、我的知识库、我的数字分身。
 
 ```mermaid
 flowchart TB
-  Codex[Codex/Claude 会话 JSONL] --> Collector
-  Folder[用户授权的文件夹] --> Collector
-  Collector[增量采集器 - watchfiles + 周期扫描] --> DB[(本地 SQLite 文本 / FTS / 来源)]
-  DB -->|明确 allow_ai=1 的内容| Queue[按文档哈希入队的 AI Jobs]
-  Queue --> Worker[KnowledgeWorker 独立任务]
-  Worker -->|携带员工企业网关令牌| Gateway[企业 BYOK 网关]
-  Gateway -->|管理员持有的供应商 Key| LLM[企业统一付费的模型]
-  LLM --> Gateway --> Worker
-  Worker -->|JSON 结构校验 + 引文验证| KB[(知识条目 / 版本 / 证据)]
-  DB --> UI[本地知识库界面]
-  KB --> UI
-  KB --> ACL[分身-知识授权映射]
-  ACL --> Ask[数字分身试问]
-  Ask --> Gateway
+  Sources[授权目录与可见会话] --> Collector[文件监听与定时采集]
+  Collector --> Local[(本地 SQLite)]
+  Local --> Worker[提炼与养护任务]
+  Worker --> Enterprise[企业 BYOK 服务]
+  Enterprise --> Model[固定供应商模型]
+  Model --> Worker
+  Worker --> Review[知识与更新审核]
+  Review --> Local
+  Local --> UI[三个用户入口]
+  UI --> Publisher[明确授权的快照同步]
+  Publisher --> Shared[(企业共享 SQLite)]
+  Shared --> Recipient[持有到期链接的接收者]
+  Recipient --> Enterprise
 ```
 
-## 数据边界
+## 本地状态与一致性
 
-1. **采集授权**：员工手动添加的目录是唯一的数据采集白名单；`enabled=0` 停止更新数据，原有知识不会自动消失。
-2. **AI 整理授权**：`sources.allow_ai=0` 为默认。只有启用后新内容才会成为模型整理任务，并把相应文本经企业网关发送给模型提供商。
-3. **分身授权**：`twin_knowledge(twin_id, knowledge_id)` 为唯一分身知识读取授权。赋权、撤权由本人本地工作台操作；不会为每个分身复制整个知识库。
-4. **来源生命周期**：撤销采集目录将级联删除该目录的 `documents` / `chunks` / `ai_jobs` / `knowledge_evidence`；失去最后证据的 source-bound 知识删除，继而自动从分身授权关系中消失。
-5. **有效性**：文档改动时将原引文标记旧版并验证在新文本中是否仍可找到；`needs_review=1` 的知识不能被分身读取。
-6. **本机访问**：本地 FastAPI 只监听 127.0.0.1，管理 API 使用会话令牌，主机头白名单；它**不是**企业共享服务，也不应开放到公网。
+`sources` 分别记录采集、AI 和分享权限。`documents/chunks/chunks_fts` 存完整解析文本和搜索索引。内容 SHA 驱动增量队列；`ai_jobs` 的领取凭据及租约恢复防止旧结果回写或新数据库对象重置正在运行的任务。
 
-## 采集工作流
+`knowledge` 保存正文、分类、确认状态、版本和复核标志，`knowledge_evidence` 将引文绑定来源内容；来源变化使旧证据失效，部分撤销要求重新复核。模型提炼校验 JSON 和原文引文；这些校验不能独立证明语义正确。
 
-- `Collector` 使用 `watchfiles` 监听文件变更；定时扫描兜底。每个文件记录大小、mtime、SHA256。元数据变化但内容未变时只更新元信息。
-- 适配 `folder`、`codex`、`claude`。文本、DOCX、PDF 等经成熟第三方解析库得到文本；会话 JSONL 经角色过滤转为可见时间线。
-- 资料内容存本地 SQLite `documents.content`，按块放入 `chunks`，由 FTS5 trigram 索引。**本地有明文文本副本**，原始 PDF/Word 二进制不复制到云端。
-- 对允许 AI 整理的来源，`ai_jobs` 保存 `document_id`、`content_sha`、状态、重试次数。独立模型 Worker 处理成功后写知识；内容变化时哈希会让旧任务结果失效。
+`knowledge_proposals` 保存同项目补充/替换/冲突或养护建议。接受时再检查资料哈希与知识版本，在同一事务记录旧版、更新正文和证据。养护在新资料任务空闲后运行，每日最多 8 篇，同版本冷却 7 天；养护提案不会阻断原确认内容的分身查询。
 
-## 模型及知识处理
+Markdown 禁用原始 HTML；`[[K123|标题]]` 由稳定 ID 定位。`relations.py` 按可见知识和有效证据计算正反链接与共同来源，导出单篇 Markdown 和 INDEX；不引入额外图数据库。Rowboat 的字段/列表/标题解析被小范围移植用于标题和检索关键词，许可保留于 third_party。
 
-- `GatewayClient` 按 OpenAI Chat Completions 兼容协议发送消息；员工端仅配置企业地址和短期网关访问令牌，不保存模型供应商 Key。
-- `worktwin.gateway` 在企业端固定供应商 URL、模型名称和付款凭据，拒绝普通用户覆盖模型路由。服务器当前只提供试点鉴权，生产时需独立完善 IAM、授权、审计、费用及安全治理。
-- `extract_knowledge` 从资料中提取 `fact`、`decision`、`process`、`preference`，要求返回 JSON 和连续原文引文，至少 8 字。纯文档不生成个人偏好；AI 会话只抽取员工本人发言。原文检查不能独立保证总结正确性，知识仍可由员工手动校订。
-- 版本历史存于 `knowledge_history`。人工编辑不改变引用证据的有效性；归档会使内容退出分身可用范围。
-- 当前**未实现**跨多轮会话的自动主题融合与矛盾检测，后续将引入可回滚的合并提案和冲突处理。旧版的规则候选函数保留仅为历史回归兼容，不由采集任务调用。
+`twins/twin_knowledge` 仅保存授权映射，分身不复制全部知识。问答按中文短语和标题/别名/关键词选取有限上下文，附 KID 引用，校验无依据/伪造引用输出，调用完成后再复核权限。
 
-## 关键表
+## 共享与服务端
 
-| 表 | 用途 |
-|---|---|
-| `sources` | 本地授权目录，采集状态，AI 处理授权，适配器 |
-| `documents`, `chunks`, `chunks_fts` | 完整解析文本、增量索引、全文检索 |
-| `ai_jobs` | 持久任务队列，按内容哈希防止错误回写 |
-| `knowledge` | 知识正文、分类、状态、创建者、修订版 |
-| `knowledge_evidence` | 来源文档、引文、有效性和会话时间 |
-| `knowledge_history` | 人工编辑前的完整快照 |
-| `twins`, `twin_knowledge` | 多分身及知识勾选授权，不复制文档 |
-| `events` | 本地采集与修改事件 |
+`publications` 是本机 opt-in 状态，持久记录安装 ID、发布序号与成功快照摘要。同步串行发送完整允许快照；失败保留待同步提示，恢复后重试。只有已确认、有效、非个人偏好且全部贡献来源允许 AI/分享的授权知识进入发布。
 
-## 技术选型
+服务端 `installations/assets/twins/assignments` 在事务中替换快照，以所有者/安装/知识 ID 去重，多分身引用同一资产。低于当前发布序号的快照被拒绝。`grants` 只存随机访问令牌的哈希、标签、到期时间和撤销状态。回答完成后复查授权和快照版本，防止运行中撤销后仍返回旧结果。
 
-- **Python 3.11+ / FastAPI**：采集处理任务、模型网关原型、本地管理服务。
-- **SQLite / FTS5**：单员工本地存储，低成本，重启后持久化；不引入单独数据库服务。
-- **watchfiles**：跨平台增量文件事件，配合定时全量校验。
-- **pypdf / python-docx**：成熟的文本提取能力。
-- **原生浏览器 UI**：无第三方 CDN，轻量化工作台；通过 `desktop` 脚本可在 Mac/Windows 构建未签名应用封装，但目前交付物不是原生签名安装包。
+`ProviderService` 固定模型与供应商凭据，先事务预留调用额度，成功后记录供应商报告用量。SQLite 记录调用状态但不保留提示正文；日调用/Token 限额、每凭据分钟限流及单进程信号量控制成本和负载。发布审计也不记录正文。远程 HTTPS 由组织代理提供；本地管理 API 绑定 loopback，采用会话令牌与 Host 校验。
 
-## 数据治理待解决
-
-必须在企业级产品化前解决：SAML/OIDC/SSO 与真正分身分享、企业资料所有权限制、数据分类和 DLP、资料删除后的备份保留、服务端日志/缓存的隐私策略、模型 token 计量与预算、跨文档知识版本与冲突、动态权限的并发一致性、分身问答可验证引用、生产知识质量测试。
-
-
-## v0.5 知识更新提案
-
-- `knowledge_proposals`: `document_id`, `content_sha`, `target_id`, `target_version`, `action(enrich|replace|conflict)`, `title`, `body`, `quote`, `reason`, `status`。
-- `knowledge.review_hold`：来源部分撤销后的粘性人工复核状态；`knowledge.needs_review` 由该标记、旧版失效证据以及未解决提案共同决定。
-- `knowledge_evidence.superseded`：保留旧引用供查证，但更新后的分身只使用未被取代且依然有效的证据。
-- `ai_jobs.next_run_at`：失败重试时间，最多四次尝试，限次指数退避。
-- 合并时先由企业模型基于**同项目且全部已获 AI 处理授权的现有知识**给出结构化提案；不满足条件则创建独立新知识条目，绝不让 AI 自动覆盖。
-- 接受更新时原文 `sha256` 与目标 `version` 必须同时仍然有效；同一事务完成历史记录、新证据和正文更新。
-
-以上机制只保证可核对和可回滚，不代表模型生成的事实一定正确，必须用真实数据继续评测。
+本地离线修改无法立即改变企业快照，待同步提示是明确的产品状态。共享链接是持有者访问凭据，不是 SSO 或组织原 ACL。完整部署条件和恢复限制见 [DEPLOY](DEPLOY.md)。

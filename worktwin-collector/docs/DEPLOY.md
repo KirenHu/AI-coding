@@ -1,37 +1,61 @@
-# 部署说明 · v0.4
+# WorkTwin 1.0 部署
 
-## 1. 员工设备：采集客户端
+客户端与企业服务器是两个独立进程。企业服务器持有供应商 Key、保存明确授权的共享知识和访问授权；本机保存原始解析文本和个人知识。
 
-推荐 Python 3.11+，本地安装见 [README](../README.md)。无需 Ollama，也不要求终端用户持有付费模型的供应商 API Key。
-
-启动前由组织设备管理配置：
+## Docker Compose
 
 ```bash
-export WORKTWIN_GATEWAY_URL="https://worktwin-gateway.company.example"
-export WORKTWIN_GATEWAY_TOKEN="<employee-access-token>"
+cp enterprise.env.example enterprise.env
+# 编辑 enterprise.env：供应商地址、模型、Key、独立员工令牌
+# 生成令牌：python -c "import secrets; print(secrets.token_urlsafe(32))"
+docker compose up -d --build
+```
+
+端口只绑定服务器的 `127.0.0.1:8789`。由组织 HTTPS 反向代理转发到它，外部地址例如 `https://worktwin.company.example`。代理超时应至少 150 秒，允许最长 4 MiB 发布请求，避免记录 Authorization 与分享 URL。`worktwin-data` 卷持久保存 `sharing.sqlite` 和 `usage.sqlite`；不要删除卷作为常规升级方式。
+
+`WORKTWIN_PUBLISHER_TOKENS` 是 JSON 员工标识到独立随机令牌的映射，例如 `{"employee-a":"<random-token-a>","employee-b":"<random-token-b>"}`。真实值只留在受控配置中。新增/轮换令牌后重启服务；改变员工标识会改变原共享快照的所有者，应先处理旧授权。
+
+## Python 启动
+
+```bash
+python -m pip install .
+export WORKTWIN_BYOK_BASE_URL="https://your-compatible-provider.example/v1"
+export WORKTWIN_BYOK_MODEL="your-enterprise-model"
+export WORKTWIN_BYOK_API_KEY="<enterprise-key>"
+export WORKTWIN_PUBLISHER_TOKENS='{"employee-a":"<random-employee-token>"}'
+export WORKTWIN_SERVER_DATA_DIR="/srv/worktwin/data"
+python -m uvicorn worktwin.server:create_server --factory --host 127.0.0.1 --port 8789
+```
+
+模型路由要求 HTTPS，本机模拟服务允许 HTTP localhost。`worktwin.gateway:create_gateway` 仍提供旧版仅模型网关兼容模式；完整分享需要 `worktwin.server:create_server`。
+
+## 员工客户端
+
+启动客户端，在侧栏「连接企业知识服务」输入外部 HTTPS 地址与个人令牌。也可由设备管理注入：
+
+```bash
+export WORKTWIN_SERVER_URL="https://worktwin.company.example"
+export WORKTWIN_SERVER_TOKEN="<employee-token>"
 python -m worktwin serve --open
 ```
 
-HTTP 网关 URL 只允许 `localhost/127.0.0.1` 单机开发使用，远程统一网关需要 HTTPS。该 token 在试点采用简单 Bearer 策略，生产应替换为企业 IAM 发放和周期轮换的短期凭据。
+只对单机开发允许 HTTP localhost。模型供应商 Key 不进入安装包。个人令牌保存在员工本机配置数据库；1.0 尚未使用 OS Keychain。已启用发布时禁止直接切换企业地址，先停止并确认撤销同步成功。
 
-## 2. 企业服务器：BYOK 网关
+## 限额和持久状态
 
-在服务器配置以下**服务端专属**变量，不写入员工安装包或仓库：
+| 变量 | 默认 | 含义 |
+|---|---:|---|
+| WORKTWIN_DAILY_CALL_LIMIT | 1000 | UTC 日全服务调用上限 |
+| WORKTWIN_DAILY_TOKEN_LIMIT | 2000000 | UTC 日 Token 总额度，未知用量保留保守估算 |
+| WORKTWIN_MINUTE_CALL_LIMIT | 20 | 每个员工凭据/分享授权每分钟调用数 |
+| WORKTWIN_MODEL_CONCURRENCY | 4 | 单服务进程同时模型请求上限 |
 
-```bash
-export WORKTWIN_BYOK_BASE_URL="https://your-compatible-provider.example/v1"
-export WORKTWIN_BYOK_MODEL="your-organization-approved-model"
-export WORKTWIN_BYOK_API_KEY="<your-organization-secret>"
-export WORKTWIN_ENTERPRISE_TOKENS="<employee1-token>,<employee2-token>"
-python -m uvicorn worktwin.gateway:create_gateway --factory --host 127.0.0.1 --port 8789
-```
+SQLite 事务先预留额度；供应商报告用量后更新。失败请求仍消耗调用次数与估算额度。审计记录凭据哈希、时间、模型、状态与用量，不记录提示正文/凭据明文。单实例运行是 1.0 推荐方式；不配置多个进程来绕过进程内并发上限。
 
-这里的 `127.0.0.1` 期望由企业 TLS 反向代理及身份服务在前方完成认证和路由。**切勿直接将当前试点网关绑到 `0.0.0.0` 并暴露公网**。网关固定企业模型，员工提交的消息即使包含 `model` 也不会覆盖付款配置。
+## 撤销、备份与运行边界
 
-## 3. 运行保障与限制
+客户端每 5 秒检查共享变化，成功本地修改也触发同步；企业不可达时显示待同步，旧发布内容不会因本地断网自行消失。紧急撤销可直接调用服务端 `DELETE /v1/twins/{remote_id}/grants/{grant_id}`，带该所有者的 Bearer Token。运行中问答完成后再次校验访问权限和快照版本。
 
-- 按来源单独启用「允许 AI 整理」。默认禁止把本地资料发送给企业模型。
-- 模型调用失败会标记任务为 `error`；HTTP API 支持管理员调试时重新入队，定时 Worker 每轮只处理一个文档以限制突发调用。上线需增加租户、员工和项目级额度、超时、退避重试、计费与审计。
-- 本地 SQLite 包含解析后的文档文字，应加密硬盘并为备份设置保留期。数据库由个人设备存储；目前没有组织级云同步。
-- 多人访问权限、离职移交、共享给其他员工的数字分身 URL、移动端、企业 IdP/SSO、真实数据 DLP 和 CDN/网关生产 SLA 不属于 v0.4 交付。
-- `desktop/build-macos.sh`、`desktop/build-windows.ps1` 可以在对应操作系统构建未签名封装；构建出的客户端需要相应平台验收和签名公证才能发给企业员工。
+停止本地采集或退出应用不会撤销已有分享。停止分享同步成功后，服务器删除相应分身及链接；快照中的未使用知识也被替换删除。SQLite 安全删除不替代存储设备与历史备份的删除策略。备份前停止写入或使用 SQLite backup API；恢复旧客户端备份可能导致发布版本过期，需管理员处理，不能以恢复备份作为撤权方案。
+
+1.0 使用独立员工令牌和可撤销持有者链接，没有 SSO、组织资料原有 ACL 联动、企业 DLP 或自动证书/签名管理。进入组织生产需结合现有身份与运维系统完成这些部署工作，并使用实际业务资料验证知识质量。

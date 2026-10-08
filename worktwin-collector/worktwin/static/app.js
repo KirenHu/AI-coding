@@ -3,7 +3,7 @@ const icon = n => `<svg aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const esc = x => String(x ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 const kindNames={fact:'业务知识',decision:'决策记录',process:'流程指引',preference:'偏好'};
 const titles={knowledge:'我的知识库',twins:'我的数字分身',sources:'信息采集'};
-const state={page:'knowledge',knowledge:[],sources:[],twins:[],project:'all',kind:'all',query:'',twinId:null,modelReady:false,proposals:[]};
+const state={page:'knowledge',knowledge:[],sources:[],twins:[],project:'all',kind:'all',query:'',twinId:null,modelReady:false,shareReady:false,proposals:[]};
 const el=id=>document.getElementById(id);
 const content=el('page-content');
 let toastTimer;
@@ -30,7 +30,7 @@ function dialog(title,body,footer,wide=false){
 }
 function onEscape(e){if(e.key==='Escape')closeOverlay()}
 function closeOverlay(){el('overlay-root').innerHTML='';document.removeEventListener('keydown',onEscape)}
-async function refreshConnection(){try{const info=await api('settings');state.modelReady=!!info.enterprise_model_ready;const node=el('model-status');node.innerHTML=`<span class="pulse-dot ${state.modelReady?'':'off'}"></span>${state.modelReady?'企业知识模型已连接':'等待企业配置知识模型'}`}catch(e){el('model-status').textContent='本地服务不可用'}}
+async function refreshConnection(){try{const info=await api('settings');state.modelReady=!!info.enterprise_model_ready;state.shareReady=!!info.cloud_sync;const node=el('model-status');node.innerHTML=`<span class="pulse-dot ${state.modelReady?'':'off'}"></span>${state.modelReady?'企业知识模型已连接':'连接企业知识服务'}`;node.title=info.publication_error||'点击配置企业连接';node.onclick=openConnection;if(info.publication_error)notify(info.publication_error)}catch(e){el('model-status').textContent='本地服务不可用'}}
 async function go(page,force=false){
   if(!force && page===state.page)return;
   state.page=page;
@@ -61,6 +61,7 @@ async function renderSources(){
   content.querySelectorAll('[data-add-source]').forEach(b=>b.onclick=()=>addSource(b.dataset.addSource));
   content.querySelectorAll('[data-collect-toggle]').forEach(b=>b.onchange=()=>perform(()=>api(`sources/${b.dataset.collectToggle}/toggle`,{method:'POST'}),'sources'));
   content.querySelectorAll('[data-ai-toggle]').forEach(b=>b.onchange=()=>perform(()=>api(`sources/${b.dataset.aiToggle}/ai`,{method:'PUT',body:{allow_ai:b.checked}}),'sources'));
+  content.querySelectorAll('[data-share-toggle]').forEach(b=>b.onchange=()=>perform(()=>api(`sources/${b.dataset.shareToggle}/share`,{method:'PUT',body:{allow_share:b.checked}}),'sources'));
   content.querySelectorAll('[data-remove-source]').forEach(b=>b.onclick=async()=>{
     const id=Number(b.dataset.removeSource);const row=state.sources.find(x=>x.id===id);
     if(!confirm(`彻底移除「${row?.name||'数据源'}」？这会删除其索引、AI 提炼知识以及相关分身的知识授权，无法撤回。`))return;
@@ -70,6 +71,7 @@ async function renderSources(){
 function sourceRow(s){const kind=sourceType(s);return `<div class="source-item"><div class="source-summary"><div class="source-name">${esc(s.name)} <span class="state-label ${s.enabled?'':'grey'}">${s.enabled?'采集中':'已暂停'}</span></div><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div><div class="source-caption"><span class="soft-caption">${esc(typeLabel[kind]||'工作资料')} · ${s.document_count} 份资料</span>${s.last_error?`<span class="state-label danger">${esc(s.last_error)}</span>`:''}</div></div>
   <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许采集 ${esc(s.name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}/> 允许采集</label>
   <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许企业 AI 整理 ${esc(s.name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}/> 允许 AI 整理</label>
+  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许分身分享 ${esc(s.name)}" data-share-toggle="${s.id}" ${s.allow_share?'checked':''}/> 允许分身分享</label>
   <button class="icon-button" title="撤销来源并清除知识" aria-label="删除 ${esc(s.name)}" data-remove-source="${s.id}">${icon('trash')}</button></div>`}
 async function addSource(initial='folder'){
   const defaults=await api('default-paths');
@@ -145,17 +147,25 @@ async function openProposal(id){
 }
 function closeDrawer(){closeOverlay()}
 async function openKnowledge(id){
-  const k=id?state.knowledge.find(x=>x.id===id):null;
+  let k=id?state.knowledge.find(x=>x.id===id):null;
+  if(id&&!k){state.knowledge=await api('knowledge?limit=1000');k=state.knowledge.find(x=>x.id===id);if(!k){notify('知识已移除或当前不可访问');return}}
   el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="知识详情"><div class="drawer-top"><small>我的知识库 / ${esc(k?entryProject(k):'新知识')}</small><div class="drawer-actions"><button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></div><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
   el('drawer-mask').onclick=e=>{if(e.target.id==='drawer-mask')closeDrawer()};el('drawer-close').onclick=closeDrawer;
   document.addEventListener('keydown',onEscape);
   const details=el('drawer-inner'),footer=el('drawer-bottom');
   const originalTitle=k?.title||'',originalBody=k?.body||'';
   const sources=k?.evidence||[];
+  const relations=k?await api(`knowledge/${k.id}/relations`):null;
+  const versions=k?await api(`knowledge/${k.id}/history`):[];
+  function linkedSection(){if(!relations)return '';const groups=[['文中链接',relations.outgoing],['提到这篇的知识',relations.backlinks],['同一份资料的其他知识',relations.same_source]];return `<section class="source-reference"><h3>关联知识</h3>${groups.filter(([_,rows])=>rows.length).map(([name,rows])=>`<p class="soft-caption">${name}</p>${rows.map(r=>`<button class="info-link relation-link" data-open-knowledge="${r.id}">${esc(r.title)} ${icon('arrow')}</button>`).join('')}`).join('')||'<p class="soft-caption">暂无已确认的关联。编辑时可用 [[K编号|显示名称]] 添加链接。</p>'}${relations.unresolved_ids.length?'<p class="field-note">部分链接已失效或知识需要复核。</p>':''}</section>`}
+  function historySection(){return versions.length?`<section class="source-reference"><h3>变更历史</h3>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${formatTime(v.changed_at)} · ${esc(v.title)}</summary><div class="proposal-body">${esc(v.body)}</div></details>`).join('')}</section>`:''}
   function referenceRows(){return sources.length?`<section class="source-reference"><h3>来源依据 <span class="soft-caption">${sources.length} 条</span></h3>${sources.map((e,i)=>`<div class="reference-row"><div class="ref-title">${icon('file')} ${esc(e.document_title)}</div><div class="ref-quote">${short(e.quote,550)}</div>${!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':e.superseded?'<span class="state-label grey">旧版历史引用</span>':`<button data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`}</div>`).join('')}</section>`:''}
-  function view(){details.innerHTML=`<div class="drawer-category"><span class="page-icon">${icon('book')}</span> ${esc(kindNames[k?.kind]||'个人知识')}</div><h1 class="drawer-title">${esc(k?.title||'新知识')}</h1><div class="drawer-meta">${k?.status==='confirmed'?'<span class="state-label">已确认</span>':k?.needs_review?'<span class="state-label warn">原始依据待核实</span>':'<span class="state-label grey">自动整理</span>'}<span>${esc(entryProject(k||{evidence:[]}))}</span><span>${k?'版本 '+k.version:''}</span></div><div class="drawer-body">${esc(k?.body||'')}</div>${referenceRows()}`;
-    footer.innerHTML=`${k?'<button class="btn secondary" id="archive-entry">归档知识</button>':''}<button class="btn" id="edit-entry">${icon('file')} 编辑内容</button>`;
+  function view(){details.innerHTML=`<div class="drawer-category"><span class="page-icon">${icon('book')}</span> ${esc(kindNames[k?.kind]||'个人知识')}</div><h1 class="drawer-title">${esc(k?.title||'新知识')}</h1><div class="drawer-meta">${k?.status==='confirmed'?'<span class="state-label">已确认</span>':k?.needs_review?'<span class="state-label warn">原始依据待核实</span>':'<span class="state-label grey">自动整理</span>'}<span>${esc(entryProject(k||{evidence:[]}))}</span><span>${k?'版本 '+k.version:''}</span></div><div class="drawer-body markdown-body">${k?.rendered_body||esc(k?.body||'')}</div>${referenceRows()}${linkedSection()}${historySection()}`;
+    footer.innerHTML=`${k?'<button class="btn secondary" id="archive-entry">归档知识</button>':''}${k&&k.status==='draft'?'<button class="btn secondary" id="confirm-entry">确认内容</button>':''}<button class="btn" id="edit-entry">${icon('file')} 编辑内容</button>`;
+    details.querySelectorAll('[data-open-knowledge]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.openKnowledge)));
+    details.querySelectorAll('.markdown-body a[href^="#knowledge-"]').forEach(a=>a.onclick=e=>{e.preventDefault();openKnowledge(Number(a.getAttribute('href').slice(11)))});
     el('edit-entry').onclick=edit;
+    el('confirm-entry')?.addEventListener('click',()=>save(k.title,k.body,k.kind,'confirmed'));
     el('archive-entry')?.addEventListener('click',async()=>{if(!confirm('将这篇知识归档并从数字分身的可用范围中移除？'))return;await save(k.title,k.body,k.kind,'archived')});
     details.querySelectorAll('[data-read-source]').forEach(x=>x.onclick=()=>showDocument(Number(x.dataset.readSource)));
   }
@@ -163,7 +173,7 @@ async function openKnowledge(id){
     if(!title.trim()||!body.trim()){notify('标题和正文不能为空');return}
     try{const payload={title:title.trim(),body:body.trim(),kind,status};await api(k?`knowledge/${k.id}`:'knowledge',{method:k?'PUT':'POST',body:payload});closeDrawer();notify('知识已保存');await go('knowledge',true)}catch(e){notify(e.message)}
   }
-  function edit(){details.innerHTML=`<div class="drawer-category">编辑知识文档</div><div class="field" style="margin-top:20px"><input id="edit-k-title" class="edit-title" maxlength="130" value="${esc(originalTitle)}" placeholder="知识标题"/></div><div class="field"><label for="edit-k-kind">知识类型</label><select id="edit-k-kind">${[['fact','业务知识'],['decision','决策记录'],['process','流程指引']].map(([id,name])=>`<option value="${id}" ${k?.kind===id?'selected':''}>${name}</option>`).join('')}</select></div><div class="field"><label for="edit-k-body">知识正文</label><textarea id="edit-k-body" class="edit-body" spellcheck="false" placeholder="在这里写下知识内容；支持 Markdown。">${esc(originalBody)}</textarea></div><label class="check-row"><input id="edit-k-confirmed" type="checkbox" ${k?.status==='confirmed'||!k?'checked':''}/> <span>标记为内容已核对</span></label>${referenceRows()}`;
+  function edit(){details.innerHTML=`<div class="drawer-category">编辑知识文档</div><div class="field" style="margin-top:20px"><input id="edit-k-title" class="edit-title" maxlength="130" value="${esc(originalTitle)}" placeholder="知识标题"/></div><div class="field"><label for="edit-k-kind">知识类型</label><select id="edit-k-kind">${[['fact','业务知识'],['decision','决策记录'],['process','流程指引']].map(([id,name])=>`<option value="${id}" ${k?.kind===id?'selected':''}>${name}</option>`).join('')}</select></div><div class="field"><label for="edit-k-body">知识正文</label><textarea id="edit-k-body" class="edit-body" spellcheck="false" placeholder="在这里写下知识内容；支持 Markdown；知识链接写作 [[K编号|显示名称]]。">${esc(originalBody)}</textarea></div><label class="check-row"><input id="edit-k-confirmed" type="checkbox" ${k?.status==='confirmed'||!k?'checked':''}/> <span>标记为内容已核对</span></label>${referenceRows()}`;
     footer.innerHTML=`<button class="btn secondary" id="cancel-edit">取消</button><button class="btn" id="save-entry">保存知识</button>`;
     el('cancel-edit').onclick=()=>k?view():closeDrawer();
     el('save-entry').onclick=()=>save(el('edit-k-title').value,el('edit-k-body').value,el('edit-k-kind').value,el('edit-k-confirmed').checked?'confirmed':'draft');
@@ -212,8 +222,9 @@ async function renderTwinEditor(id){
   content.innerHTML=`<div class="back-row"><button id="twins-back">← 返回数字分身</button><span>/</span><strong>${esc(t.name)}</strong></div>`+
     pageHeader('DIGITAL TWIN','配置 '+t.name,'这个分身只能阅读右侧勾选的知识。可以随时修改或撤销授权。')+
     `<div class="twin-editor"><div class="twin-settings"><h2>基本信息</h2><div class="field"><label for="twin-edit-name">名称</label><input id="twin-edit-name" value="${esc(t.name)}" maxlength="90"/></div><div class="field"><label for="twin-edit-desc">使用场景</label><textarea id="twin-edit-desc" maxlength="500" rows="4">${esc(t.description)}</textarea></div><button class="btn secondary small" id="save-twin-info">保存基本信息</button>
-    <div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">企业模型网关尚未配置，暂不能进行问答。</p>'}<div id="twin-answer"></div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
+    <div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">企业模型网关尚未配置，暂不能进行问答。</p>'}<div id="twin-answer"></div><div class="divider"></div><h2>分享给协作者</h2><div id="sharing-panel">正在读取分享状态…</div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
     <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已选择 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">更改后请保存授权</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
+  await renderSharing(id);
   el('twins-back').onclick=()=>{state.twinId=null;go('twins',true)};
   function renderSelection(){
     const q=el('twin-search').value.toLowerCase().trim();
@@ -231,6 +242,30 @@ async function renderTwinEditor(id){
   el('twin-ask').onclick=async()=>{const question=el('twin-question').value.trim();if(!question)return;el('twin-ask').disabled=true;el('twin-answer').innerHTML='<div class="chat-output">正在依据已授权的知识查找…</div>';try{const r=await api(`twins/${id}/ask`,{method:'POST',body:{question}});el('twin-answer').innerHTML=`<div class="chat-output">${esc(r.answer)}</div><div class="field-note">已提供 ${r.context_count} 篇授权知识 · 回答引用 ${r.citations.length} 篇</div>`}catch(e){el('twin-answer').innerHTML=`<div class="chat-output">${esc(e.message)}</div>`}finally{el('twin-ask').disabled=false}};
 }
 
+async function openConnection(){
+  dialog('连接企业知识服务',`<p class="soft-caption">向管理员获取企业服务地址和个人访问凭据。模型供应商密钥由企业保管。</p><div class="field"><label>企业服务地址</label><input id="enterprise-url" placeholder="https://worktwin.company.example"/></div><div class="field"><label>个人访问凭据</label><input id="enterprise-token" type="password" autocomplete="off"/></div>`,`<button class="btn secondary" data-close>取消</button><button class="btn" id="connect-enterprise">连接</button>`);
+  el('connect-enterprise').onclick=async()=>{el('connect-enterprise').disabled=true;try{await api('connection',{method:'PUT',body:{url:el('enterprise-url').value.trim(),token:el('enterprise-token').value.trim()}});closeOverlay();await refreshConnection();await go(state.page,true);notify('已连接企业服务')}catch(e){notify(e.message);el('connect-enterprise').disabled=false}};
+}
+async function renderSharing(id){
+  const panel=el('sharing-panel');if(!panel)return;
+  const info=await api(`twins/${id}/sharing`);
+  panel.innerHTML=`<p class="field-note">只发布已确认且来源允许分享的知识。持有链接的人可以访问；发布后电脑关闭仍可使用。</p>${info.error?`<p class="state-label warn">${esc(info.error)}</p><button class="btn secondary small" id="sync-sharing">重试同步</button>`:''}`+
+    (!info.configured?'<button class="btn secondary small" id="share-connect">连接企业服务</button>':!info.enabled?'<button class="btn secondary small" id="publish-twin">启用分享</button>':`<button class="btn secondary small" id="new-share">创建访问链接</button><button class="btn secondary small" id="unpublish-twin">停止全部分享</button><div>${info.grants.map(g=>`<div class="share-row"><span>${esc(g.recipient)}<small> ${g.revoked?'已撤销':g.expires_at*1000<Date.now()?'已到期':'有效至 '+new Date(g.expires_at*1000).toLocaleDateString()}</small></span>${!g.revoked?`<button class="info-link" data-revoke-share="${esc(g.id)}">撤销</button>`:''}</div>`).join('')}</div>`);
+  el('share-connect')?.addEventListener('click',openConnection);
+  el('sync-sharing')?.addEventListener('click',async()=>{const r=await api('sharing/sync',{method:'POST'});notify(r.state==='synced'?'同步完成':r.detail);renderSharing(id)});
+  el('publish-twin')?.addEventListener('click',()=>perform(async()=>{await api(`twins/${id}/publish`,{method:'POST'});await renderSharing(id)},null));
+  el('unpublish-twin')?.addEventListener('click',()=>perform(async()=>{const r=await api(`twins/${id}/publish`,{method:'DELETE'});notify(r.state==='synced'?'全部分享已停止':r.detail);await renderSharing(id)},null));
+  panel.querySelectorAll('[data-revoke-share]').forEach(b=>b.onclick=()=>perform(async()=>{await api(`twins/${id}/sharing/${b.dataset.revokeShare}`,{method:'DELETE'});await renderSharing(id)},null));
+  el('new-share')?.addEventListener('click',()=>{
+    dialog('创建访问链接',`<div class="field"><label>给谁使用（备注）</label><input id="share-recipient" maxlength="90" placeholder="例如：产品项目接任者"/></div><div class="field"><label>有效期</label><select id="share-days"><option value="7">7 天</option><option value="30">30 天</option><option value="1">1 天</option></select></div><p class="field-note">备注不构成身份验证，链接持有人即可访问。每位协作者建议使用独立链接，便于撤销。</p>`,`<button class="btn secondary" data-close>取消</button><button class="btn" id="create-share">创建链接</button>`);
+    el('create-share').onclick=async()=>{try{const r=await api(`twins/${id}/sharing`,{method:'POST',body:{recipient:el('share-recipient').value.trim(),days:Number(el('share-days').value)}});dialog('访问链接已创建',`<p class="field-note">复制并发给指定协作者。链接仅在本次显示，遗失后请撤销并重新创建。</p><div class="field"><input readonly id="share-url" value="${esc(r.url)}"/></div>`,`<button class="btn secondary" data-close>完成</button><button class="btn" id="copy-share-url">复制链接</button>`);el('copy-share-url').onclick=async()=>{try{await navigator.clipboard.writeText(r.url);notify('已复制链接')}catch{el('share-url').select();notify('请手动复制选中的链接')}};await renderSharing(id)}catch(e){notify(e.message)}};
+  });
+}
+
+// Background changes appear without discarding an open editor.
+setInterval(async()=>{if(el('overlay-root').children.length)return;await refreshConnection();if(state.page==='knowledge'){try{[state.knowledge,state.proposals]=await Promise.all([api('knowledge?limit=1000'),api('knowledge/proposals')]);renderKnowledgeList()}catch{}}},15000);
 // First render and lightweight refresh, without tracking/analytics.
 document.querySelectorAll('.nav-link').forEach(button=>button.onclick=()=>{if(button.dataset.page!=='twins')state.twinId=null;go(button.dataset.page,true)});
 refreshConnection().then(()=>go('knowledge',true));
+
+el('quit-app').onclick=async()=>{if(!confirm('退出 WorkTwin？本地采集和整理将暂停，已发布的数字分身仍可访问。'))return;try{await api('shutdown',{method:'POST'});content.innerHTML=emptyState('check','WorkTwin 已退出','再次打开应用即可继续采集。')}catch(e){notify(e.message)}};

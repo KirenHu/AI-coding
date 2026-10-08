@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "worktwin-collector"
-version = "0.6.0"
+version = "1.0.0"
 description = "Local-first work memory collector with grounded, editable knowledge"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = [
   "pypdf>=4,<7",
   "python-docx>=1.1,<2",
   "watchfiles>=0.24,<2",
+  "markdown-it-py>=3,<5",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,9 @@ worktwin = "worktwin.__main__:main"
 
 [tool.setuptools.package-data]
 worktwin = ["static/*"]
+
+[tool.setuptools.data-files]
+"share/worktwin/third_party/rowboat" = ["third_party/rowboat/LICENSE", "third_party/rowboat/NOTICE.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

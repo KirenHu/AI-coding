@@ -8,7 +8,9 @@ python -m pip install '.[package]'
 pyinstaller --clean --noconfirm --onedir --windowed --name WorkTwin \
   --collect-data worktwin --collect-submodules worktwin --collect-submodules uvicorn \
   desktop/launcher.py
+mkdir -p dist/WorkTwin.app/Contents/Resources/third_party/rowboat
+cp third_party/rowboat/* dist/WorkTwin.app/Contents/Resources/third_party/rowboat/
 mkdir -p release
 hdiutil create -volname 'WorkTwin Collector' -srcfolder dist/WorkTwin.app \
-  -ov -format UDZO release/WorkTwin-Collector-macOS.dmg
-echo 'Created release/WorkTwin-Collector-macOS.dmg (unsigned; not notarized)'
+  -ov -format UDZO release/WorkTwin-Collector-1.0.0-macOS-$(uname -m).dmg
+echo 'Created 1.0.0 macOS DMG (unsigned; not notarized)'

@@ -14,3 +14,10 @@ dist/
 release/
 *.dmg
 *.egg-info/
+
+worktwin-server-data/
+.env
+*.sqlite-wal
+*.sqlite-shm
+
+enterprise.env

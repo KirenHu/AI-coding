@@ -12,6 +12,7 @@ from pathlib import Path
 from .codex import parse_codex_session
 from .claude import parse_claude_session
 from .config import MAX_TEXT_CHARS
+from .rowboat_markdown import extract_title
 
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv",
@@ -80,7 +81,7 @@ def parse_file(path: Path, *, codex: bool = False, claude: bool = False) -> tupl
     text = text.replace("\x00", "").strip()
     text = re.sub(r"\n{4,}", "\n\n\n", text)
     title_match = re.search(r"^#{1,2}\s+(.+)$", text, flags=re.MULTILINE)
-    title = title_match.group(1).strip()[:100] if title_match else path.stem
+    title = (extract_title(text) or title_match.group(1).strip())[:100] if title_match else path.stem
     return title, text[:MAX_TEXT_CHARS]
 
 

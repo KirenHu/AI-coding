@@ -150,6 +150,11 @@ CREATE TABLE IF NOT EXISTS twins (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS publications (
+  twin_id INTEGER PRIMARY KEY REFERENCES twins(id) ON DELETE CASCADE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  remote_id TEXT
+);
 CREATE TABLE IF NOT EXISTS twin_knowledge (
   twin_id INTEGER NOT NULL REFERENCES twins(id) ON DELETE CASCADE,
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
@@ -176,11 +181,11 @@ class Database:
     def _migrate(conn: sqlite3.Connection) -> None:
         """Idempotent in-place upgrades from the 0.1 SQLite schema."""
         additions = {
-            "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0"},
+            "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0", "allow_share": "INTEGER NOT NULL DEFAULT 0"},
             "documents": {"project": "TEXT NOT NULL DEFAULT ''"},
             "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0"},
             "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1", "origin": "TEXT NOT NULL DEFAULT 'consolidation'"},
-            "ai_jobs": {"next_run_at": "TEXT"},
+            "ai_jobs": {"next_run_at": "TEXT", "claim_token": "TEXT"},
             "knowledge_evidence": {"is_current": "INTEGER NOT NULL DEFAULT 1", "occurred_at":"TEXT", "superseded":"INTEGER NOT NULL DEFAULT 0"},
         }
         for table, fields in additions.items():
@@ -192,8 +197,7 @@ class Database:
         conn.execute("UPDATE documents SET project=(SELECT name FROM sources WHERE sources.id=documents.source_id) WHERE project=''")
         conn.execute("UPDATE knowledge SET source_bound=1 WHERE fingerprint IS NOT NULL OR id IN (SELECT knowledge_id FROM knowledge_evidence)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_documents_project ON documents(project)")
-        # Jobs left in flight by an interrupted client can be retried safely.
-        conn.execute("UPDATE ai_jobs SET state='queued',next_run_at=NULL WHERE state='running'")
+
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
