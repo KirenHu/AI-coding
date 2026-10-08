@@ -1,3 +1,18 @@
+# WorkTwin Collector 1.0.1 · macOS 安装修复
+
+- 修复 macOS App 签名后的资源变更：Rowboat 许可证和声明现在在 PyInstaller 打包签名前纳入应用，不再复制到已签名的 .app 内。
+- PyInstaller 严格验证 App 代码签名与资源封装；DMG 构建后校验容器完整性。
+- GitHub macOS CI 不再只启动打包目录里的可执行文件，而是挂载最终 DMG、校验签名、复制到独立应用目录并进行真实 SQLite / HTTP 启停测试。
+- macOS Gatekeeper 评估被明确记录：**ad-hoc 签名不能代替 Developer ID 与 Apple 公证**，公开测试安装包标注 `-unsigned`。
+- 新增 [macOS 安装/校验和/问题排查](docs/MACOS_INSTALL.md)，说明如何在验证来源后进行仅针对 WorkTwin 的单应用安全例外。
+- 1.0.1 为打包与安装可靠性修复版，业务功能不变，数据结构不变；禁止在公开仓库提交用户数据或签名凭据。
+
+## 仍需补充的发布条件
+
+普通员工浏览器下载后免例外安装，必须拥有 Apple Developer ID Application 签名证书和 Apple `notarytool` 公证凭据。当前公共 CI 尚未配置，**不能宣称本版已被 Apple 信任**。没有在用户本人 macOS 上完成独立的首次安装验收。
+
+---
+
 # WorkTwin Collector 1.0.0
 
 本地采集 → 可核对、可维护的知识 → 按知识授权的数字分身 → 可到期、可撤销的远程访问，形成可运行的完整试点闭环。
