@@ -41,7 +41,8 @@ jobs:
         run: |
           python -m build
           mkdir -p release
-          git archive HEAD:worktwin-collector --format=zip -o release/WorkTwin-Collector-1.0.0-source.zip
+          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.0.0-source.zip"
+          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.0.0-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
           cp dist/*.whl dist/*.tar.gz release/
       - uses: actions/upload-artifact@v4
         with:
@@ -108,6 +109,8 @@ jobs:
           cd release-assets
           sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
           cd ..
-          if ! gh release view worktwin-v1.0.0 >/dev/null 2>&1; then
+          if gh release view worktwin-v1.0.0 >/dev/null 2>&1; then
+            gh release upload worktwin-v1.0.0 release-assets/* --clobber
+          else
             gh release create worktwin-v1.0.0 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.0.0" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
           fi
