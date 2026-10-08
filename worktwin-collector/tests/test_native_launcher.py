@@ -31,3 +31,23 @@ def test_regular_python_stdout_is_not_modified(monkeypatch):
         patch.setattr(sys, "frozen", False, raising=False)
         _configure_frozen_stdio()
         assert sys.stdout is current
+
+
+def test_frozen_unicode_logging_with_legacy_console_encoding(tmp_path, monkeypatch):
+    import io
+
+    legacy_stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    with monkeypatch.context() as patch:
+        patch.setenv("WORKTWIN_DATA_DIR", str(tmp_path))
+        patch.setattr(sys, "frozen", True, raising=False)
+        patch.setattr(sys, "stdout", legacy_stream)
+        patch.setattr(sys, "stderr", legacy_stream)
+        _configure_frozen_stdio()
+        assert sys.stdout.encoding.lower().replace("-", "") == "utf8"
+        sys.stdout.write("已采集并整理知识库\\n")
+        sys.stdout.flush()
+        logfile = sys.stdout
+
+    logfile.close()
+    legacy_stream.close()
+    assert "已采集并整理知识库" in (tmp_path / "worktwin-launch.log").read_text(encoding="utf-8")
