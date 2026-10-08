@@ -119,7 +119,7 @@ function renderKnowledgeList(){
   content.querySelectorAll('.filter-button').forEach(x=>x.classList.toggle('active',state.kind===x.dataset.filter));
   if(state.project==='reviews'){
     el('knowledge-count').textContent=`${state.proposals.length} 项`;
-    el('knowledge-list').innerHTML=state.proposals.length?`<div class="knowledge-list">${state.proposals.map(p=>`<button class="knowledge-row" data-proposal="${p.id}"><span class="page-icon">${icon('alert')}</span><span class="knowledge-info"><div class="knowledge-title">${esc(p.previous_title)}</div><div class="knowledge-preview">${esc({enrich:'建议补充知识',replace:'发现新版本结论',conflict:'发现可能矛盾的结论'}[p.action])} · ${short(p.reason,100)}</div><div class="knowledge-meta">${esc(p.project)} · ${esc(p.source_title)}</div></span><span class="state-label warn">待确认</span>${icon('chevron')}</button>`).join('')}</div>`:emptyState('check','暂无待核对的知识更新','当新资料与现有知识有关联或冲突时，会在这里等待你确认。');
+    el('knowledge-list').innerHTML=state.proposals.length?`<div class="knowledge-list">${state.proposals.map(p=>`<button class="knowledge-row" data-proposal="${p.id}"><span class="page-icon">${icon('alert')}</span><span class="knowledge-info"><div class="knowledge-title">${esc(p.previous_title)}</div><div class="knowledge-preview">${esc(p.origin==='curation'?'定期知识养护':{enrich:'建议补充知识',replace:'发现新版本结论',conflict:'发现可能矛盾的结论'}[p.action])} · ${short(p.reason,100)}</div><div class="knowledge-meta">${esc(p.project)} · ${esc(p.source_title)}</div></span><span class="state-label warn">待确认</span>${icon('chevron')}</button>`).join('')}</div>`:emptyState('check','暂无待核对的知识更新','当新资料与现有知识有关联或冲突时，会在这里等待你确认。');
     el('knowledge-list').querySelectorAll('[data-proposal]').forEach(x=>x.onclick=()=>openProposal(Number(x.dataset.proposal)));
     return;
   }
@@ -131,8 +131,8 @@ function renderKnowledgeList(){
 }
 async function openProposal(id){
   const p=state.proposals.find(x=>x.id===id);if(!p)return;
-  const actionLabel={enrich:'补充旧知识',replace:'替换为最新结论',conflict:'处理知识冲突'}[p.action]||'更新知识';
-  dialog('核对知识更新',`<div class="proposal-intro"><span class="state-label warn">${actionLabel}</span><p>${esc(p.reason)}</p></div><div class="proposal-grid"><section><h3>当前知识 · v${p.previous_version}</h3><h4>${esc(p.previous_title)}</h4><div class="proposal-body">${esc(p.previous_body)}</div></section><section><h3>AI 建议的新版本</h3><h4>${esc(p.title)}</h4><div class="proposal-body">${esc(p.body)}</div></section></div><div class="source-reference"><h3>来自 ${esc(p.source_title)}</h3><div class="ref-quote">${esc(p.quote)}</div><button class="info-link" id="proposal-read-source">打开原始资料 ${icon('arrow')}</button></div><p class="field-note">仅供人工核对。接受后才会更新知识，自动记录旧版本；未确认时分身不可引用这篇知识。</p>`,
+  const actionLabel=p.origin==='curation'?'知识养护建议':({enrich:'补充旧知识',replace:'替换为最新结论',conflict:'处理知识冲突'}[p.action]||'更新知识');
+  dialog('核对知识更新',`<div class="proposal-intro"><span class="state-label warn">${actionLabel}</span><p>${esc(p.reason)}</p></div><div class="proposal-grid"><section><h3>当前知识 · v${p.previous_version}</h3><h4>${esc(p.previous_title)}</h4><div class="proposal-body">${esc(p.previous_body)}</div></section><section><h3>AI 建议的新版本</h3><h4>${esc(p.title)}</h4><div class="proposal-body">${esc(p.body)}</div></section></div><div class="source-reference"><h3>来自 ${esc(p.source_title)}</h3><div class="ref-quote">${esc(p.quote)}</div><button class="info-link" id="proposal-read-source">打开原始资料 ${icon('arrow')}</button></div><p class="field-note">${p.origin==='curation'?'整理建议不会立即改写已发布知识，分身仍可引用当前版本。确认后记录历史版本。':'仅供人工核对。接受后才会更新知识，自动记录旧版本；未确认时分身不可引用这篇知识。'}</p>`,
     `<button class="btn secondary" id="proposal-dismiss">忽略此更新</button><button class="btn" id="proposal-accept">确认并更新</button>`,true);
   el('proposal-read-source').onclick=()=>showDocument(p.document_id);
   for(const [button,verb] of [['proposal-accept','accept'],['proposal-dismiss','dismiss']]){
