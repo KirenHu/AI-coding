@@ -4,14 +4,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 import threading
 import webbrowser
 from pathlib import Path
 
-from .config import DEFAULT_PORT, database_path
+from .config import DEFAULT_PORT, data_dir, database_path
+
+
+def _configure_frozen_stdio() -> None:
+    """A windowed Windows executable has no standard streams by default.
+
+    Uvicorn and even the startup print() must have working streams; persist
+    diagnostics in the user's own app-data folder rather than crashing before
+    the desktop UI is available.
+    """
+    if not getattr(sys, "frozen", False) or (sys.stdout is not None and sys.stderr is not None):
+        return
+    try:
+        folder = data_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        logfile = open(folder / "worktwin-launch.log", "a", encoding="utf-8", buffering=1)
+    except OSError:
+        logfile = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = logfile
+    if sys.stderr is None:
+        sys.stderr = logfile
 
 
 def main():
+    _configure_frozen_stdio()
     parser = argparse.ArgumentParser(description="WorkTwin Collector — local work knowledge")
     parser.add_argument("command", nargs="?", choices=["serve", "scan", "where"], default="serve")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
