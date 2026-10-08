@@ -151,3 +151,20 @@ def test_gardener_skips_oversized_notes_instead_of_truncating(tmp_path):
                         ("这篇知识包含多个重要决策，不能在发送模型前截断。\n" * 350, kid))
         assert app.state.knowledge_worker.gardener.process_next()["state"] == "idle"
         assert not model.calls
+
+
+def test_daily_byok_budget_stops_low_priority_curation(tmp_path):
+    app, folder, model, _ = setup(tmp_path)
+    with TestClient(app) as client:
+        prep(client, app, folder, True)
+        with app.state.db.connect() as con:
+            for index in range(8):
+                row = con.execute("""INSERT INTO knowledge
+                  (kind,title,body,status,created_by,source_bound)
+                  VALUES ('fact', ?, '已核实事实', 'confirmed', 'human', 0)""",
+                  (f"预算哨兵 {index}",))
+                con.execute("""INSERT INTO knowledge_curation_runs
+                   (knowledge_id,last_version,attempted_at,status)
+                   VALUES (?,1,datetime('now'),'unchanged')""", (row.lastrowid,))
+        assert app.state.knowledge_worker.gardener.process_next()["state"] == "daily_limit"
+        assert model.calls == []
