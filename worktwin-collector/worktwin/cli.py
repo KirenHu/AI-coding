@@ -14,13 +14,13 @@ from .config import DEFAULT_PORT, data_dir, database_path
 
 
 def _configure_frozen_stdio() -> None:
-    """A windowed Windows executable has no standard streams by default.
+    """Log all native --windowed output with UTF-8, regardless of Windows codepage.
 
-    Uvicorn and even the startup print() must have working streams; persist
-    diagnostics in the user's own app-data folder rather than crashing before
-    the desktop UI is available.
+    Frozen Windows apps sometimes have no streams; when a parent process does
+    provide inherited console streams, those may still use cp1252 and crash on
+    Chinese text. An app-owned UTF-8 file works for both cases.
     """
-    if not getattr(sys, "frozen", False) or (sys.stdout is not None and sys.stderr is not None):
+    if not getattr(sys, "frozen", False):
         return
     try:
         folder = data_dir()
@@ -28,10 +28,8 @@ def _configure_frozen_stdio() -> None:
         logfile = open(folder / "worktwin-launch.log", "a", encoding="utf-8", buffering=1)
     except OSError:
         logfile = open(os.devnull, "w", encoding="utf-8")
-    if sys.stdout is None:
-        sys.stdout = logfile
-    if sys.stderr is None:
-        sys.stderr = logfile
+    sys.stdout = logfile
+    sys.stderr = logfile
 
 
 def main():
