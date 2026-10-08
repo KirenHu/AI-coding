@@ -1,8 +1,8 @@
-# WorkTwin Collector 1.0
+# WorkTwin Collector 1.0.1
 
 把日常工作记录整理成可以阅读、修改、持续维护并授权给数字分身的个人知识库。客户端本地采集，企业服务器统一支付模型费用，并保存明确允许分享的知识快照。
 
-[下载 1.0 安装包与源码](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.0.0) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
+[下载 1.0 安装包与源码](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.0.1) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
 
 ## 三个入口
 
@@ -16,7 +16,7 @@
 
 ## 安装与开始使用
 
-发布提供 macOS Apple Silicon / Intel 的 DMG、Windows x64 ZIP，以及 Python wheel / 源码。Windows 解压后运行 `WorkTwin/WorkTwin.exe`；macOS 将 WorkTwin.app 拖入应用目录。桌面包未签名、未公证，组织可自行签名并分发。
+发布提供 macOS Apple Silicon / Intel 的 DMG、Windows x64 ZIP，以及 Python wheel / 源码。Windows 解压后运行 `WorkTwin/WorkTwin.exe`；macOS 将 WorkTwin.app 拖入应用目录。**macOS 包已通过代码签名完整性检测，但仍为未经过 Apple Developer ID 签名、公证的测试包，首次 Finder 打开可能被 Gatekeeper 拦截。请先阅读 [macOS 安装说明与签名排查](docs/MACOS_INSTALL.md)；不能认为“CI 启动成功”意味着下载后可以无提示双击。**
 
 源码安装需要 Python 3.11+：
 
@@ -61,7 +61,7 @@ python -m build
 
 自动验收使用合成资料和确定性测试模型，覆盖真实 HTTP、SQLite、浏览器与打包应用启动。真实付费模型效果、员工历史资料准确率、企业 SSO、系统长期休眠唤醒、签名和公证仍需要组织环境验证，1.0 不宣称已经完成这些验收。
 
-[架构](docs/ARCHITECTURE.md) · [后续工作](docs/ROADMAP.md) · [评测](docs/EVALUATION.md) · [开源组件](docs/OSS.md)
+[macOS 安装和 Gatekeeper 排查](docs/MACOS_INSTALL.md) · [架构](docs/ARCHITECTURE.md) · [后续工作](docs/ROADMAP.md) · [评测](docs/EVALUATION.md) · [开源组件](docs/OSS.md)
 
 ## 许可证
 
