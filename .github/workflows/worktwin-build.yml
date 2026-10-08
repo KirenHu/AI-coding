@@ -1,0 +1,51 @@
+name: Desktop builds
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
+permissions:
+  contents: read
+defaults:
+  run:
+    working-directory: worktwin-collector
+jobs:
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e '.[test]'
+      - run: python -m pytest -q
+      - run: PYTHONPATH=. python scripts/acceptance_benchmark.py
+      - run: PYTHONPATH=. python scripts/http_acceptance.py
+  macos:
+    if: github.event_name == 'workflow_dispatch'
+    needs: python-test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: ./desktop/build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WorkTwin-macOS-unsigned
+          path: worktwin-collector/release/*.dmg
+  windows:
+    if: github.event_name == 'workflow_dispatch'
+    needs: python-test
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - shell: pwsh
+        run: ./desktop/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WorkTwin-Windows-unsigned
+          path: worktwin-collector/dist/WorkTwin/
