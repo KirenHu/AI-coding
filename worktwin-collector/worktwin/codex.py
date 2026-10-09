@@ -1,13 +1,15 @@
-"""Best-effort adapter for locally stored Codex CLI JSONL session files.
+"""Read visible Codex session dialogue and minimal tool-execution evidence.
 
-Codex JSONL is not a stable public data contract; this parser deliberately
-supports several known message envelopes and ignores private reasoning content.
+Codex local JSONL is not a stable API. Unknown events are skipped; neither
+private reasoning nor raw tool inputs/outputs are copied into model context.
 """
-
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
+
+from .action_trace import exit_code_from_output, render_action
 
 
 def _plain_parts(value: object) -> str:
@@ -27,16 +29,18 @@ def _plain_parts(value: object) -> str:
 
 
 def parse_codex_session(path: Path) -> tuple[str, str]:
-    """Return (human-friendly title, transcript) without reasoning or prompts injected by tools."""
+    """Return a human-readable session, with tool status but no tool payload."""
     response_messages: list[tuple[str, str, str]] = []
     event_messages: list[tuple[str, str, str]] = []
+    actions: list[dict] = []
+    by_call_id: dict[str, dict] = {}
     cwd = ""
     session_id = ""
     with path.open("r", encoding="utf-8", errors="replace") as stream:
         for line in stream:
             try:
                 event = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, TypeError):
                 continue
             if not isinstance(event, dict):
                 continue
@@ -44,19 +48,40 @@ def parse_codex_session(path: Path) -> tuple[str, str]:
             payload = event.get("payload")
             if not isinstance(payload, dict):
                 continue
-            timestamp = str(event.get("timestamp", ""))[:19].replace("T", " ")
+            timestamp = str(event.get("timestamp") or "")[:19].replace("T", " ")
             if kind == "session_meta":
                 cwd = str(payload.get("cwd") or "")
                 session_id = str(payload.get("id") or "")
-            elif kind == "response_item" and payload.get("type") == "message":
-                role = payload.get("role")
-                if role not in ("user", "assistant"):
-                    continue
-                msg = _plain_parts(payload.get("content"))
-                # System instructions, tool payloads and private chains of thought
-                # are deliberately excluded from this knowledge ingestion path.
-                if msg and not msg.startswith("<environment_context>"):
-                    response_messages.append((role, timestamp, msg))
+            elif kind == "response_item":
+                typ = payload.get("type")
+                if typ == "message":
+                    role = payload.get("role")
+                    if role not in ("user", "assistant"):
+                        continue
+                    msg = _plain_parts(payload.get("content"))
+                    if msg and not msg.startswith("<environment_context>"):
+                        response_messages.append((role, timestamp, msg))
+                elif typ in ("function_call", "custom_tool_call"):
+                    # Preserve only tool identity and outcome. Arguments may
+                    # embed credentials, source files or injected instructions.
+                    call_id = str(payload.get("call_id") or "")
+                    action = {"ts": timestamp, "name": payload.get("name") or "unknown_tool",
+                              "done": False, "failed": False, "exit_code": None}
+                    actions.append(action)
+                    if call_id:
+                        by_call_id[call_id] = action
+                elif typ in ("function_call_output", "custom_tool_call_output"):
+                    call_id = str(payload.get("call_id") or "")
+                    action = by_call_id.get(call_id)
+                    if action is None:
+                        # A truncated JSONL can contain only the result half.
+                        action = {"ts": timestamp, "name": "unknown_tool", "done": False,
+                                  "failed": False, "exit_code": None}
+                        actions.append(action)
+                    action["done"] = True
+                    output = payload.get("output")
+                    action["exit_code"] = exit_code_from_output(output)
+                    action["failed"] = payload.get("is_error") is True
             elif kind == "event_msg":
                 typ = payload.get("type")
                 if typ not in ("user_message", "agent_message"):
@@ -65,10 +90,6 @@ def parse_codex_session(path: Path) -> tuple[str, str]:
                 msg = payload.get("message")
                 if isinstance(msg, str) and msg.strip():
                     event_messages.append((role, timestamp, msg.strip()))
-    # Mixed-format sessions can contain event-only turns even when response_item
-    # exists for that role. Deduplicate by text AND close timestamp, never by
-    # speaker alone (which silently lost legitimate work records in v0.1).
-    from datetime import datetime
 
     def near(a: str, b: str) -> bool:
         if a == b:
@@ -85,20 +106,29 @@ def parse_codex_session(path: Path) -> tuple[str, str]:
             messages.append(candidate)
     messages.sort(key=lambda m: m[1])
     ordered: list[tuple[str, str, str]] = []
-    for role, ts, content in messages:
-        if ordered and ordered[-1][0] == role and ordered[-1][2] == content:
+    for role, ts, msg in messages:
+        if ordered and ordered[-1][0] == role and ordered[-1][2] == msg:
             continue
-        ordered.append((role, ts, content))
-    if not ordered:
+        ordered.append((role, ts, msg))
+    if not ordered and not actions:
         return path.stem, ""
-    first_question = next((text for role, _, text in ordered if role == "user"), "")
+    first_question = next((msg for role, _, msg in ordered if role == "user"), "")
     title = " ".join(first_question.split())[:76] or f"Codex 会话 {path.stem}"
-    chunks = []
+    lines = []
     if cwd:
-        chunks.append(f"工作目录：{cwd}")
+        lines.append(f"工作目录：{cwd}")
     if session_id:
-        chunks.append(f"会话 ID：{session_id}")
-    for role, ts, content in ordered:
+        lines.append(f"会话 ID：{session_id}")
+    timeline: list[tuple[str, int, str]] = []
+    for index, (role, ts, msg) in enumerate(ordered):
         name = "用户" if role == "user" else "AI"
-        chunks.append(f"### {name} · {ts}\n{content}")
-    return title, "\n\n".join(chunks)
+        timeline.append((ts, index, f"### {name} · {ts}\n{msg}"))
+    offset = len(ordered)
+    for index, action in enumerate(actions):
+        timeline.append((action["ts"], offset + index,
+                         render_action(action["ts"], action["name"],
+                                       result=action["done"], failed=action["failed"],
+                                       exit_code=action["exit_code"])))
+    timeline.sort(key=lambda record: (record[0], record[1]))
+    lines.extend(item[2] for item in timeline)
+    return title, "\n\n".join(lines)
