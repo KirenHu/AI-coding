@@ -26,7 +26,9 @@ class DeterministicModel:
             return json.dumps({'items': []}, ensure_ascii=False)
         return json.dumps({'items': [
             {'kind': 'decision', 'title': '审批以工作流节点实现',
-             'body': '审批复用工作流上下文和路由机制。', 'quote': anchor}
+             'body': '审批复用工作流上下文和路由机制。', 'quote': anchor,
+             'topic':'审批架构','scope_detail':'本项目的审批能力',
+             'value_reason':'查阅本项目审批的架构决策','attribution':'document','outcome':'none'}
         ]}, ensure_ascii=False)
 
 

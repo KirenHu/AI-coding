@@ -40,6 +40,7 @@ from .jobs import KnowledgeWorker
 from .search import search
 from .reconcile import review_flags, resolve_proposal
 from .answer_policy import check_answer
+from .scope import document_scope, scope_description, snapshot_history
 
 STATIC = Path(__file__).parent / "static"
 
@@ -59,6 +60,39 @@ class KnowledgeInput(BaseModel):
     status: Literal["draft", "confirmed", "archived"] = "draft"
     document_id: int | None = None
     quote: str | None = None
+    scope: Literal['project','session','global','unknown'] | None = None
+    project: str | None = Field(default=None,max_length=200)
+    project_key: str | None = Field(default=None,max_length=1000)
+    topic: str | None = Field(default=None,max_length=100)
+    scope_detail: str | None = Field(default=None,max_length=500)
+    quality: Literal['useful','uncertain','noise'] | None = None
+
+
+def knowledge_metadata(payload, old=None, document=None):
+    base = dict(old) if old is not None else {'scope':'global','project':'','project_key':'',
+        'topic':payload.title,'scope_detail':'跨项目适用的人工知识','quality':'useful'}
+    if document is not None and old is None:
+        base.update(document_scope(document))
+        base['scope_detail']='仅适用于来源资料描述的工作'
+    for key in ('scope','project','project_key','topic','scope_detail','quality'):
+        value=getattr(payload,key)
+        if value is not None:
+            base[key]=value.strip() if isinstance(value,str) else value
+    if old is not None and payload.project_key is None and (
+            (payload.project is not None and payload.project.strip()!=old['project']) or
+            (payload.scope is not None and payload.scope!=old['scope'])):
+        # Moving a note to a business project must move its retrieval boundary,
+        # not just rename the display label while retaining a session key.
+        base['project_key']=''
+    if base['scope'] in ('project','session') and not base['project_key']:
+        if not base['project']:
+            raise HTTPException(400,'请填写所属项目或讨论名称')
+        base['project_key']='manual:'+hashlib.sha256(base['project'].encode()).hexdigest()[:24]
+    if base['scope']=='global':
+        base['project']='';base['project_key']=''
+    if payload.status=='confirmed' and (base['scope']=='unknown' or not base['scope_detail'] or not base['topic']):
+        raise HTTPException(400,'请先核对主题和适用范围，再确认知识')
+    return base
 
 
 class SourcePermissionInput(BaseModel):
@@ -67,6 +101,10 @@ class SourcePermissionInput(BaseModel):
 
 class SharePermissionInput(BaseModel):
     allow_share: bool
+
+
+class KnowledgeBatchInput(BaseModel):
+    knowledge_ids: list[int] = Field(min_length=1,max_length=1000)
 
 
 class ShareInput(BaseModel):
@@ -92,6 +130,7 @@ class TwinKnowledgeInput(BaseModel):
 class AskInput(BaseModel):
     question: str = Field(min_length=2, max_length=500)
     scope: Literal['local','published'] = 'local'
+    project_key: str | None = Field(default=None,max_length=1000)
 
 
 class EditionInput(BaseModel):
@@ -381,6 +420,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 row['share_unavailable_reason']=unavailable_reason(con,row,sharing=True)
                 row['can_use']=not row['unavailable_reason']
                 row['can_share']=not row['share_unavailable_reason']
+                row['scope_label']=scope_description(row)
             return rows
 
     @app.get('/api/knowledge-counts')
@@ -403,14 +443,36 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(knowledge_id,))]
             return result
 
+    @app.post('/api/knowledge/reprocess',dependencies=[Depends(authorized)])
+    def reprocess_knowledge():
+        with db.connect() as con:
+            docs=con.execute('''SELECT d.id,d.sha256 FROM documents d JOIN sources s ON s.id=d.source_id
+                WHERE s.enabled=1 AND s.allow_ai=1 AND d.deleted=0''').fetchall()
+            for d in docs:
+                con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state,attempts) VALUES(?,?,'queued',0)
+                    ON CONFLICT(document_id) DO UPDATE SET content_sha=excluded.content_sha,state='queued',attempts=0,
+                    error=NULL,next_run_at=NULL,claim_token=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
+        knowledge_worker.schedule()
+        return {'queued':len(docs)}
+
+    @app.post('/api/knowledge/disable',dependencies=[Depends(authorized)])
+    def disable_knowledge(payload: KnowledgeBatchInput):
+        with db.connect() as con:
+            for kid in set(payload.knowledge_ids):
+                old=con.execute('SELECT * FROM knowledge WHERE id=?',(kid,)).fetchone()
+                if old is None:
+                    raise HTTPException(404,'所选知识不存在')
+                snapshot_history(con,old)
+                con.execute("UPDATE knowledge SET quality='noise',quality_reason='用户停用：不适合作为工作知识',version=version+1,updated_at=datetime('now') WHERE id=?",(kid,))
+        return {'disabled':len(set(payload.knowledge_ids))}
+
     @app.post('/api/knowledge/{knowledge_id}/restore',dependencies=[Depends(authorized)])
     def restore_knowledge(knowledge_id: int):
         with db.connect() as con:
             old=con.execute('SELECT * FROM knowledge WHERE id=?',(knowledge_id,)).fetchone()
             if not old or old['status']!='archived':
                 raise HTTPException(400,'只能恢复已归档的知识')
-            con.execute('INSERT INTO knowledge_history(knowledge_id,version,kind,title,body,status) VALUES(?,?,?,?,?,?)',
-                        (knowledge_id,old['version'],old['kind'],old['title'],old['body'],old['status']))
+            snapshot_history(con,old)
             con.execute("UPDATE knowledge SET status='draft',version=version+1,updated_at=datetime('now') WHERE id=?",(knowledge_id,))
             review_flags(con,[knowledge_id])
         return {'restored':True,'status':'draft'}
@@ -426,8 +488,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def create_knowledge(payload: KnowledgeInput):
         with db.connect() as con:
             linked_chunk = None
+            document=None
             if payload.document_id is not None:
-                row = con.execute("SELECT content FROM documents WHERE id=?", (payload.document_id,)).fetchone()
+                row = con.execute("SELECT * FROM documents WHERE id=?", (payload.document_id,)).fetchone()
                 if not row:
                     raise HTTPException(404, "引用的文档不存在")
                 if not payload.quote or len(payload.quote.strip()) < 8 or payload.quote not in row["content"]:
@@ -435,9 +498,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 chunk = con.execute("SELECT id FROM chunks WHERE document_id=? AND instr(text,?)>0 ORDER BY ordinal LIMIT 1",
                                     (payload.document_id, payload.quote[:60])).fetchone()
                 linked_chunk = chunk["id"] if chunk else None
+                document=row
+            metadata=knowledge_metadata(payload,document=document)
             res = con.execute("INSERT INTO knowledge(kind,title,body,status,created_by,source_bound) VALUES(?,?,?,?, 'human',?)",
                               (payload.kind,payload.title,payload.body,payload.status, int(payload.document_id is not None)))
             know_id = int(res.lastrowid)
+            con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=? WHERE id=?',
+                        (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],know_id))
             if payload.document_id is not None:
                 con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,chunk_id,quote) VALUES(?,?,?,?)",
                             (know_id,payload.document_id,linked_chunk,payload.quote))
@@ -450,11 +517,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             old = con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
             if not old:
                 raise HTTPException(404,"知识不存在")
-            con.execute("INSERT INTO knowledge_history(knowledge_id,version,kind,title,body,status) VALUES(?,?,?,?,?,?)",
-                        (knowledge_id,old["version"],old["kind"],old["title"],old["body"],old["status"]))
+            metadata=knowledge_metadata(payload,old=old)
+            snapshot_history(con,old)
             con.execute("""UPDATE knowledge SET kind=?,title=?,body=?,status=?,version=version+1,
                 created_by='human',review_hold=0,updated_at=datetime('now') WHERE id=?""",
                         (payload.kind,payload.title,payload.body,payload.status,knowledge_id))
+            con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=?,attribution=? WHERE id=?',
+                        (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],
+                         'human' if payload.body!=old['body'] else old['attribution'],knowledge_id))
             review_flags(con, [knowledge_id])
         db.event("knowledge_updated",f"人工修订：{payload.title}")
         return {"updated":True}
@@ -882,7 +952,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         if payload.scope=='published':
             try:
                 pubid=publisher.public_id(twin_id)
-                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',{'question':payload.question})
+                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',{'question':payload.question,'project_key':payload.project_key})
             except Exception as exc:
                 raise HTTPException(503,'无法读取当前已发布版本，请检查分享服务或先启用分享') from exc
         if not model_client.configured:
@@ -891,7 +961,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             twin = con.execute("SELECT name,description FROM twins WHERE id=?",(twin_id,)).fetchone()
             if not twin:
                 raise HTTPException(404,"数字分身不存在")
-            rows = [dict(x) for x in con.execute("""SELECT k.id,k.title,k.body,k.version FROM twin_knowledge tk
+            rows = [dict(x) for x in con.execute("""SELECT k.* FROM twin_knowledge tk
                 JOIN knowledge k ON k.id=tk.knowledge_id
                 WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))]
             for r in rows:
@@ -906,7 +976,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 JOIN documents d ON d.id=e.document_id JOIN sources s ON s.id=d.source_id
                 WHERE e.knowledge_id=? AND s.allow_ai=0 LIMIT 1""",(r['id'],)).fetchone()]
         try:
-            result=answer_from_knowledge(model_client,payload.question,rows)
+            result=answer_from_knowledge(model_client,payload.question,rows,project_key=payload.project_key)
         except Exception as exc:
             raise HTTPException(502,"模型请求失败，请检查设置、服务额度或稍后重试") from exc
         # Recheck authorization after a slow model call.
@@ -973,7 +1043,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/export", dependencies=[Depends(authorized)])
     def export():
         with db.connect() as con:
-            rows = [dict(r) for r in con.execute("SELECT id,kind,title,body,status,version,needs_review,updated_at FROM knowledge WHERE status!='archived' ORDER BY id")]
+            rows = [dict(r) for r in con.execute("SELECT id,kind,title,body,status,version,needs_review,updated_at,scope,project,project_key,topic,scope_detail,quality,quality_reason,attribution,outcome FROM knowledge WHERE status!='archived' ORDER BY id")]
             for row in rows:
                 row["evidence"] = [dict(e) for e in con.execute("SELECT d.title AS document_title,d.relative_path,e.quote,e.is_current,e.occurred_at FROM knowledge_evidence e JOIN documents d ON e.document_id=d.id WHERE e.knowledge_id=?",(row["id"],))]
         response = JSONResponse({"schema":"worktwin-knowledge-v1","entries":rows})

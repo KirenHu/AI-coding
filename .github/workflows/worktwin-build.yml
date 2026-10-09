@@ -39,6 +39,10 @@ jobs:
         run: PYTHONPATH=. python scripts/ui_sharing_acceptance.py
       - name: Browser acceptance of personal and enterprise settings
         run: PYTHONPATH=. python scripts/ui_settings_acceptance.py
+      - name: Settings remain reachable with long lists and short windows
+        env:
+          WORKTWIN_UI_LAYOUT_SCREENSHOT: release/WorkTwin-layout.png
+        run: PYTHONPATH=. python scripts/ui_layout_acceptance.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

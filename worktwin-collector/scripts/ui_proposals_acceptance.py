@@ -40,7 +40,7 @@ def main():
                 html=client.get('/').text
                 token=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',html).group(1)
                 headers={'X-Worktwin-Token':token}
-                assert client.post('/api/sources',headers=headers,json={'name':'工作资料','root':str(document.parent)}).status_code==200
+                assert client.post('/api/sources',headers=headers,json={'name':'工作资料','root':str(document.parent),'allow_ai':True}).status_code==200
                 for _ in range(60):
                     docs=client.get('/api/documents',headers=headers).json()
                     if docs:break

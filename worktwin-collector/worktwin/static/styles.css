@@ -25,3 +25,14 @@
 @media(max-width:900px){.source-item{grid-template-columns:1fr auto;gap:13px}.source-item .source-summary{grid-column:1/-1}.scan-status{align-items:flex-start;gap:12px;flex-wrap:wrap}.limit-fields{grid-template-columns:1fr}}@media(max-width:550px){.settings-section,.processing-panel{padding:18px}.edition-options{grid-template-columns:1fr}.filters{overflow:auto}.selection-head,.selection-footer{flex-wrap:wrap}}
 
 .model-discovery{margin:8px 0 20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+
+/* Navigation stays in the viewport; only the work area scrolls. */
+html,body{height:100%;overflow:hidden}
+.app-shell{height:100vh;height:100dvh;min-height:0;overflow:hidden}
+.sidebar{height:100%;min-height:0;flex-shrink:0;overflow:hidden}
+.brand,.sidebar-subtitle,.sidebar-foot{flex-shrink:0}
+.main-nav{min-height:0;overflow-y:auto}
+.sidebar-fill{min-height:8px}
+.sidebar-foot{margin-top:auto}
+.main-area{height:100%;min-height:0;overflow:auto;overscroll-behavior:contain}
+@media(max-height:520px){.sidebar{padding-top:12px;padding-bottom:8px}.sidebar-subtitle{margin-top:14px}.privacy-small,.version-text{display:none}.sidebar-foot{padding-top:6px}.settings-link{margin-bottom:6px}.model-status{margin-bottom:4px}}

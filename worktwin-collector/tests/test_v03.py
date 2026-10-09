@@ -39,7 +39,10 @@ def test_enterprise_extraction_never_reads_assistant_as_employee():
     result=extract_knowledge(transcript,transcript=True,client=fake)
     assert len(result)==1
     assert result[0]['kind']=='preference'
-    assert all('放弃知识溯源' not in str(x) for x in fake.requests)
+    # The assistant proposal is needed as discussion context, but must not
+    # become an employee decision without attributable acceptance.
+    assert any('放弃知识溯源' in str(x) for x in fake.requests)
+    assert all('放弃知识溯源' not in x['body'] for x in result)
 
 
 def test_manual_evidence_requires_verbatim_quote(tmp_path):

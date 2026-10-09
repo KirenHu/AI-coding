@@ -118,3 +118,48 @@ Electron 主程序、Node 工具总线或 Harbor 协作后端当成 WorkTwin 运
 - Open WebUI Connections：`65f1e54207b8f4f8464e1f30cf88aaa618b83b21`
 - Open WebUI openai.py：`63676d166e9174cb118fb965ebb717d98a65bf42`
 - Open WebUI LICENSE：`99f39e7feff29c93342877adad2d5c15e707444c`
+
+
+## 8. 后台本地知识工具的选型复核（2026-10-09）
+
+用户目标明确为：本地后台运行；输入文件夹、浏览器操作、Codex/Claude Code 会话；持续编纂连贯知识；对外提供 MCP。不能将个人秘书或协作工作台当成相同产品。
+
+本轮检查官方文档、仓库元信息及实际源码，尚未在用户 Mac 上完成候选安装包验收。Star 是社区规模线索，不证明功能符合或知识准确。
+
+| 项目（本轮约 Star） | 核查的机制和源码 | 为什么这样设计 / 对本项目的价值 | 替代结论 |
+|---|---|---|---|
+| Rowboat（18,000） | knowledge/note_creation.ts、note_curation.ts、Chrome 扩展、Harbor MCP 协议 | 增量生成与周期整理分开，避免笔记只增不减；原位改写，保留重要决定和链接，日期与未完成事项清理，推断降级为观察 | 知识维护策略可参考；完整秘书/协作主程序不符合产品形态。Harbor MCP 面向协作空间，不能等同于读取个人 Brain |
+| Screenpipe（21,900） | 官方 README、当前 LICENSE、screenpipe-mcp/src/index.ts 与 README | 按发生时间、应用与网址索引活动；MCP 按需检索记录和记忆，比给 AI 全量录屏历史更可控 | 采集与 MCP 最接近；未确认开箱即用满足文件知识编纂与项目归属。当前采用商业许可证，不作为可免费商用复制的底座 |
+| Dayflow（7,200） | 原生 Mac 应用说明、dayflow-cli/Sources/dayflow/MCPServer.swift、Codex MCP 注册代码 | 先提供低开销时间摘要，再按需读取活动详细内容，避免每次加载完整活动 | 工作日志工具，未确认完整文件知识库能力；主分支已存在 MCP，不能沿用旧“无 MCP”介绍；安装包包含情况未实测 |
+| Khoj（37,600） | 文档 Entry/FileObject、分块处理、结构化检索过滤 | 原文、文件、标题与分块分别保存，增量索引和过滤保持可追溯，过滤先于相关性排序 | 文档检索值得参考；未确认持续操作采集与主题知识维护，不能直接替代 |
+| Onyx（32,400） | 检索权限过滤、受约束文档集合、权限模型 | 读取范围通过实际查询约束，不能仅依赖提示词；来源权限未知时保守处理 | 企业搜索服务形态不符；权限联动中部分能力属于企业版，不声称都在免费开源版 |
+| RAGFlow（91,900） | 元数据过滤、当前开发分支知识编纂与 wiki/wiki.go、引用证据处理 | 汇总多个文档再更新主题 Wiki，保留证据，避免每个分块都成为一篇“知识”；新增内容与既有页面关联 | 编纂策略值得参考；主要是服务端平台。开发分支编纂机制不等同于所有稳定版均提供 |
+
+本轮实现侧采用：范围先于检索；目录不等于业务项目；无项目依据的日志限定在本次讨论；主题稳定；更新有历史与原始事件时间；低价值与不确定内容不用于回答。跨会话业务项目识别、完整工具日志、对外 MCP 仍是独立的未完成工作，不因加了字段或借鉴了提示词就算完成。
+
+原始项目与可核查源码：
+
+- https://github.com/rowboatlabs/rowboat/blob/main/apps/x/packages/core/src/knowledge/note_curation.ts
+- https://github.com/rowboatlabs/rowboat/blob/main/apps/harbor/packages/protocol/src/mcp.ts
+- https://github.com/screenpipe/screenpipe/blob/main/packages/screenpipe-mcp/src/index.ts
+- https://github.com/screenpipe/screenpipe/blob/main/LICENSE.md
+- https://github.com/JerryZLiu/Dayflow/blob/main/tools/dayflow-cli/Sources/dayflow/MCPServer.swift
+- https://github.com/khoj-ai/khoj/blob/master/src/khoj/database/models/__init__.py
+- https://github.com/onyx-dot-app/onyx/blob/main/backend/onyx/context/search/preprocessing/access_filters.py
+- https://github.com/infiniflow/ragflow/blob/main/internal/ingestion/component/knowledge_compiler/structure/wiki/wiki.go
+
+## 9. Obsidian 的知识组织参考（2026-10-09）
+
+用户明确喜欢 Obsidian 的知识整理和呈现方式。本项目参考其笔记、属性和链接机制；Obsidian 主程序不是开源项目，不将官方说明误写为已审阅其内部源码。
+
+- 本地 Markdown 文件便于阅读、迁移和交由其他工具处理。WorkTwin 当前正文在 SQLite 中，Wiki 导出提供 Markdown 快照；自动维护本地笔记目录和双向修改同步尚未实现。
+- 笔记属性适合表达少量结构化信息。导出保留项目、主题、适用范围、有效状态和稳定编号；`ai_usable` 标明是否通过本地使用门槛，其他 AI 接入时仍须执行权限检查，不能仅相信文本属性。
+- 内部链接和反向链接让主题可以互相关联，无需把全部内容压入一个文件，也无需用户预先设计完美的文件夹树。现有稳定 K 编号链接继续保留，标题以 aliases 属性显示，改名不会改变链接目标。
+- 同一主题笔记持续维护当前结论，并保留变更历史与原始依据。关系图可帮助浏览，但不负责决定项目归属、时间先后、内容质量或访问权限。
+
+官方说明：
+
+- https://help.obsidian.md/Files+and+folders/How+Obsidian+stores+data
+- https://help.obsidian.md/properties
+- https://help.obsidian.md/links
+- https://help.obsidian.md/plugins/backlinks

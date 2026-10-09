@@ -14,6 +14,7 @@ import time
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -31,6 +32,11 @@ class Asset(BaseModel):
     title: str = Field(min_length=1, max_length=130)
     body: str = Field(min_length=1, max_length=50000)
     version: int = Field(ge=1)
+    scope: Literal['project','session','global','unknown'] = 'unknown'
+    project: str = Field(default='',max_length=200)
+    project_key: str = Field(default='',max_length=1000)
+    topic: str = Field(default='',max_length=100)
+    scope_detail: str = Field(default='',max_length=500)
 
 
 class PublishedTwin(BaseModel):
@@ -53,6 +59,7 @@ class GrantInput(BaseModel):
 
 class Question(BaseModel):
     question: str = Field(min_length=2, max_length=500)
+    project_key: str | None = Field(default=None,max_length=1000)
 
 
 class AdminModelInput(ModelInput):
@@ -94,6 +101,9 @@ class SharedStore:
                     id INTEGER PRIMARY KEY, action TEXT NOT NULL, owner TEXT NOT NULL,
                     resource TEXT NOT NULL, at TEXT DEFAULT (datetime('now')));
             ''')
+            columns={r[1] for r in con.execute('PRAGMA table_info(assets)')}
+            if 'metadata' not in columns:
+                con.execute("ALTER TABLE assets ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def connect(self):
@@ -289,14 +299,14 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
         with store.connect() as con:
             row=owned(con,twin_id,identity)
             revision=row['version']
-            rows=[dict(r) for r in con.execute('''SELECT a.local_id id,a.title,a.body FROM assets a JOIN assignments x ON x.asset_id=a.local_id
+            rows=[{**dict(r),**json.loads(r['metadata'])} for r in con.execute('''SELECT a.local_id id,a.title,a.body,a.metadata FROM assets a JOIN assignments x ON x.asset_id=a.local_id
                 WHERE x.twin_id=? AND a.owner=? AND a.installation=?''',(twin_id,identity,row['installation']))]
         class ScopedModel:
             def chat(self,messages,max_tokens=1600):
                 if inference_client:
                     return inference_client.chat(messages,max_tokens=max_tokens)
                 return provider.complete(identity,ChatRequest(messages=messages,max_tokens=max_tokens))['choices'][0]['message']['content']
-        result=answer_from_knowledge(ScopedModel(),body.question,rows)
+        result=answer_from_knowledge(ScopedModel(),body.question,rows,project_key=body.project_key)
         owner(authorization)
         with store.connect() as con:
             if owned(con,twin_id,identity)['version']!=revision:
@@ -319,7 +329,9 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                 raise HTTPException(409, '发布版本已过期')
             con.execute('INSERT INTO installations VALUES(?,?,?) ON CONFLICT(owner,installation) DO UPDATE SET revision=excluded.revision', (identity,installation,body.revision))
             con.execute('DELETE FROM assets WHERE owner=? AND installation=?', (identity,installation))
-            con.executemany('INSERT INTO assets VALUES(?,?,?,?,?,?)', [(identity,installation,a.id,a.title,a.body,a.version) for a in body.assets])
+            con.executemany('INSERT INTO assets(owner,installation,local_id,title,body,version,metadata) VALUES(?,?,?,?,?,?,?)',
+                [(identity,installation,a.id,a.title,a.body,a.version,json.dumps({key:getattr(a,key) for key in
+                  ('scope','project','project_key','topic','scope_detail')},ensure_ascii=False)) for a in body.assets])
             old = con.execute('SELECT id,local_id FROM twins WHERE owner=? AND installation=?', (identity,installation)).fetchall()
             for t in old:
                 if t['local_id'] not in twin_ids:
@@ -377,7 +389,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
         with store.connect() as con:
             row = view(con,token)
             revision, gid = row['version'], row['grant_id']
-            knowledge = [dict(r) for r in con.execute('''SELECT a.local_id id,a.title,a.body FROM assignments x
+            knowledge = [{**dict(r),**json.loads(r['metadata'])} for r in con.execute('''SELECT a.local_id id,a.title,a.body,a.metadata FROM assignments x
                 JOIN assets a ON a.local_id=x.asset_id AND a.owner=? AND a.installation=? WHERE x.twin_id=?''',
                 (row['owner'],row['installation'],row['id']))]
         class ScopedModel:
@@ -386,7 +398,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                     return inference_client.chat(messages,max_tokens=max_tokens)
                 result = provider.complete('grant:'+gid,ChatRequest(messages=messages,max_tokens=max_tokens))
                 return result['choices'][0]['message']['content']
-        result = answer_from_knowledge(ScopedModel(),body.question,knowledge)
+        result = answer_from_knowledge(ScopedModel(),body.question,knowledge,project_key=body.project_key)
         # Revocation or publication during an in-flight call must not disclose
         # its former snapshot even if the provider already received it.
         with store.connect() as con:
