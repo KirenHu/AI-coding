@@ -11,6 +11,11 @@ fi
 dmg="${images[1]}"
 hdiutil verify "$dmg"
 if [[ "${WORKTWIN_REQUIRE_NOTARIZATION:-0}" == 1 ]]; then
+  # Assessment is evidence only when Gatekeeper is actually enabled.
+  if [[ "$(spctl --status)" != "assessments enabled" ]]; then
+    echo "::error::Gatekeeper is disabled; refusing to claim trusted distribution"
+    exit 1
+  fi
   [[ "$dmg" != *-unsigned.dmg ]]
   codesign --verify --strict --verbose=2 "$dmg"
   xcrun stapler validate "$dmg"
