@@ -160,6 +160,19 @@ CREATE TABLE IF NOT EXISTS twin_knowledge (
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
   PRIMARY KEY(twin_id,knowledge_id)
 );
+CREATE TABLE IF NOT EXISTS twin_mcp (
+  twin_id INTEGER PRIMARY KEY REFERENCES twins(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  allow_logs INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS knowledge_acceptance (
+  model_signature TEXT PRIMARY KEY,
+  policy_version TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  accepted_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -182,7 +195,7 @@ class Database:
         """Idempotent in-place upgrades from the 0.1 SQLite schema."""
         additions = {
             "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0", "allow_share": "INTEGER NOT NULL DEFAULT 0"},
-            "documents": {"project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''", "scope": "TEXT NOT NULL DEFAULT 'unknown'"},
+            "documents": {"project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''", "scope": "TEXT NOT NULL DEFAULT 'unknown'", "project_verified": "INTEGER NOT NULL DEFAULT 0"},
             "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0",
                 "scope": "TEXT NOT NULL DEFAULT 'unknown'", "project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''",
                 "topic": "TEXT NOT NULL DEFAULT ''", "scope_detail": "TEXT NOT NULL DEFAULT ''", "quality": "TEXT NOT NULL DEFAULT 'useful'",

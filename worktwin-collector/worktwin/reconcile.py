@@ -1,7 +1,7 @@
-"""Model-assisted knowledge consolidation with explicit human approval.
+"""Model-assisted consolidation with review for changed conclusions.
 
-The model may *suggest* a relationship to an existing article, but never
-silently overwrite a person's knowledge or make it available to a twin.
+Only the independent real-data acceptance gate may apply pure additions;
+replacement, conflict and ambiguous project scope require human review.
 """
 
 from __future__ import annotations
@@ -62,11 +62,14 @@ def make_consolidation_plan(client: GatewayClient, items: list[dict], existing: 
         "请对每条 new_item 判断是否应该作为新知识，或与现有文章关联。"
         "同一主题且适用对象与条件一致时，优先更新已有主题文章，不按每句话新建文章。"
         "以来源实际讨论时间判断先后，导入/扫描时间不表示结论更新；较早资料不能替代较晚结论。"
-        "只返回 enrich(补充)、replace(明确替代旧结论)或conflict(相互矛盾)。保留理由、例外、历史及未决问题。"
+        "只返回 enrich(补充)、replace(明确替代旧结论)或conflict(相互矛盾)。保留理由、例外及未决问题。"
+        "replace正文只保留当前有效结论，被替代结论交由程序保存在历史记录，不加入新正文。"
+        "enrich仅在原正文后用两个换行追加新段落，原正文逐字保留。"
+        "changes_existing_conclusion明确标记是否改变了原有要求、判断、限制或适用条件，无法判断时为true。"
         "不同范围或未解决冲突不可直接合并；同主题的事实、流程和决策可以放在同一文章中。"
         "有疑问时返回 new，不得猜测关联，不得把旧事实默认为新事实。"
         "输出唯一 JSON 对象 {\"items\":[{\"index\":0,\"action\":\"new\"|\"enrich\"|\"replace\"|\"conflict\","
-        "\"target_id\":已提供的现有知识ID,\"title\":合并后的标题,\"body\":合并后的完整知识正文,\"reason\":依据说明}]}。"
+        "\"target_id\":已提供的现有知识ID,\"title\":合并后的标题,\"body\":合并后的完整知识正文,\"reason\":依据说明,\"changes_existing_conclusion\":true|false}]}。"
         "new 不需要 target_id/title/body。链接已有知识时，合并内容不得扩写无依据事实；"
         "不要自动覆盖已有文章。最多处理 new_items 中给出的条目。"
     )
@@ -100,7 +103,8 @@ def make_consolidation_plan(client: GatewayClient, items: list[dict], existing: 
         if not (4 <= len(title) <= 130 and 12 <= len(body) <= 12000 and reason):
             continue
         plan[index] = {"action": action, "target_id": target,
-                       "title": title, "body": body, "reason": reason[:600]}
+                       "title": title, "body": body, "reason": reason[:600],
+                       'changes_existing_conclusion':link.get('changes_existing_conclusion',True) is not False}
     return plan
 
 
@@ -158,6 +162,8 @@ def store_proposals(con: sqlite3.Connection, document_id: int, sha: str,
             action='conflict'
             reason='适用对象或条件不同，请核对是否属于同一范围。'+reason
         evidence={key:item.get(key,'') for key in ('quote','context_quote','confirmation_quote','attribution','outcome','topic','scope_detail','value_reason')}
+        evidence['requires_review']=item.get('requires_review',True)
+        evidence['changes_existing_conclusion']=proposal.get('changes_existing_conclusion',True)
         cursor = con.execute("""INSERT OR IGNORE INTO knowledge_proposals
             (document_id,content_sha,target_id,target_version,action,kind,title,body,quote,reason,fingerprint,evidence_json,occurred_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (document_id,sha,proposal["target_id"],int(target_version[0]),action,

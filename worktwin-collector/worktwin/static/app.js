@@ -43,10 +43,10 @@ async function refreshConnection(){
   }catch(e){el('model-status').textContent='本地服务不可用'}
 }
 async function go(page,force=false){
-  if(window.__JOB_POLL__){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;}
   if(state.versionMismatch)return;
   if(!force && page===state.page)return;
   if(state.dirty&&!confirmDiscard())return;state.dirty=false;
+  if(window.__JOB_POLL__){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;}
   if(page!=='knowledge')state.scrollPosition=0;
   state.page=page;
   document.querySelectorAll('.nav-link').forEach(node=>node.classList.toggle('active',node.dataset.page===page));
@@ -147,14 +147,17 @@ async function renderKnowledge(){
     <button class="library-choice ${state.project==='reviews'?'active':''}" data-project="reviews">${icon('alert')} <span class="truncate">待核对更新</span><span class="count">${state.proposals.length}</span></button>
     <h3 style="margin-top:24px">项目与分类</h3>${projects.map((name,index)=>`<button class="library-choice ${state.project===name?'active':''}" data-project-index="${index}">${icon('folder')}<span class="truncate">${esc(name)}</span><span class="count">${visible.filter(k=>entryProject(k)===name).length}</span></button>`).join('')}</aside>
     <div class="library-main"><div class="library-toolbar"><div class="search-bar">${icon('search')} <input type="search" id="knowledge-search" aria-label="搜索知识" placeholder="搜索知识标题或正文…" value="${esc(state.query)}"/></div><span class="knowledge-count" id="knowledge-count"></span></div>
-    <div class="lifecycle-filters">${[['active','全部知识'],['draft','待确认'],['review','待核对'],['confirmed','已确认'],['disabled','已停用'],['archived','已归档']].map(([v,n])=>`<button class="filter-button ${state.lifecycle===v?'active':''}" data-lifecycle="${v}">${n}</button>`).join('')}</div><div class="filters">${[['all','全部'],['fact','知识'],['decision','决策'],['process','流程'],['preference','个人偏好']].map(([type,name])=>`<button class="filter-button ${state.kind===type?'active':''}" data-filter="${type}">${name}</button>`).join('')}</div><div class="knowledge-maintenance"><button class="btn secondary small" id="reprocess-knowledge">重新整理现有资料</button><span class="field-note">仅处理已允许 AI 使用的资料；旧知识保留，范围不明或停用内容不参与回答。</span></div><div id="knowledge-list"></div></div></div>`;
+    <div class="lifecycle-filters">${[['active','全部知识'],['draft','待确认'],['review','待核对'],['confirmed','已确认'],['disabled','已停用'],['archived','已归档']].map(([v,n])=>`<button class="filter-button ${state.lifecycle===v?'active':''}" data-lifecycle="${v}">${n}</button>`).join('')}</div><div class="filters">${[['all','全部'],['fact','知识'],['decision','决策'],['process','流程'],['preference','个人偏好']].map(([type,name])=>`<button class="filter-button ${state.kind===type?'active':''}" data-filter="${type}">${name}</button>`).join('')}</div><div class="knowledge-maintenance"><button class="btn secondary small" id="reprocess-knowledge">重新整理现有资料</button><span class="field-note">仅处理已允许 AI 使用的资料；待核对资料保留供复核；被替代结论只进入变更历史，不参与回答。</span></div><div id="knowledge-list"></div></div></div>`;
   content.querySelectorAll('[data-project]').forEach(x=>x.onclick=()=>{state.project=x.dataset.project;renderKnowledgeList()});
   content.querySelectorAll('[data-project-index]').forEach(x=>x.onclick=()=>{state.project=projects[Number(x.dataset.projectIndex)];renderKnowledgeList()});
   content.querySelectorAll('[data-lifecycle]').forEach(x=>x.onclick=()=>{state.lifecycle=x.dataset.lifecycle;go('knowledge',true)});
   content.querySelectorAll('[data-filter]').forEach(x=>x.onclick=()=>{state.kind=x.dataset.filter;renderKnowledgeList()});
   el('knowledge-search').oninput=e=>{state.query=e.target.value;renderKnowledgeList()};
   el('create-knowledge').onclick=()=>openKnowledge(null);
-  el('reprocess-knowledge').onclick=()=>busy(el('reprocess-knowledge'),async()=>{if(!confirm('用当前模型重新整理所有已授权资料？这会产生模型调用费用，旧知识会保留供核对。'))return;const r=await api('knowledge/reprocess',{method:'POST'});notify(`已安排 ${r.queued} 份资料重新整理`)});
+  el('reprocess-knowledge').onclick=()=>busy(el('reprocess-knowledge'),async()=>{if(!confirm('用当前模型重新整理所有已授权资料？这会产生模型调用费用，已核实结论仍需按更新规则处理；被替代正文仅保存在历史中。'))return;const r=await api('knowledge/reprocess',{method:'POST'});notify(`已安排 ${r.queued} 份资料重新整理`)});
+  const automatic=document.createElement('p');automatic.className='field-note';
+  automatic.textContent=state.settings.knowledge_automation?.ready?'本模型已通过真实资料验收：明确项目内的无冲突新增、纯补充可自动生效；改变结论和矛盾仍需核对。':'自动生效尚未开启：本模型与当前整理规则需要先通过真实资料验收。';
+  content.querySelector('.knowledge-maintenance').appendChild(automatic);
   renderKnowledgeList();
   if(state.scrollPosition){
     const main=document.querySelector('.main-area');
@@ -249,6 +252,13 @@ async function showDocument(id){
     const preview=document.createElement('div');preview.className='overlay source-preview';preview.style.zIndex='90';
     preview.innerHTML=`<div class="dialog wide" role="dialog" aria-modal="true" aria-label="原始资料"><div class="dialog-header"><h2>${esc(d.title)}</h2><button class="icon-button" data-close-preview>${icon('close')}</button></div><div class="dialog-body"><p class="soft-caption">${esc(d.relative_path)} · ${esc(d.source_name)}</p><div class="source-content">${esc(d.content)}</div>${d.truncated?'<p class="field-note">仅显示前 80,000 字符。</p>':''}</div><div class="dialog-footer"><button class="btn secondary" data-close-preview>返回知识</button></div></div>`;
     el('overlay-root').appendChild(preview);
+    const scopeForm=document.createElement('section');scopeForm.className='source-reference';
+    scopeForm.innerHTML=`<h3>核对所属项目</h3><p class="field-note">${d.project_verified?'已确认项目：'+esc(d.project):'目录只作为线索，业务项目尚未确认。'}仅当整份资料属于同一个项目时确认；包含多个项目时请保持待核对。</p><div class="field"><label>项目名称</label><input id="source-project" maxlength="200" value="${esc(d.project_verified?d.project:'')}" placeholder="例如：WorkTwin"/></div><button class="btn secondary small" id="save-source-project">确认项目并重新整理此资料</button>`;
+    preview.querySelector('.dialog-body').prepend(scopeForm);
+    scopeForm.querySelector('#save-source-project').onclick=()=>busy(scopeForm.querySelector('#save-source-project'),async()=>{
+      const project=scopeForm.querySelector('#source-project').value.trim();if(!project){notify('请填写所属项目');return}
+      if(await perform(()=>api(`documents/${id}/scope`,{method:'PUT',body:{project}}),null)){notify('项目已确认，资料已安排重新整理');preview.remove()}
+    });
     preview.onclick=e=>{if(e.target===preview||e.target.closest('[data-close-preview]'))preview.remove()};
   }catch(e){notify(e.message)}
 }
@@ -323,7 +333,7 @@ async function renderTwinEditor(id){
   async function saveTwin(button){
     if(button.disabled)return;
     const form=content.querySelector('.twin-editor');
-    const controls=[...form.querySelectorAll('#twin-edit-name,#twin-edit-desc,#twin-search,[data-select-entry],#save-twin-info,#save-selections')];
+    const controls=[...form.querySelectorAll('#twin-edit-name,#twin-edit-desc,#twin-search,[data-select-entry],[data-select-all],[data-deselect-all],[data-twin-filter],#save-twin-info,#save-selections')];
     const disabled=controls.map(control=>control.disabled);
     controls.forEach(control=>control.disabled=true);
     try{
@@ -350,7 +360,28 @@ async function renderTwinEditor(id){
     try{const r=await api(`twins/${id}/ask`,{method:'POST',body:{question,scope,project_key:el('ask-project').value||null}});turn.answer=r.answer;turn.citations=r.citations;turn.loading=false;el('twin-question').value=''}catch(e){turn.answer=e.message;turn.loading=false}renderChat();
   });
   // Bind editing controls before loading optional remote sharing information.
+  const mcpPanel=document.createElement('section');mcpPanel.id='mcp-panel';mcpPanel.className='source-reference';
+  el('sharing-panel').parentElement.insertBefore(mcpPanel,el('sharing-panel').previousElementSibling);
+  await renderMcp(id);
   await renderSharing(id);
+}
+
+async function renderMcp(id){
+  const panel=el('mcp-panel');if(!panel)return;
+  const info=await api(`twins/${id}/mcp`);
+  panel.innerHTML=`<h2>连接其他 AI（MCP）</h2><p class="field-note">其他 AI 只能读取这个分身已保存授权中的有效知识和必要引用。未勾选的知识不会提供。仅用于本机，WorkTwin 需保持运行。</p><p>${info.enabled?'已启用':'尚未启用'}</p><button class="btn secondary small" id="generate-mcp">${info.enabled?'更新连接凭据':'启用并获取连接配置'}</button>${info.enabled?'<button class="btn danger small" id="disable-mcp">关闭 MCP</button><div class="field"><label><input type="checkbox" id="allow-mcp-logs" '+(info.allow_logs?'checked':'')+'/> 单独允许读取完整来源日志</label><p class="field-note">默认只提供必要引用。开启后，其他 AI 可读取授权知识引用的整份来源资料或会话，可能包含其他讨论内容。</p></div>':''}`;
+  el('generate-mcp').onclick=()=>busy(el('generate-mcp'),async()=>{
+    if(state.dirty){notify('请先保存分身的知识授权');return}
+    if(info.enabled&&!confirm('更新后，原来的 MCP 连接凭据立即失效，需要重新连接。继续吗？'))return;
+    try{
+      const r=await api(`twins/${id}/mcp`,{method:'POST'});const config=JSON.stringify(r.config,null,2);
+      dialog('MCP 连接配置',`<p class="field-note">把配置添加到支持 HTTP MCP 的 AI 工具。此配置仅在本次显示；遗失后可以更新连接凭据。</p><div class="field"><label>连接地址</label><input readonly value="${esc(r.url)}"/></div><div class="field"><label for="mcp-config">连接配置</label><textarea readonly id="mcp-config" rows="12">${esc(config)}</textarea></div>`,`<button class="btn secondary" data-close>完成</button><button class="btn" id="copy-mcp-config">复制配置</button>`);
+      el('copy-mcp-config').onclick=async()=>{try{await navigator.clipboard.writeText(config);notify('已复制连接配置')}catch{el('mcp-config').select();notify('请复制选中的配置')}};
+      await renderMcp(id);
+    }catch(e){notify(e.message)}
+  });
+  el('disable-mcp')?.addEventListener('click',()=>busy(el('disable-mcp'),async()=>{if(await perform(()=>api(`twins/${id}/mcp`,{method:'DELETE'}),null)){notify('MCP 已关闭，原连接立即失效');await renderMcp(id)}}));
+  el('allow-mcp-logs')?.addEventListener('change',async()=>{const box=el('allow-mcp-logs');box.disabled=true;try{await api(`twins/${id}/mcp/logs`,{method:'PUT',body:{allow_logs:box.checked}});notify(box.checked?'已单独授权完整来源日志':'已停止提供完整日志')}catch(e){box.checked=!box.checked;notify(e.message)}finally{box.disabled=false}});
 }
 
 async function openConnection(sharing=false){

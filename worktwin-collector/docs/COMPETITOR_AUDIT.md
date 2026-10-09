@@ -163,3 +163,14 @@ Electron 主程序、Node 工具总线或 Harbor 协作后端当成 WorkTwin 运
 - https://help.obsidian.md/properties
 - https://help.obsidian.md/links
 - https://help.obsidian.md/plugins/backlinks
+
+## 10. MCP 实现选择与本轮纠正
+
+MCP 使用官方 Python SDK 2.3 的 Streamable HTTP 和官方客户端验证，不以普通 HTTP 问答充当 MCP。每个请求重新验证分身授权；纯 ASGI 凭据层避免将连接状态当成权限。默认只读当前知识和必要引用，原始日志另外授权。
+
+Obsidian 仅提供部分知识组织思路参考，不增加复刻、直接集成或双向同步目标。稳定笔记编号用于原位更新；被替代正文只存更新历史，当前笔记不保留过时结论。早期未核实的提炼记录称为待核对资料，不再与历史版本统称“旧知识”。
+
+官方文档与源码：
+- https://github.com/modelcontextprotocol/python-sdk
+- https://py.sdk.modelcontextprotocol.io/run/asgi/
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/transports

@@ -12,6 +12,7 @@ from .parsers import split_chunks
 from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
 from .gardener import KnowledgeGardener
 from .scope import document_scope
+from .automation import activate_new, apply_additions, model_signature
 
 
 class KnowledgeWorker:
@@ -73,7 +74,7 @@ class KnowledgeWorker:
             con.execute("UPDATE ai_jobs SET state='queued',claim_token=NULL WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts<4")
             con.execute("UPDATE ai_jobs SET state='error',error='整理任务多次中断，请重试' WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts>=4")
             row = con.execute("""SELECT j.id job_id,j.document_id,j.content_sha,d.content,
-                    d.id,d.source_id,d.project,d.project_key,d.scope,d.file_type,COALESCE(s.adapter,s.kind) adapter
+                    d.id,d.source_id,d.project,d.project_key,d.scope,d.project_verified,d.file_type,COALESCE(s.adapter,s.kind) adapter
                     FROM ai_jobs j JOIN documents d ON d.id=j.document_id
                     JOIN sources s ON s.id=d.source_id
                     WHERE j.state='queued' AND (j.next_run_at IS NULL OR j.next_run_at<=datetime('now'))
@@ -97,15 +98,19 @@ class KnowledgeWorker:
                     return outer.client.chat(messages,max_tokens=max_tokens)
             leased_client=LeasedClient()
             with self.db.connect() as con:
+                con.execute('BEGIN IMMEDIATE')
                 metadata=document_scope(job)
                 con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],job['document_id']))
                 known = existing_for_project(con, job["document_id"])
+            model_identity=model_signature(self.client)
             items = extract_knowledge(job["content"], transcript=job["adapter"] in ("codex", "claude"),
                                       client=leased_client,scope=metadata,existing=known)
             # Compare candidates with already structured, AI-authorized knowledge.
-            # A model can propose a revision but cannot apply it automatically.
+            # Models propose revisions; the independent acceptance gate below
+            # allows only verified, unambiguous additions to take effect.
             plan = make_consolidation_plan(leased_client, items, known)
             with self.db.connect() as con:
+                con.execute('BEGIN IMMEDIATE')
                 # A revoked source or edited document must never be resurrected by an in-flight response.
                 current = con.execute("""SELECT d.sha256,s.enabled,s.allow_ai FROM documents d
                     JOIN sources s ON s.id=d.source_id WHERE d.id=?""", (job["document_id"],)).fetchone()
@@ -119,10 +124,12 @@ class KnowledgeWorker:
                 fresh = [item for i,item in enumerate(items) if i not in plan]
                 n = store_candidates(con, job["document_id"], split_chunks(job["content"]), fresh,
                                      created_by="enterprise_ai")
+                automatic=(apply_additions(con,job['document_id'],self.client)+activate_new(con,job['document_id'],fresh,self.client)
+                           if model_identity==model_signature(self.client) else 0)
                 con.execute("UPDATE ai_jobs SET state='done',error=NULL,next_run_at=NULL,updated_at=datetime('now') WHERE id=? AND content_sha=? AND claim_token=?",
                             (job["job_id"], job["content_sha"],job["claim_token"]))
             self.db.event("ai_extracted", f"自动整理 {len(items)} 条知识，新增引用 {n} 条，待复核更新 {proposals} 项")
-            return {"state": "done", "candidates": len(items), "added": n, "proposals": proposals}
+            return {"state": "done", "candidates": len(items), "added": n, "proposals": proposals,'automatic':automatic}
         except Exception as exc:
             # Do not persist provider error bodies, URLs, or credentials. Retry
             # transient failures a bounded number of times with backoff.

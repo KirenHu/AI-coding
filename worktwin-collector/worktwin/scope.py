@@ -11,6 +11,8 @@ NOISE = re.compile(r'^(?:用户)?(?:倾向于|选择了?|同意了?)?(?:第[一�
 
 def document_scope(document) -> dict:
     """A home directory is not a business project. Never merge by basename alone."""
+    if 'project_verified' in document.keys() and document['project_verified'] and document['project_key']:
+        return {key:document[key] for key in ('project_key','project','scope')}
     content = document['content']
     cwd = re.search(r'^工作目录：([^\n]+)', content)
     if cwd:
