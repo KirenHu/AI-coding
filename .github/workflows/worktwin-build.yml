@@ -2,6 +2,12 @@ name: WorkTwin acceptance and signed release
 
 on:
   workflow_dispatch:
+    inputs:
+      macos_architecture:
+        description: macOS architecture to validate (main releases always build both)
+        type: choice
+        default: all
+        options: [all, arm64, x86_64]
   pull_request:
     paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
   push:
@@ -54,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        runner: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.macos_architecture == 'arm64' && '["macos-15"]') || (github.event_name == 'workflow_dispatch' && inputs.macos_architecture == 'x86_64' && '["macos-15-intel"]') || '["macos-15","macos-15-intel"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     env:
