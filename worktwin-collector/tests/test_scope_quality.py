@@ -163,6 +163,13 @@ def test_event_time_is_compared_in_utc():
     assert source_time('unknown')==''
 
 
+def test_approved_requirement_is_not_mistaken_for_verified_completed_work():
+    item=candidate();item['outcome']='accepted'
+    transcript='### 用户 · 2026-10-09T09:54:40Z\n'+item['quote']
+    notes=extract_knowledge(transcript,transcript=True,client=Reply({'items':[item]}))
+    assert len(notes)==1 and notes[0]['outcome']=='none'
+
+
 def test_obsidian_export_preserves_scope_and_warns_about_disabled_notes(tmp_path):
     app=create_app(tmp_path/'db.sqlite',start_worker=False)
     with TestClient(app) as client:

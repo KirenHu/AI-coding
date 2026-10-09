@@ -214,7 +214,7 @@ class Collector:
                         review_flags(con, affected)
                         con.execute("UPDATE knowledge_evidence SET is_current=0,chunk_id=NULL WHERE document_id=?", (document_id,))
                         con.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
-                        con.execute("UPDATE documents SET title=?,project=?,relative_path=?,file_type=?,content=?,sha256=?,size_bytes=?,mtime_ns=?,indexed_at=datetime('now'),deleted=0 WHERE id=?",
+                        con.execute("UPDATE documents SET title=?,project=CASE WHEN project_verified=1 THEN project ELSE ? END,relative_path=?,file_type=?,content=?,sha256=?,size_bytes=?,mtime_ns=?,indexed_at=datetime('now'),deleted=0 WHERE id=?",
                                     (title,project,relative,path.suffix.lower(),content,data_digest,stat.st_size,stat.st_mtime_ns,document_id))
                         counts["updated"] += 1
                     else:

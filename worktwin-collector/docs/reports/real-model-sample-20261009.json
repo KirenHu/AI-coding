@@ -1,0 +1,23 @@
+{
+  "real_data": true,
+  "dataset_sha256": "e5502f99cf481c47a77a893a2f0303fcb52a1f3ef3f0b069301db9c74f84d7bb",
+  "model": "deepseek-chat",
+  "checks": {
+    "connection": true,
+    "nonempty": true,
+    "grounding": true,
+    "user_attribution": true,
+    "automation_gate": true,
+    "mcp_twin_permission": true,
+    "current_only": true,
+    "obsidian_reference_only": true,
+    "policy_change_needs_review": true,
+    "storage_and_mcp": true
+  },
+  "result": "PASS",
+  "automation_enabled": false,
+  "coverage": "本轮真实产品讨论的有限样本；不代表完整本地资料库验收",
+  "recorded_at": "2026-10-09T10:26:21.387948+00:00",
+  "is_automatic_activation_receipt": false,
+  "source": "scripts/real_knowledge_acceptance.py: actual user discussion, not original Mac logs"
+}

@@ -133,6 +133,14 @@ class AskInput(BaseModel):
     project_key: str | None = Field(default=None,max_length=1000)
 
 
+class LogPermissionInput(BaseModel):
+    allow_logs: bool
+
+
+class DocumentScopeInput(BaseModel):
+    project: str = Field(min_length=1,max_length=200)
+
+
 class EditionInput(BaseModel):
     edition: Literal['personal','enterprise']
 
@@ -163,6 +171,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     asset_version = hashlib.sha256(
         (STATIC / 'app.js').read_bytes() + (STATIC / 'styles.css').read_bytes()
     ).hexdigest()[:16]
+    from .twin_mcp import create_server, issue_connection
+    mcp_server,mcp_app=create_server(db)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -170,7 +180,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             collector.start()
             knowledge_worker.start()
             publisher.start()
-        yield
+        async with mcp_server.session_manager.run():
+            yield
         publisher.stop()
         collector.stop()
         knowledge_worker.stop()
@@ -204,6 +215,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.knowledge_worker = knowledge_worker
     app.state.model = model_client
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
+    app.mount('/mcp',mcp_app,name='twin-mcp')
 
     def authorized(x_worktwin_token: str | None = Header(default=None)):
         if not x_worktwin_token or not secrets.compare_digest(x_worktwin_token, local_token):
@@ -626,7 +638,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/settings")
     def settings():
         # Model provider credentials remain on the enterprise gateway server.
-        return {"enterprise_model_ready": model_client.configured,
+        from .automation import acceptance_status
+        with db.connect() as con:
+            automation=acceptance_status(con,model_client)
+        return {"enterprise_model_ready": model_client.configured,'knowledge_automation':automation,
                 "edition":model_client.mode,"edition_selected":bool(db.setting('edition')),
                 "model_status":model_client.status,"model_error":model_client.error,
                 "model_name":getattr(model_client.client,'model','') or db.setting('enterprise_model_name'),
@@ -906,6 +921,60 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,"数字分身不存在")
             selected = [r[0] for r in con.execute("SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?",(twin_id,))]
             return {**dict(row),"knowledge_ids":selected}
+
+    @app.get('/api/twins/{twin_id}/mcp')
+    def mcp_status(twin_id:int,request:Request):
+        with db.connect() as con:
+            if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
+                raise HTTPException(404,'数字分身不存在')
+            row=con.execute('SELECT enabled,allow_logs,updated_at FROM twin_mcp WHERE twin_id=?',(twin_id,)).fetchone()
+        return {'enabled':bool(row and row['enabled']),'allow_logs':bool(row and row['allow_logs']),
+                'url':str(request.base_url).rstrip('/')+'/mcp/'}
+
+    @app.post('/api/twins/{twin_id}/mcp',dependencies=[Depends(authorized)])
+    def enable_mcp(twin_id:int,request:Request):
+        with db.connect() as con:
+            try:
+                token=issue_connection(con,twin_id)
+            except LookupError as exc:
+                raise HTTPException(404,str(exc)) from None
+        url=str(request.base_url).rstrip('/')+'/mcp/'
+        return {'url':url,'token':token,'config':{'mcpServers':{f'worktwin-{twin_id}':
+            {'type':'http','url':url,'headers':{'Authorization':'Bearer '+token}}}}}
+
+    @app.delete('/api/twins/{twin_id}/mcp',dependencies=[Depends(authorized)])
+    def disable_mcp(twin_id:int):
+        with db.connect() as con:
+            con.execute("UPDATE twin_mcp SET enabled=0,allow_logs=0,updated_at=datetime('now') WHERE twin_id=?",(twin_id,))
+        return {'disabled':True}
+
+    @app.put('/api/twins/{twin_id}/mcp/logs',dependencies=[Depends(authorized)])
+    def authorize_mcp_logs(twin_id:int,payload:LogPermissionInput):
+        with db.connect() as con:
+            cursor=con.execute("UPDATE twin_mcp SET allow_logs=?,updated_at=datetime('now') WHERE twin_id=? AND enabled=1",(int(payload.allow_logs),twin_id))
+            if not cursor.rowcount:
+                raise HTTPException(400,'请先启用此分身的 MCP')
+        return {'allow_logs':payload.allow_logs}
+
+    @app.put('/api/documents/{document_id}/scope',dependencies=[Depends(authorized)])
+    def assign_document_scope(document_id:int,payload:DocumentScopeInput):
+        project=payload.project.strip()
+        if not project:
+            raise HTTPException(400,'请填写项目名称')
+        key='manual:'+hashlib.sha256(project.encode()).hexdigest()[:24]
+        with db.connect() as con:
+            d=con.execute('SELECT * FROM documents WHERE id=? AND deleted=0',(document_id,)).fetchone()
+            if not d:
+                raise HTTPException(404,'资料不存在')
+            if d['project_key']!=key or d['scope']!='project':
+                con.execute('''UPDATE knowledge SET review_hold=1,needs_review=1 WHERE id IN
+                    (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)''',(document_id,))
+            con.execute("UPDATE documents SET project=?,project_key=?,scope='project',project_verified=1 WHERE id=?",(project,key,document_id))
+            con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state) VALUES(?,?,'queued')
+                ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
+                attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL''',(document_id,d['sha256']))
+        knowledge_worker.schedule()
+        return {'project':project,'project_key':key,'queued':True}
 
     @app.put("/api/twins/{twin_id}", dependencies=[Depends(authorized)])
     def update_twin(twin_id: int,payload: TwinInput):

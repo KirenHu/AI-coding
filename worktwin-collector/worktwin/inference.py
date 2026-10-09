@@ -99,15 +99,18 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             "阅读完整可见讨论，区分用户要求、AI建议、用户确认。AI建议不等于用户决定。"
             "遇到‘同意/按你说的做’时，必须联系此前唯一明确方案，quote引用方案原文，confirmation_quote引用用户确认原文；"
             "不能确定同意哪个方案时不提取决策。用户一次选择第二项、继续、收到、改一处文案、临时排错不能作为长期知识。"
+            "requires_review标记本条是否改变已有结论、存在矛盾或无法判断所属范围；无法确定时为true。"
             "不提取泛泛评价、无对象无范围的偏好、常识、重复内容或单纯的任务指令。"
             "只有明确跨项目长期适用的个人习惯才用preference，单个项目的产出要求用decision。"
             "AI说完成了只能outcome=reported且正文写明AI报告、尚未核实；本输入未提供执行工具证据，绝不能输出supported。"
-            "outcome=accepted必须有用户明确验收通过的原文；提出建议仅attribution=assistant。"
-            "同主题信息合成一篇可阅读文档；保留当前结论、适用范围、理由、操作、例外、历史变化和未决问题中有依据的部分，"
+            "outcome=accepted仅指用户对已经完成成果的实际验收通过，必须有对应原文；"
+            "用户同意方案、确认需求或配置不等于成果验收，必须outcome=none；提出建议仅attribution=assistant。"
+            "同主题信息合成一篇可阅读文档；保留当前结论、适用范围、理由、操作、例外和未决问题中有依据的部分，"
+            "已被替代的结论只保存在更新历史中，不能继续放在当前笔记正文里。"
             "不补齐无依据的章节，不把不同项目、主题或冲突结论直接混合。属于已有主题时沿用其topic，保持命名稳定。"
             "输出JSON对象 {\"items\":[{\"kind\":\"decision\",\"topic\":\"主题名称\",\"title\":\"...\",\"body\":\"...\","
             "\"scope_detail\":\"具体适用对象/条件\",\"value_reason\":\"将来能用于回答什么工作问题\","
-            "\"attribution\":\"user|assistant|document\",\"outcome\":\"none|reported|accepted\","
+            "\"attribution\":\"user|assistant|document\",\"outcome\":\"none|reported|accepted\",\"requires_review\":true|false,"
             "\"quote\":\"来源原文\",\"context_quote\":\"可选的前文原文\",\"confirmation_quote\":\"可选的用户确认原文\"}]}。"
             "最多5个主题，body是可单独阅读的中文Markdown，不要凭空扩展范围。"
             "quote 必须是所给文本里连续且原样的至少 8 个字符；不要编造、不足以确定时返回空数组。"
@@ -169,8 +172,17 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             outcome=item.get('outcome','none')
             if outcome not in ('none','reported','accepted'):
                 continue
-            if outcome=='accepted' and (not confirmed or not re.search(r'验收.*(?:通过|完成)|测试.*(?:通过|可用)|(?:已|已经)确认.*(?:可用|完成)',confirmation)):
-                continue
+            accepted=bool(confirmed and re.search(r'验收.*(?:通过|完成)|测试.*(?:通过|可用)|(?:已|已经)确认.*(?:可用|完成)',confirmation))
+            if re.search(r'(?:验收|测试).{0,12}(?:通过|完成)(?:前|后)|(?:先|需要|必须|待|尚未).{0,12}(?:验收|测试)',confirmation):
+                accepted=False
+            if outcome=='accepted' and not accepted:
+                # A grounded user's requirement remains useful even if a
+                # provider confuses approval of a plan with completed work.
+                # Never downgrade a completion claim into an ordinary fact.
+                if attribution=='user' and not re.search(r'已(?:经)?完成|完成了|做完了|(?:测试|验收)通过了',quote):
+                    outcome='none'
+                else:
+                    continue
             occurred=source_time((confirmed or user_evidence or assistant_evidence or {}).get('occurred_at',''))
             identity = kind + "\x00" + quote
             if identity in seen:
@@ -179,5 +191,6 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             result.append({"kind": kind, "title": title, "body": body, "quote": quote,
                            "occurred_at": occurred,'topic':topic,'scope_detail':detail,'value_reason':reason,
                            'attribution':attribution,'outcome':outcome,'confirmation_quote':confirmation,
-                           'context_quote':context_quote,'quality':'useful','extraction_version':1})
+                           'context_quote':context_quote,'quality':'useful','extraction_version':1,
+                           'requires_review':item.get('requires_review',True) is not False})
     return result

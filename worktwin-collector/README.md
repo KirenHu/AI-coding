@@ -1,8 +1,8 @@
-# WorkTwin Collector 1.1.4
+# WorkTwin Collector 1.1.5
 
-在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；完整操作日志归属和对外 MCP 尚未实现，HTTP 问答或分享接口不能代替 MCP。个人自行配置模型，企业使用统一分配的模型与 Token。
+在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；完整操作日志归属仍待完善；本轮提供绑定数字分身授权的本地只读 MCP，完整日志单独授权。个人自行配置模型，企业使用统一分配的模型与 Token。
 
-[下载 1.1 安装包与源码](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.1.4) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
+[已发布安装包与源码](https://github.com/KirenHu/AI-coding/releases) · [MCP 接入](docs/MCP.md) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
 
 ## 三个入口
 
