@@ -122,7 +122,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
     initial_limits={k:config.get(k,os.getenv(env,default)) for k,env,default in (
         ('daily_calls','WORKTWIN_DAILY_CALL_LIMIT','1000'),('daily_tokens','WORKTWIN_DAILY_TOKEN_LIMIT','2000000'),('minute_calls','WORKTWIN_MINUTE_CALL_LIMIT','20'))}
     provider = None if inference_client else ProviderService(store.path.with_name('usage.sqlite'),config=config.model_config(),limits=initial_limits,allow_unconfigured=True)
-    app = FastAPI(title='WorkTwin Enterprise', version='1.1.0', docs_url=None, redoc_url=None)
+    app = FastAPI(title='WorkTwin Enterprise', version='1.1.1', docs_url=None, redoc_url=None)
     app.state.store = store
     app.state.provider = provider
     app.state.settings = config
@@ -187,7 +187,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
 
     @app.get('/health')
     def health():
-        return {'ok': True, 'version': '1.1.0'}
+        return {'ok': True, 'version': '1.1.1'}
 
     @app.get('/v1/me')
     def me(identity=Depends(owner)):

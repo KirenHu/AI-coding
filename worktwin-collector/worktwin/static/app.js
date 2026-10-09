@@ -43,6 +43,7 @@ async function refreshConnection(){
   }catch(e){el('model-status').textContent='本地服务不可用'}
 }
 async function go(page,force=false){
+  if(state.versionMismatch)return;
   if(!force && page===state.page)return;
   if(state.dirty&&!confirmDiscard())return;state.dirty=false;
   state.page=page;
@@ -306,10 +307,27 @@ async function renderSharing(id){
 }
 
 // Refresh only when no editing is in progress.
-setInterval(async()=>{if(el('overlay-root').children.length||state.dirty||/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))return;await refreshConnection();if(state.page==='knowledge'||state.page==='sources'){try{await go(state.page,true)}catch{}}},15000);
+setInterval(async()=>{if(state.versionMismatch||el('overlay-root').children.length||state.dirty||/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))return;await refreshConnection();if(state.page==='knowledge'||state.page==='sources'){try{await go(state.page,true)}catch{}}},15000);
 // First render and lightweight refresh, without tracking/analytics.
 document.querySelectorAll('.nav-link').forEach(button=>button.onclick=()=>{go(button.dataset.page,true)});
-refreshConnection().then(()=>go('knowledge',true));
+async function startWorkbench(){
+  try{
+    const running=await api('health');
+    if(running.version!==window.__WORKTWIN_VERSION__){
+      state.versionMismatch=true;
+      el('page-breadcrumb').textContent='启动检查';
+      el('model-status').textContent='请重新启动应用';
+      content.innerHTML=pageHeader('STARTUP','请重新启动 WorkTwin','新版界面已经打开，后台仍在运行其他版本。退出后重新打开即可继续。')+
+        `<section class="settings-section"><p>界面版本：${esc(window.__WORKTWIN_VERSION__)} · 正在运行：${esc(running.version||'未知版本')}</p><ol class="setup-steps"><li>点击左下角「退出」，并确认退出</li><li>关闭这个浏览器页面</li><li>从 Mac「应用程序」或 Windows 开始菜单重新打开 WorkTwin</li></ol><p class="field-note">重新启动不会删除你的资料。</p></section>`;
+      return;
+    }
+  }catch(e){
+    content.innerHTML=`<div class="loading-error">无法连接本机 WorkTwin，请从应用程序重新打开。</div>`;
+    return;
+  }
+  await refreshConnection();await go('knowledge',true);
+}
+startWorkbench();
 
 el('quit-app').onclick=async()=>{if(!confirm('退出 WorkTwin？本地采集和整理将暂停，已发布的数字分身仍可访问。'))return;try{await api('shutdown',{method:'POST'});content.innerHTML=emptyState('check','WorkTwin 已退出','再次打开应用即可继续采集。')}catch(e){notify(e.message)}};
 
@@ -334,7 +352,8 @@ async function renderSettings(){
   el('test-model')?.addEventListener('click',()=>busy(el('test-model'),async()=>{el('settings-result').textContent='正在测试真实模型调用…';try{await api('model/test',{method:'POST'});el('settings-result').textContent='模型调用成功';await refreshConnection()}catch(e){el('settings-result').textContent=e.message;await refreshConnection()}}));
   el('export-wiki').onclick=()=>busy(el('export-wiki'),()=>downloadFile('export-wiki','WorkTwin-Wiki.zip'));
   el('backup-data').onclick=()=>busy(el('backup-data'),()=>downloadFile('backup','WorkTwin-backup.zip'));
-  const location=await api('data-location');el('data-path').textContent='本机数据目录：'+location.path+'。恢复前请退出应用；步骤见备份中的恢复说明。';
+  try{const location=await api('data-location');el('data-path').textContent='本机数据目录：'+location.path+'。恢复前请退出应用；步骤见备份中的恢复说明。'}
+  catch(e){el('data-path').textContent='暂时无法读取备份目录信息，模型设置仍可使用。'}
   if(el('admin-section'))await renderAdminSettings();
 }
 async function downloadFile(path,name){try{const response=await fetch('/api/'+path,{headers:{'X-Worktwin-Token':window.__WORKTWIN_TOKEN__}});if(!response.ok)throw Error('导出失败，请重试');const url=URL.createObjectURL(await response.blob());const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('下载已开始')}catch(e){notify(e.message)}}

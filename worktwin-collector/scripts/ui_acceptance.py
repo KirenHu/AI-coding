@@ -56,8 +56,8 @@ def main():
             client = httpx.Client(base_url=url, timeout=25, trust_env=False)
             try:
                 html = client.get('/').text
-                html = html.replace('<link rel="stylesheet" href="/assets/styles.css" />', '')
-                html = html.replace('<script defer src="/assets/app.js"></script>', '')
+                html = re.sub(r'<link rel="stylesheet" href="/assets/styles\.css(?:\?[^"]*)?" />', '', html)
+                html = re.sub(r'<script defer src="/assets/app\.js(?:\?[^"]*)?"></script>', '', html)
 
                 def backend(path, options):
                     if not str(path).startswith('/api/'):

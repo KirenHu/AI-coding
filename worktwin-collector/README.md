@@ -1,8 +1,8 @@
-# WorkTwin Collector 1.1.0
+# WorkTwin Collector 1.1.1
 
 把日常工作记录整理成可以阅读、修改、持续维护并授权给数字分身的个人知识库。个人版自行配置模型；企业版使用企业统一分配的模型和企业 Token。客户端本地采集，持续运行的分享服务保存明确允许分享的知识快照。
 
-[下载 1.1 安装包与源码](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.1.0) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
+[下载 1.1 安装包与源码](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.1.1) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
 
 ## 三个入口
 

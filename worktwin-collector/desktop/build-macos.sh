@@ -42,7 +42,7 @@ suffix="-unsigned"
 if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.1.0-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.1.1-macOS-$(uname -m)${suffix}.dmg"
 hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg"
 hdiutil verify "$dmg"
 

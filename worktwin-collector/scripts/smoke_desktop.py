@@ -61,6 +61,8 @@ def main() -> int:
                         page = response.read().decode("utf-8")
                     if "WorkTwin" not in page:
                         raise AssertionError("Dashboard was not served by packaged app")
+                    ui_version = re.search(r'window\.__WORKTWIN_VERSION__="(.*?)";', page).group(1)
+                    assert ui_version == health['version'], (ui_version, health)
                     if not (Path(temp) / "worktwin.sqlite").is_file():
                         raise AssertionError("Packaged app did not initialize local database")
                     token = re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', page).group(1)
