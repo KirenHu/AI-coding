@@ -33,4 +33,4 @@ PYTHONPATH=. python scripts/ui_settings_acceptance.py
 
 66 项后端回归通过，8/8 合成回答断言通过，80 份增量扫描与真实 HTTP 验收通过。四个浏览器脚本已在 Chrome Headless Shell 中实际执行并通过，未发现 JavaScript 错误；受本地进程限制，浏览器用单进程模式，主流程/更新流通过本地 HTTP 桥接，设置/接收者页面同时验证实际 origin、刷新和 sessionStorage。Python wheel/sdist 构建通过。
 
-GitHub 上传被自动审批拦截，尚未运行这一提交的 CI 原生安装包构建；上述记录不宣称 macOS/Windows 新安装包、物理系统钥匙串提示或 Apple 公证已验证。获得上传授权后，继续执行 CI 四组浏览器验收和三个平台的原生打包检查。
+用户已授权上传及生成测试安装包，改动已提交至 [PR #13](https://github.com/KirenHu/AI-coding/pull/13)。CI 执行四组浏览器验收和三个平台的原生打包检查；原生启动检查还确认设置接口和系统凭据后端能加载。实际运行状态见该 PR 及 main 的 GitHub Actions 记录。物理系统钥匙串交互提示和 Apple 公证仍未验收。
