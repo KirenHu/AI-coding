@@ -1,6 +1,6 @@
 # WorkTwin Collector 1.1.5
 
-在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；完整操作日志归属仍待完善；本轮提供绑定数字分身授权的本地只读 MCP，完整日志单独授权。个人自行配置模型，企业使用统一分配的模型与 Token。
+在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；已补充编程工具的执行状态线索，原始工具结果和跨会话项目归属仍待完善；提供绑定数字分身授权的本地只读 MCP，完整日志单独授权。个人自行配置模型，企业使用统一分配的模型与 Token。
 
 [已发布安装包与源码](https://github.com/KirenHu/AI-coding/releases) · [MCP 接入](docs/MCP.md) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
 
@@ -49,7 +49,7 @@ python -m worktwin serve --open
 
 [部署说明](docs/DEPLOY.md)提供 Docker Compose 与 Python 两种启动方式。管理员在服务端设置 OpenAI Chat Completions 兼容的供应商、固定模型和 Key，并为每位员工发独立令牌；员工不能更改付款模型。服务端有持久日调用/Token 限额、每凭据分钟限流、并发上限与不含提示正文的调用记录。这些是调用限额，不能替代供应商账单或金额预算。
 
-授权目录后，本机 SQLite 会保存可检索的完整解析文本。支持 Markdown/TXT/代码、DOCX、可选中文字 PDF；扫描 PDF 不包含 OCR。会话采集只保留可见内容，排除工具输出和内部推理。常见凭据文件会被排除，但未提供企业 DLP。只有允许 AI 的相关文本会发送到当前配置的模型服务。
+授权目录后，本机 SQLite 会保存可检索的完整解析文本。支持 Markdown/TXT/代码、DOCX、可选中文字 PDF；扫描 PDF 不包含 OCR。会话采集保留可见对话及工具名称、返回状态和可识别的退出码；工具参数、原始 stdout/stderr、工具结果正文与内部推理不进入知识分析或 MCP 日志。工具执行记录不能代替成果验收。常见凭据文件会被排除，但未提供企业 DLP。只有允许 AI 的相关文本会发送到当前配置的模型服务。
 
 默认数据库：macOS `~/Library/Application Support/WorkTwin Collector/worktwin.sqlite`；Windows `%LOCALAPPDATA%\WorkTwin Collector\worktwin.sqlite`；Linux `~/.local/share/worktwin/worktwin.sqlite`。`WORKTWIN_DATA_DIR` 可更改目录。macOS 密钥和企业 Token 保存到系统钥匙串，Windows 保存到凭据管理器；Linux 保存到权限受限的本机加密文件。已有数据库中的企业 Token 会迁移并清除。配置读取只返回“是否已保存”，不返回密钥。设置页提供 Wiki 导出和数据库备份；备份不包含配置密钥，恢复说明随备份附带。
 
