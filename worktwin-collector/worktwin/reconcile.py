@@ -38,8 +38,31 @@ def existing_for_project(con: sqlite3.Connection, document_id: int, limit: int =
           )
         ORDER BY k.updated_at DESC,k.id DESC LIMIT ?""", (metadata['project_key'],metadata['scope'],limit*4)).fetchall()
     boundary=permission_key(con,document_id)
-    eligible = [dict(r) for r in result if all(permission_key(con,e[0])==boundary for e in con.execute(
-        'SELECT DISTINCT document_id FROM knowledge_evidence WHERE knowledge_id=?',(r['id'],)))][:limit]
+
+    def same_confirmed_project(note) -> bool:
+        evidence = con.execute("""SELECT d.project_key,d.project_verified,d.deleted,
+                  s.enabled,s.allow_ai,e.is_current,e.superseded
+            FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
+            JOIN sources s ON s.id=d.source_id
+            WHERE e.knowledge_id=?""", (note['id'],)).fetchall()
+        return bool(evidence) and all(
+            ev['project_verified']==1 and ev['project_key']==metadata['project_key']
+            and ev['deleted']==0 and ev['enabled']==1 and ev['allow_ai']==1
+            and ev['is_current']==1 and ev['superseded']==0
+            for ev in evidence
+        )
+
+    if row['project_verified'] and metadata['scope']=='project':
+        # Explicitly linked project identity, not a shared folder name,
+        # authorizes comparison across independently AI-approved sources.
+        # Every contributing evidence document must belong to that project.
+        eligible = [dict(r) for r in result if same_confirmed_project(r)][:limit]
+    else:
+        # Unverified sessions remain confined to their original authorization.
+        eligible = [dict(r) for r in result if all(
+            permission_key(con,e[0])==boundary for e in con.execute(
+                'SELECT DISTINCT document_id FROM knowledge_evidence WHERE knowledge_id=?',(r['id'],))
+        )][:limit]
     for article in eligible:
         article['evidence']=[dict(e) for e in con.execute('''SELECT quote,occurred_at FROM knowledge_evidence
             WHERE knowledge_id=? AND is_current=1 AND superseded=0 ORDER BY id DESC LIMIT 6''',(article['id'],))]

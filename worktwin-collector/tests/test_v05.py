@@ -14,6 +14,23 @@ def token(client):
     return {'X-Worktwin-Token': match.group(1)}
 
 
+def verify_collected_project(client, headers):
+    """New scope contract: owner explicitly links each whole file to a project."""
+    projects = client.get('/api/projects/verified', headers=headers).json()
+    key = projects[0]['project_key'] if projects else None
+    docs = client.get('/api/documents', headers=headers).json()
+    for doc in docs:
+        if doc['project_verified']:
+            continue
+        body = {'project': '项目'}
+        if key:
+            body['existing_project_key'] = key
+        response = client.put(f"/api/documents/{doc['id']}/scope",
+                              headers=headers, json=body)
+        assert response.status_code == 200, response.text
+        key = response.json()['project_key']
+
+
 class RevisingModel(FakeModel):
     def chat(self, messages, max_tokens=2400):
         if messages[0]['role']=='system' and 'new_item' in messages[0]['content']:
@@ -43,6 +60,7 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         auth=token(client)
         sid=client.post('/api/sources',headers=auth,json={'name':'项目','root':str(folder),'allow_ai':True}).json()['id']
         app.state.collector.scan_all()
+        verify_collected_project(client, auth)
         assert app.state.knowledge_worker.process_next()['state']=='done'
         old=client.get('/api/knowledge',headers=auth).json()[0]
         tid=client.post('/api/twins',headers=auth,json={'name':'业务交接'}).json()['id']
@@ -51,6 +69,7 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         new=folder/'02-new.md'
         new.write_text('最终决定不再使用旧版路由，而由业务工作台统一执行审批路由。',encoding='utf-8')
         app.state.collector.scan_all()
+        verify_collected_project(client, auth)
         out=app.state.knowledge_worker.process_next()
         assert out['state']=='done',out
         assert out['proposals']==1,out
@@ -81,9 +100,11 @@ def test_revisions_expire_if_source_or_target_changed(tmp_path):
     with TestClient(app) as client:
         auth=token(client)
         client.post('/api/sources',headers=auth,json={'name':'项目','root':str(folder),'allow_ai':True})
-        app.state.collector.scan_all();assert app.state.knowledge_worker.process_next()['state']=='done'
+        app.state.collector.scan_all();verify_collected_project(client, auth)
+        assert app.state.knowledge_worker.process_next()['state']=='done'
         fresh=folder/'02-new.md';fresh.write_text('最终决定不再使用旧版路由，全部走新的统一引擎。',encoding='utf-8')
-        app.state.collector.scan_all();assert app.state.knowledge_worker.process_next()['proposals']==1
+        app.state.collector.scan_all();verify_collected_project(client, auth)
+        assert app.state.knowledge_worker.process_next()['proposals']==1
         p=client.get('/api/knowledge/proposals',headers=auth).json()[0]
         item=next(k for k in client.get('/api/knowledge',headers=auth).json() if k['id']==p['target_id'])
         modified=client.put(f'/api/knowledge/{item["id"]}',headers=auth,json={
@@ -105,9 +126,11 @@ def test_dismiss_restores_knowledge_and_rejects_unauthorized_reconciliation(tmp_
     with TestClient(app) as client:
         auth=token(client)
         client.post('/api/sources',headers=auth,json={'name':'项目','root':str(folder),'allow_ai':True})
-        app.state.collector.scan_all();app.state.knowledge_worker.process_next()
+        app.state.collector.scan_all();verify_collected_project(client, auth)
+        app.state.knowledge_worker.process_next()
         second=folder/'02-new.md';second.write_text('最终决定采用新版路由，准备替换旧版调度。',encoding='utf-8')
-        app.state.collector.scan_all();app.state.knowledge_worker.process_next()
+        app.state.collector.scan_all();verify_collected_project(client, auth)
+        app.state.knowledge_worker.process_next()
         proposal=client.get('/api/knowledge/proposals',headers=auth).json()[0]
         assert client.post(f'/api/knowledge/proposals/{proposal["id"]}/dismiss',headers=auth).status_code==200
         assert client.get('/api/knowledge/proposals',headers=auth).json()==[]

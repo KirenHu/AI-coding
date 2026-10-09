@@ -238,6 +238,22 @@ class Database:
                      '旧知识缺少讨论上下文，请核对适用范围与内容价值' if legacy else '',legacy,legacy,row['id']))
             conn.execute("INSERT INTO settings(key,value) VALUES('scoped_knowledge_v1','1')")
         conn.execute('CREATE INDEX IF NOT EXISTS ix_knowledge_topic ON knowledge(project_key,topic,scope)')
+        # 1.1.7: the old collector treated unverified folder labels as
+        # project identities. Repair only those automatically inferred keys.
+        # Preserve verified assignments and manually corrected scope; freeze
+        # any notes that still carry an unverified directory-derived scope
+        # allowing old cross-document associations to remain usable.
+        if not conn.execute("SELECT 1 FROM settings WHERE key='project_identity_v2'").fetchone():
+            unsafe = [r['id'] for r in conn.execute("""
+                SELECT id FROM documents WHERE project_verified=0 AND
+                  scope='project' AND project_key LIKE 'source:%'""")]
+            for doc_id in unsafe:
+                conn.execute("UPDATE documents SET project_key=?,scope='session' WHERE id=?",
+                             ('session:' + str(doc_id), doc_id))
+                conn.execute("""UPDATE knowledge SET review_hold=1,needs_review=1 WHERE
+                    source_bound=1 AND project_key LIKE 'source:%' AND id IN
+                    (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)""", (doc_id,))
+            conn.execute("INSERT INTO settings(key,value) VALUES('project_identity_v2','1')")
 
 
     @contextmanager

@@ -21,12 +21,11 @@ def document_scope(document) -> dict:
         key = 'session:' + str(document['id'])
         scope = 'session'
     else:
-        # Folder labels are display names; two independent sources with the
-        # same name are not the same permission boundary or project.
-        key = f"source:{document['source_id']}:{document['project']}"
-        scope = 'session' if document['file_type'] == '.jsonl' else 'project'
-        if scope == 'session':
-            key = 'session:' + str(document['id'])
+        # A folder name is only a hint, never verification of a business
+        # project. Even sibling documents may belong to unrelated projects.
+        # Stable per-document scope prevents accidental cross-file merging.
+        key = 'session:' + str(document['id'])
+        scope = 'session'
     return {'project_key': key, 'project': document['project'], 'scope': scope}
 
 
