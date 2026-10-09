@@ -102,7 +102,7 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             "requires_review标记本条是否改变已有结论、存在矛盾或无法判断所属范围；无法确定时为true。"
             "不提取泛泛评价、无对象无范围的偏好、常识、重复内容或单纯的任务指令。"
             "只有明确跨项目长期适用的个人习惯才用preference，单个项目的产出要求用decision。"
-            "AI说完成了只能outcome=reported且正文写明AI报告、尚未核实；本输入未提供执行工具证据，绝不能输出supported。"
+            "AI说完成了只能outcome=reported且正文写明AI报告、尚未核实；操作记录只是工具名称和返回状态，不提供原始结果，也不证明业务成果已验证；绝不能输出supported。"
             "outcome=accepted仅指用户对已经完成成果的实际验收通过，必须有对应原文；"
             "用户同意方案、确认需求或配置不等于成果验收，必须outcome=none；提出建议仅attribution=assistant。"
             "同主题信息合成一篇可阅读文档；保留当前结论、适用范围、理由、操作、例外和未决问题中有依据的部分，"
