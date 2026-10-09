@@ -3,7 +3,7 @@ const icon = n => `<svg aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const esc = x => String(x ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 const kindNames={fact:'业务知识',decision:'决策记录',process:'流程指引',preference:'个人偏好'};
 const titles={knowledge:'我的知识库',twins:'我的数字分身',sources:'信息采集',settings:'设置'};
-const state={page:'knowledge',knowledge:[],sources:[],twins:[],project:'all',kind:'all',query:'',twinId:null,modelReady:false,shareReady:false,proposals:[],settings:{},lifecycle:'active',chats:{},dirty:false,overlayDirty:false};
+const state={page:'knowledge',knowledge:[],sources:[],twins:[],project:'all',kind:'all',query:'',twinId:null,modelReady:false,shareReady:false,proposals:[],settings:{},lifecycle:'active',chats:{},dirty:false,overlayDirty:false,scrollPosition:0};
 const el=id=>document.getElementById(id);
 const content=el('page-content');
 let toastTimer;
@@ -43,9 +43,11 @@ async function refreshConnection(){
   }catch(e){el('model-status').textContent='本地服务不可用'}
 }
 async function go(page,force=false){
+  if(window.__JOB_POLL__){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;}
   if(state.versionMismatch)return;
   if(!force && page===state.page)return;
   if(state.dirty&&!confirmDiscard())return;state.dirty=false;
+  if(page!=='knowledge')state.scrollPosition=0;
   state.page=page;
   document.querySelectorAll('.nav-link').forEach(node=>node.classList.toggle('active',node.dataset.page===page));
   el('page-breadcrumb').textContent=titles[page];
@@ -85,6 +87,24 @@ async function renderSources(){
     if(!confirm(`彻底移除「${row?sourceName(row):'数据源'}」？这会删除其索引、AI 提炼知识以及相关分身的知识授权，无法撤回。`))return;
     await perform(()=>api(`sources/${id}`,{method:'DELETE'}),'sources');
   });
+  if(window.__JOB_POLL__){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;}
+  if(stats.ai_jobs && (stats.ai_jobs.queued>0 || stats.ai_jobs.running>0)){
+    window.__JOB_POLL__=setInterval(async()=>{
+      if(state.page!=='sources'){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;return}
+      try{
+        const [newStats,newJobs]=await Promise.all([api('stats'),api('ai/jobs')]);
+        const scanStatus=content.querySelector('.scan-status');
+        if(scanStatus){
+          scanStatus.innerHTML=`<span>系统会自动检测文件变化 · 最近扫描：${esc(newStats.last_scan)}</span><span>${newStats.documents} 份已索引资料 · ${newStats.ai_jobs.queued} 项待整理 · ${newStats.ai_jobs.running} 项处理中 · ${newStats.ai_jobs.error} 项失败</span>`;
+        }
+        if(newStats.ai_jobs.queued===0 && newStats.ai_jobs.running===0){
+          clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;
+          notify('AI 整理任务已全部完成');
+          await go('sources',true);
+        }
+      }catch{}
+    },3500);
+  }
 }
 function sourceRow(s){const kind=sourceType(s),name=sourceName(s);return `<div class="source-item"><div class="source-summary"><div class="source-name">${esc(name)} <span class="state-label ${s.enabled?'':'grey'}">${s.enabled?'采集中':'已暂停'}</span></div><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div><div class="source-caption"><span class="soft-caption">${esc(typeLabel[kind]||'工作资料')} · ${s.document_count} 份资料</span>${s.last_error?`<span class="state-label danger">${esc(s.last_error)}</span>`:''}</div></div>
   <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}/> 允许采集</label>
@@ -136,6 +156,10 @@ async function renderKnowledge(){
   el('create-knowledge').onclick=()=>openKnowledge(null);
   el('reprocess-knowledge').onclick=()=>busy(el('reprocess-knowledge'),async()=>{if(!confirm('用当前模型重新整理所有已授权资料？这会产生模型调用费用，旧知识会保留供核对。'))return;const r=await api('knowledge/reprocess',{method:'POST'});notify(`已安排 ${r.queued} 份资料重新整理`)});
   renderKnowledgeList();
+  if(state.scrollPosition){
+    const main=document.querySelector('.main-area');
+    if(main)requestAnimationFrame(()=>{main.scrollTop=state.scrollPosition});
+  }
 }
 function renderKnowledgeList(){
   const entries=visibleKnowledge().filter(k=>(state.project==='all'||entryProject(k)===state.project)&&(state.kind==='all'||k.kind===state.kind))
@@ -169,8 +193,14 @@ async function openProposal(id){
     };
   }
 }
-function closeDrawer(){closeOverlay()}
+function closeDrawer(){
+  if(!closeOverlay())return;
+  const main=document.querySelector('.main-area');
+  if(main&&state.scrollPosition)main.scrollTop=state.scrollPosition;
+}
 async function openKnowledge(id){
+  const main=document.querySelector('.main-area');
+  if(main)state.scrollPosition=main.scrollTop;
   if(!closeOverlay())return;
   let k=id?state.knowledge.find(x=>x.id===id):null;
   if(id&&!k){try{k=await api(`knowledge-item/${id}`)}catch(e){notify(e.message);return}}
@@ -202,10 +232,11 @@ async function openKnowledge(id){
     try{const payload={title:title.trim(),body:body.trim(),kind,status,...metadata};await api(k?`knowledge/${k.id}`:'knowledge',{method:k?'PUT':'POST',body:payload});closeOverlay(true);notify('知识已保存');await go('knowledge',true)}catch(e){notify(e.message)}
   }
   function edit(){details.innerHTML=`<div class="drawer-category">编辑知识文档</div><div class="field" style="margin-top:20px"><input id="edit-k-title" class="edit-title" maxlength="130" value="${esc(originalTitle)}" placeholder="知识标题"/></div><div class="field"><label for="edit-k-kind">知识类型</label><select id="edit-k-kind">${[['fact','业务知识'],['decision','决策记录'],['process','流程指引'],['preference','个人偏好']].map(([id,name])=>`<option value="${id}" ${k?.kind===id?'selected':''}>${name}</option>`).join('')}</select></div><div class="field"><label for="edit-k-scope">适用范围</label><select id="edit-k-scope">${Object.entries(scopeNames).map(([id,name])=>`<option value="${id}" ${(k?.scope||'global')===id?'selected':''}>${esc(name)}</option>`).join('')}</select><div class="field-note">局部要求只适用于所属项目或本次讨论。仅明确通用的规则选择“跨项目通用”。</div></div><div class="field"><label for="edit-k-project">所属项目 / 讨论名称</label><input id="edit-k-project" maxlength="200" value="${esc(k?.project||'')}" placeholder="如：Mingo 提示词库"/></div><div class="field"><label for="edit-k-topic">主题</label><input id="edit-k-topic" maxlength="100" value="${esc(k?.topic||k?.title||'')}" placeholder="如：提示词交付规范"/></div><div class="field"><label for="edit-k-scope-detail">具体适用对象与条件</label><input id="edit-k-scope-detail" maxlength="500" value="${esc(k?.scope_detail||(!k?'跨项目适用的人工知识':''))}" placeholder="如：仅用于 Mingo 提示词的正式交付版本"/></div><div class="field"><label for="edit-k-quality">内容是否有可复用价值</label><select id="edit-k-quality"><option value="useful" ${k?.quality==='useful'||!k?'selected':''}>有明确价值，可以使用</option><option value="uncertain" ${k?.quality==='uncertain'?'selected':''}>待核对，暂不使用</option><option value="noise" ${k?.quality==='noise'?'selected':''}>低价值，停用</option></select></div><div class="field"><label for="edit-k-body">知识正文</label><textarea id="edit-k-body" class="edit-body" spellcheck="false" placeholder="在这里写下知识内容；支持 Markdown；知识链接写作 [[K编号|显示名称]]。">${esc(originalBody)}</textarea></div><label class="check-row"><input id="edit-k-confirmed" type="checkbox" ${k?.status==='confirmed'||!k?'checked':''}/> <span>标记为内容已核对</span></label>${referenceRows()}`;
-    footer.innerHTML=`<button class="btn secondary" id="cancel-edit">取消</button><button class="btn" id="save-entry">保存知识</button>`;
+    footer.innerHTML=`<button class="btn secondary" id="cancel-edit">取消</button><button class="btn" id="save-entry">保存知识 <span class="kbd-hint">⌘S / Ctrl+S</span></button>`;
     ['edit-k-title','edit-k-body','edit-k-kind','edit-k-confirmed','edit-k-scope','edit-k-project','edit-k-topic','edit-k-scope-detail','edit-k-quality'].forEach(id=>{el(id).addEventListener('input',()=>state.overlayDirty=true);el(id).addEventListener('change',()=>state.overlayDirty=true)});
     el('cancel-edit').onclick=()=>{if(state.overlayDirty&&!confirm('放弃尚未保存的修改？'))return;state.overlayDirty=false;k?view():closeDrawer()};
     el('save-entry').onclick=()=>busy(el('save-entry'),()=>save(el('edit-k-title').value,el('edit-k-body').value,el('edit-k-kind').value,el('edit-k-confirmed').checked?'confirmed':'draft',{scope:el('edit-k-scope').value,project:el('edit-k-project').value,topic:el('edit-k-topic').value||el('edit-k-title').value,scope_detail:el('edit-k-scope-detail').value,quality:el('edit-k-quality').value}));
+    details.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();el('save-entry')?.click()}});
     details.querySelectorAll('[data-read-source]').forEach(x=>x.onclick=()=>showDocument(Number(x.dataset.readSource)));
   }
   if(k)view();else edit();
@@ -254,17 +285,40 @@ async function renderTwinEditor(id){
     `<div class="status-note">已保存授权 ${preview.selected_count} 篇 · 可用于本地问答 ${preview.usable_count} 篇 · 可发布 ${preview.publishable_count} 篇${preview.knowledge.some(k=>k.share_reason)?`<details><summary>查看不能发布的原因</summary>${preview.knowledge.filter(k=>k.share_reason).map(k=>`<p>${esc(k.title)}：${esc(k.share_reason)}</p>`).join('')}</details>`:''}</div>`+
     `<div class="twin-editor"><div class="twin-settings"><h2>基本信息</h2><div class="field"><label for="twin-edit-name">名称</label><input id="twin-edit-name" value="${esc(t.name)}" maxlength="90"/></div><div class="field"><label for="twin-edit-desc">使用场景</label><textarea id="twin-edit-desc" maxlength="500" rows="4">${esc(t.description)}</textarea></div><button class="btn secondary small" id="save-twin-info">保存分身配置</button>
     <div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><label class="field-note" for="ask-scope">试问范围</label><select id="ask-scope"><option value="local">本地已保存授权</option><option value="published" ${state.shareReady?'':'disabled'}>服务端已发布版本</option></select><div class="field" style="margin-top:12px"><label for="ask-project">所属项目 / 讨论范围</label><select id="ask-project"><option value="">自动识别；范围不明时只用通用知识</option>${[...new Map(eligible.filter(k=>selected.has(k.id)&&k.project_key&&k.scope!=='global').map(k=>[k.project_key,k])).values()].map(k=>`<option value="${esc(k.project_key)}">${esc(entryProject(k))} · ${esc(scopeNames[k.scope])}</option>`).join('')}</select></div><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">模型尚未配置，请前往设置完成连接。</p>'}<div id="twin-answer"></div><div class="divider"></div><h2>分享给协作者</h2><div id="sharing-panel">正在读取分享状态…</div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
-    <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已选择 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">名称、用途和知识授权一起保存</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
+    <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已选择 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div><div class="selection-filter-bar"><button type="button" class="selection-filter-btn active" data-twin-filter="all">全部</button><button type="button" class="selection-filter-btn" data-twin-filter="selected">仅已选 (${selected.size})</button><button type="button" class="selection-filter-btn" data-twin-filter="unselected">仅未选</button></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">名称、用途和知识授权一起保存</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
   el('twins-back').onclick=()=>{if(!confirmDiscard())return;state.dirty=false;state.twinId=null;go('twins',true)};
+  let twinFilter='all';
+  function updateCounts(){
+    el('selected-count').textContent=`已选择 ${selected.size} 篇`;
+    content.querySelectorAll('[data-twin-filter="selected"]').forEach(b=>{b.textContent=`仅已选 (${selected.size})`});
+  }
   function renderSelection(){
     const q=el('twin-search').value.toLowerCase().trim();
     el('selection-list').innerHTML=eligible.length?groups.map(project=>{
-      const list=eligible.filter(k=>entryProject(k)===project &&(k.title+' '+k.body).toLowerCase().includes(q));
+      const list=eligible.filter(k=>entryProject(k)===project &&(k.title+' '+k.body).toLowerCase().includes(q))
+        .filter(k=>twinFilter==='all'?true:twinFilter==='selected'?selected.has(k.id):!selected.has(k.id));
       if(!list.length)return '';
-      return `<div class="selection-group">${esc(project)} · ${list.length} 篇</div>${list.map(k=>`<label class="selection-row"><input type="checkbox" data-select-entry="${k.id}" ${selected.has(k.id)?'checked':''} ${availableToTwin(k)?'':'disabled'}/><span>${esc(k.title)}${!availableToTwin(k)?`<small class="field-note">${esc(k.unavailable_reason)}</small>`:k.share_unavailable_reason?`<small class="field-note">仅本地使用：${esc(k.share_unavailable_reason)}</small>`:''}</span></label>`).join('')}`;
+      return `<div class="selection-group"><span>${esc(project)} · ${list.length} 篇</span><div class="selection-group-actions"><button type="button" data-select-all="${esc(project)}">全选本组</button><button type="button" data-deselect-all="${esc(project)}">取消</button></div></div>${list.map(k=>`<label class="selection-row"><input type="checkbox" data-select-entry="${k.id}" ${selected.has(k.id)?'checked':''} ${availableToTwin(k)?'':'disabled'}/><span>${esc(k.title)}${!availableToTwin(k)?`<small class="field-note">${esc(k.unavailable_reason)}</small>`:k.share_unavailable_reason?`<small class="field-note">仅本地使用：${esc(k.share_unavailable_reason)}</small>`:''}</span></label>`).join('')}`;
     }).join(''):emptyState('book','暂无可分配知识','请先在知识库生成或创建知识。');
-    el('selection-list').querySelectorAll('[data-select-entry]').forEach(b=>b.onchange=()=>{const v=Number(b.dataset.selectEntry);if(b.checked)selected.add(v);else selected.delete(v);state.dirty=true;el('selected-count').textContent=`已选择 ${selected.size} 篇`});
+    el('selection-list').querySelectorAll('[data-select-entry]').forEach(b=>b.onchange=()=>{const v=Number(b.dataset.selectEntry);if(b.checked)selected.add(v);else selected.delete(v);state.dirty=true;updateCounts()});
+    el('selection-list').querySelectorAll('[data-select-all]').forEach(b=>b.onclick=e=>{
+      e.preventDefault();
+      const p=b.dataset.selectAll;
+      eligible.filter(k=>entryProject(k)===p && availableToTwin(k)).forEach(k=>selected.add(k.id));
+      state.dirty=true;updateCounts();renderSelection();
+    });
+    el('selection-list').querySelectorAll('[data-deselect-all]').forEach(b=>b.onclick=e=>{
+      e.preventDefault();
+      const p=b.dataset.deselectAll;
+      eligible.filter(k=>entryProject(k)===p).forEach(k=>selected.delete(k.id));
+      state.dirty=true;updateCounts();renderSelection();
+    });
   }
+  content.querySelectorAll('[data-twin-filter]').forEach(b=>b.onclick=()=>{
+    twinFilter=b.dataset.twinFilter;
+    content.querySelectorAll('[data-twin-filter]').forEach(x=>x.classList.toggle('active',x===b));
+    renderSelection();
+  });
   el('twin-search').oninput=renderSelection;renderSelection();
   async function saveTwin(button){
     if(button.disabled)return;
@@ -286,14 +340,14 @@ async function renderTwinEditor(id){
   watchChanges(el('twin-edit-name'));watchChanges(el('twin-edit-desc'));
   el('delete-twin').onclick=()=>busy(el('delete-twin'),async()=>{if(!confirm('删除这个数字分身并停止其分享？知识库会保留。'))return;if(await perform(()=>api(`twins/${id}`,{method:'DELETE'}),null)){state.dirty=false;state.twinId=null;await go('twins',true)}});
   el('ask-scope').onchange=()=>{el('twin-ask').disabled=el('ask-scope').value==='published'?!state.shareReady:!state.modelReady};
-  function renderChat(){el('twin-answer').innerHTML=(state.chats[id]||[]).map(turn=>`<div class="chat-question">${esc(turn.question)} <small>${turn.scope==='published'?'已发布版本':'本地授权'}</small></div><div class="chat-output">${esc(turn.answer)}</div><div class="citation-links">${turn.citations.map(c=>`<button class="info-link" data-citation="${c.knowledge_id}">[K${c.knowledge_id}] ${esc(c.title)}</button>`).join('')}</div>`).join('');el('twin-answer').querySelectorAll('[data-citation]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.citation)))}
+  function renderChat(){el('twin-answer').innerHTML=(state.chats[id]||[]).map(turn=>`<div class="chat-question">${esc(turn.question)} <small>${turn.scope==='published'?'已发布版本':'本地授权'}</small></div>`+(turn.loading?`<div class="chat-loading"><div class="chat-loading-dots"><span></span><span></span><span></span></div><span>正在检索并提炼授权知识…</span></div>`:`<div class="chat-output">${esc(turn.answer)}</div><div class="citation-links">${turn.citations.map(c=>`<button class="info-link" data-citation="${c.knowledge_id}">[K${c.knowledge_id}] ${esc(c.title)}</button>`).join('')}</div>`)).join('');el('twin-answer').querySelectorAll('[data-citation]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.citation)))}
   renderChat();
   el('twin-question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();el('twin-ask').click()}});
   el('twin-ask').onclick=()=>busy(el('twin-ask'),async()=>{
     const question=el('twin-question').value.trim();if(question.length<2){notify('请至少输入两个字');return}
     if(state.dirty){notify('请先保存名称、用途和知识授权，再试问');return}
-    const scope=el('ask-scope').value;const turn={question,scope,answer:'正在查找授权知识…',citations:[]};(state.chats[id]||=[]).push(turn);renderChat();
-    try{const r=await api(`twins/${id}/ask`,{method:'POST',body:{question,scope,project_key:el('ask-project').value||null}});turn.answer=r.answer;turn.citations=r.citations;el('twin-question').value=''}catch(e){turn.answer=e.message}renderChat();
+    const scope=el('ask-scope').value;const turn={question,scope,answer:'',citations:[],loading:true};(state.chats[id]||=[]).push(turn);renderChat();
+    try{const r=await api(`twins/${id}/ask`,{method:'POST',body:{question,scope,project_key:el('ask-project').value||null}});turn.answer=r.answer;turn.citations=r.citations;turn.loading=false;el('twin-question').value=''}catch(e){turn.answer=e.message;turn.loading=false}renderChat();
   });
   // Bind editing controls before loading optional remote sharing information.
   await renderSharing(id);

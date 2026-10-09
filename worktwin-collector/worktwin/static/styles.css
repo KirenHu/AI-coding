@@ -36,3 +36,24 @@ html,body{height:100%;overflow:hidden}
 .sidebar-foot{margin-top:auto}
 .main-area{height:100%;min-height:0;overflow:auto;overscroll-behavior:contain}
 @media(max-height:520px){.sidebar{padding-top:12px;padding-bottom:8px}.sidebar-subtitle{margin-top:14px}.privacy-small,.version-text{display:none}.sidebar-foot{padding-top:6px}.settings-link{margin-bottom:6px}.model-status{margin-bottom:4px}}
+
+/* Batch selection in twin editor */
+.selection-group{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#a0a4ab;font-weight:700;padding:16px 17px 5px}
+.selection-group-actions{display:flex;gap:8px}
+.selection-group-actions button{font-size:11px;color:var(--accent);background:none;border:0;padding:0;cursor:pointer}
+.selection-group-actions button:hover{text-decoration:underline}
+.selection-filter-bar{display:flex;gap:6px;margin-top:9px}
+.selection-filter-btn{font-size:11px;padding:3px 9px;border-radius:5px;border:1px solid var(--line);background:#fff;color:#777e87;cursor:pointer}
+.selection-filter-btn.active{background:#eef1fb;color:var(--accent);border-color:#cbd3ec;font-weight:600}
+
+/* Chat loading animation */
+.chat-loading{display:flex;align-items:center;gap:8px;padding:12px 14px;background:#f8f8fa;border-radius:8px;margin-top:12px;font-size:12px;color:#79808b}
+.chat-loading-dots{display:inline-flex;gap:4px}
+.chat-loading-dots span{width:5px;height:5px;background:#8b99b5;border-radius:50%;animation:chatBlink 1.4s infinite both}
+.chat-loading-dots span:nth-child(2){animation-delay:.2s}
+.chat-loading-dots span:nth-child(3){animation-delay:.4s}
+@keyframes chatBlink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+
+/* Editor helper and keyboard hints */
+.kbd-hint{font-size:10px;padding:2px 6px;background:#f1f2f5;border-radius:4px;color:#858b96;border:1px solid #e1e3e7;margin-left:6px;font-weight:normal}
+
