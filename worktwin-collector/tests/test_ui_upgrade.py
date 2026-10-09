@@ -11,6 +11,11 @@ def test_upgrade_changes_asset_urls_and_forbids_stale_cache(tmp_path, monkeypatc
     static = tmp_path / 'static'
     shutil.copytree(api.STATIC, static)
     monkeypatch.setattr(api, 'STATIC', static)
+    # An old process only substitutes the session token into the new template.
+    # Its HTML must still bypass unversioned scripts already cached in-browser.
+    legacy_server_html = (static / 'index.html').read_text().replace('__LOCAL_TOKEN_VALUE__', 'old-session')
+    legacy_urls = re.findall(r'(?:src|href)="(/assets/[^\"]+)"', legacy_server_html)
+    assert all('?v=' in url for url in legacy_urls)
 
     def resources(client):
         response = client.get('/')

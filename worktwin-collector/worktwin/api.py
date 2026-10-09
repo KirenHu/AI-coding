@@ -178,8 +178,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/", response_class=HTMLResponse)
     def home():
         html = (STATIC / "index.html").read_text(encoding="utf-8")
-        html = html.replace('href="/assets/styles.css"', f'href="/assets/styles.css?v={asset_version}"')
-        html = html.replace('src="/assets/app.js"', f'src="/assets/app.js?v={asset_version}"')
+        html = html.replace(f'href="/assets/styles.css?v={__version__}"', f'href="/assets/styles.css?v={asset_version}"')
+        html = html.replace(f'src="/assets/app.js?v={__version__}"', f'src="/assets/app.js?v={asset_version}"')
         response = HTMLResponse(html.replace("__LOCAL_TOKEN_VALUE__", local_token))
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
