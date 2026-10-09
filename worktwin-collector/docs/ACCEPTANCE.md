@@ -14,7 +14,7 @@ macOS v1.1.1 增补：在 macOS ARM/Intel Runner 验证实际 **DMG 容器完整
 | 浏览器共享闭环 | UI 连接企业服务、Markdown 显示、发布/创建链接、接收者问答、本人进程退出后继续问答、刷新保留访问、点击引用、远程撤销后拒绝访问 |
 | 浏览器设置 | 个人真实模拟模型测试、失败保留配置、未保存保护、分身一并保存、小窗口设置、管理员模型与员工 Token |
 | 浏览器布局 | 260 篇知识下，三种窗口尺寸的设置可见、可点击，正文独立滚动 |
-| 分发 | wheel/sdist/source；macOS arm64/x86_64、Windows x64 打包启动、知识写入、Markdown 渲染与正常退出 smoke |
+| 分发 | wheel/sdist/source；macOS arm64/x86_64、Windows x64 打包启动、知识写入、Markdown 渲染、打包后的 MCP 初始化/读取/撤销与正常退出 smoke |
 
 发布必须通过仓库 `.github/workflows/worktwin-build.yml` 的 Python、六个浏览器脚本和三个平台打包启动任务。成功后 main 的工作流生成 Release 与 SHA256 文件。运行状态以对应 GitHub Actions 记录为准；这里记录验收定义，不预先宣称未运行任务成功。
 

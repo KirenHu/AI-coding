@@ -19,6 +19,41 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 
+def verify_mcp(opener, owner_headers, note_id, base_url='http://127.0.0.1:8765'):
+    """Exercise the shipped SDK and its schemas inside the frozen app."""
+    def call(path, body, headers=owner_headers, method='POST'):
+        request=Request(base_url+path,method=method,headers=headers,
+                        data=json.dumps(body).encode() if body is not None else None)
+        with opener.open(request,timeout=10) as response:
+            return json.load(response)
+    twin=call('/api/twins',{'name':'Native MCP smoke'})['id']
+    call(f'/api/twins/{twin}/knowledge',{'knowledge_ids':[note_id]},method='PUT')
+    connection=call(f'/api/twins/{twin}/mcp',{})
+    headers={'Authorization':'Bearer '+connection['token'],
+             'Content-Type':'application/json','Accept':'application/json, text/event-stream'}
+    initialized=call('/mcp/',{'jsonrpc':'2.0','id':1,'method':'initialize',
+        'params':{'protocolVersion':'2025-11-25','capabilities':{},
+                  'clientInfo':{'name':'native-package-check','version':'1'}}},headers)
+    assert initialized['result']['protocolVersion']=='2025-11-25',initialized
+    headers['MCP-Protocol-Version']='2025-11-25'
+    listed=call('/mcp/',{'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},headers)
+    tools=listed['result']['tools']
+    assert {t['name'] for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log'},listed
+    assert all(t['annotations']['readOnlyHint'] for t in tools),listed
+    result=call('/mcp/',{'jsonrpc':'2.0','id':3,'method':'tools/call',
+                        'params':{'name':'read_knowledge','arguments':{'knowledge_id':note_id}}},headers)['result']
+    assert not result.get('isError') and 'Packaged Markdown' in json.dumps(result),result
+    permissions=call(f'/api/twins/{twin}/mcp',None,method='GET')
+    assert permissions['allow_logs'] is False,permissions
+    call(f'/api/twins/{twin}/mcp',{},method='DELETE')
+    try:
+        call('/mcp/',{'jsonrpc':'2.0','id':4,'method':'tools/list','params':{}},headers)
+        raise AssertionError('Revoked native MCP credential remained usable')
+    except HTTPError as exc:
+        assert exc.code==401,exc.code
+    print('PASS: packaged MCP initialization, read-only tools, authorized note reading and revocation')
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("Usage: python scripts/smoke_desktop.py <executable>", file=sys.stderr)
@@ -93,9 +128,11 @@ def main() -> int:
                     request = Request('http://127.0.0.1:8765/api/knowledge', method='POST', headers=headers,
                         data=json.dumps({'title':'Native smoke', 'body':'**Packaged Markdown**', 'status':'confirmed'}).encode())
                     with opener.open(request, timeout=5) as response:
-                        assert json.load(response)['id'] > 0
+                        note_id=json.load(response)['id']
+                        assert note_id > 0
                     with opener.open(Request('http://127.0.0.1:8765/api/knowledge', headers=headers), timeout=5) as response:
                         assert '<strong>Packaged Markdown</strong>' in json.load(response)[0]['rendered_body']
+                    verify_mcp(opener,headers,note_id)
                     with opener.open(Request('http://127.0.0.1:8765/api/shutdown', method='POST', headers=headers, data=b'{}'), timeout=5) as response:
                         assert json.load(response)['stopping'] is True
                     process.wait(timeout=15)

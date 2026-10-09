@@ -21,7 +21,8 @@ args=(
   --collect-data worktwin
   --collect-data certifi
   --collect-submodules worktwin
-  --collect-submodules mcp
+  --collect-submodules mcp.server
+  --collect-submodules mcp.shared
   --collect-submodules mcp_types
   --copy-metadata mcp
   --copy-metadata mcp-types
