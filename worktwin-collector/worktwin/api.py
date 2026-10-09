@@ -391,7 +391,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def documents(source_id: int | None = None, limit: int = Query(default=150, ge=1, le=500)):
         with db.connect() as con:
             if source_id is None:
-                query = "SELECT d.id,d.title,d.project,d.relative_path,d.file_type,d.size_bytes,d.indexed_at,s.name source_name FROM documents d JOIN sources s ON s.id=d.source_id ORDER BY d.indexed_at DESC,d.id DESC LIMIT ?"
+                query = "SELECT d.id,d.title,d.project,d.project_key,d.project_verified,d.scope,d.relative_path,d.file_type,d.size_bytes,d.indexed_at,s.name source_name FROM documents d JOIN sources s ON s.id=d.source_id ORDER BY d.indexed_at DESC,d.id DESC LIMIT ?"
                 return [dict(r) for r in con.execute(query,(limit,))]
             query = "SELECT d.id,d.title,d.relative_path,d.file_type,d.size_bytes,d.indexed_at,s.name source_name FROM documents d JOIN sources s ON s.id=d.source_id WHERE d.source_id=? ORDER BY d.indexed_at DESC,d.id DESC LIMIT ?"
             return [dict(r) for r in con.execute(query,(source_id,limit))]
