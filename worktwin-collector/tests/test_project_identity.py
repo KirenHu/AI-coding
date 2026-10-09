@@ -106,6 +106,13 @@ def test_legacy_unverified_folder_groups_are_quarantined_on_upgrade(tmp_path):
                    'legacy','source:1:legacy','project','旧归属','仅来源资料','useful')""").lastrowid
         con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
                     (kid,d,"真实资料中的已确认工作要求"))
+        edited = con.execute("""INSERT INTO knowledge
+            (kind,title,body,status,created_by,source_bound,project,project_key,
+             scope,topic,scope_detail,quality)
+            VALUES('decision','人工编辑的旧归属','人工修改后的正文必须保留','confirmed','human',1,
+                   'legacy','source:1:legacy','project','归属','仅旧来源资料','useful')""").lastrowid
+        con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
+                    (edited,d,"真实资料中的已确认工作要求"))
         con.execute("DELETE FROM settings WHERE key='project_identity_v2'")
     Database(db.path)
     with db.connect() as con:
@@ -114,6 +121,9 @@ def test_legacy_unverified_folder_groups_are_quarantined_on_upgrade(tmp_path):
         assert doc["scope"] == "session" and doc["project_key"] == f"session:{d}"
         assert know["body"] == "旧知识草稿"
         assert know["review_hold"] == 1 and know["needs_review"] == 1
+        human = con.execute("SELECT body,review_hold,needs_review FROM knowledge WHERE id=?",(edited,)).fetchone()
+        assert human["body"] == "人工修改后的正文必须保留"
+        assert human["review_hold"] == 1 and human["needs_review"] == 1
     # Running the migration again must not silently reactivate frozen notes.
     Database(db.path)
     with db.connect() as con:
