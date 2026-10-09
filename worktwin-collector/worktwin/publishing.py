@@ -47,7 +47,7 @@ class Publisher:
             twins = [dict(r) for r in con.execute('SELECT t.id,t.name,t.description FROM twins t JOIN publications p ON p.twin_id=t.id WHERE p.enabled=1')]
             assets = {}
             for t in twins:
-                rows = [dict(r) for r in con.execute('''SELECT k.id,k.title,k.body,k.version FROM twin_knowledge tk
+                rows = [dict(r) for r in con.execute('''SELECT k.id,k.title,k.body,k.version,k.scope,k.project,k.project_key,k.topic,k.scope_detail FROM twin_knowledge tk
                     JOIN knowledge k ON k.id=tk.knowledge_id WHERE tk.twin_id=?
                     AND ''' + SHARE_SQL,(t['id'],))]
                 t['knowledge_ids']=[r['id'] for r in rows]

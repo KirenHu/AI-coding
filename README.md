@@ -3,4 +3,4 @@
 
 ## 项目
 
-- [WorkTwin Collector](worktwin-collector/README.md)：本地优先的工作知识采集与数字分身 MVP；支持 Codex/Claude Code、企业 BYOK 知识整理、知识更新审核和来源授权。详见 [部署说明](worktwin-collector/docs/DEPLOY.md)。
+- [WorkTwin Collector](worktwin-collector/README.md)：后台采集本地工作资料、维护连贯知识库的桌面工具。支持文件夹与 Codex/Claude Code 的公开会话；对外 MCP 与完整日志项目归属仍待开发。产品范围以 [一期边界](worktwin-collector/docs/PHASE1.md) 为准。

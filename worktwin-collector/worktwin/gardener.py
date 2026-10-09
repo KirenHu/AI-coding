@@ -33,7 +33,7 @@ def _eligible(con, knowledge_id: int | None = None) -> dict | None:
         LEFT JOIN knowledge_curation_runs r ON r.knowledge_id=k.id
         WHERE k.source_bound=1 AND k.status IN ('draft','confirmed')
           AND k.kind IN ('decision','fact','process') AND k.needs_review=0
-          AND k.review_hold=0 AND length(k.body)<=?
+          AND k.review_hold=0 AND k.quality='useful' AND k.scope!='unknown' AND length(k.body)<=?
           AND (? IS NULL OR k.id=?)
           AND (length(k.body)>=? OR k.version>=3 OR
                (SELECT count(*) FROM knowledge_evidence e

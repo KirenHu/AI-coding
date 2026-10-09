@@ -182,9 +182,16 @@ class Database:
         """Idempotent in-place upgrades from the 0.1 SQLite schema."""
         additions = {
             "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0", "allow_share": "INTEGER NOT NULL DEFAULT 0"},
-            "documents": {"project": "TEXT NOT NULL DEFAULT ''"},
-            "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0"},
-            "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1", "origin": "TEXT NOT NULL DEFAULT 'consolidation'"},
+            "documents": {"project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''", "scope": "TEXT NOT NULL DEFAULT 'unknown'"},
+            "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0",
+                "scope": "TEXT NOT NULL DEFAULT 'unknown'", "project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''",
+                "topic": "TEXT NOT NULL DEFAULT ''", "scope_detail": "TEXT NOT NULL DEFAULT ''", "quality": "TEXT NOT NULL DEFAULT 'useful'",
+                "quality_reason": "TEXT NOT NULL DEFAULT ''", "attribution": "TEXT NOT NULL DEFAULT 'human'", "outcome": "TEXT NOT NULL DEFAULT 'none'",
+                "extraction_version": "INTEGER NOT NULL DEFAULT 0"},
+            "knowledge_history": {"scope": "TEXT NOT NULL DEFAULT 'unknown'", "project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''",
+                "topic": "TEXT NOT NULL DEFAULT ''", "scope_detail": "TEXT NOT NULL DEFAULT ''", "quality": "TEXT NOT NULL DEFAULT 'uncertain'", "outcome": "TEXT NOT NULL DEFAULT 'none'"},
+            "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1", "origin": "TEXT NOT NULL DEFAULT 'consolidation'",
+                "evidence_json": "TEXT NOT NULL DEFAULT '{}'", "occurred_at": "TEXT"},
             "ai_jobs": {"next_run_at": "TEXT", "claim_token": "TEXT"},
             "knowledge_evidence": {"is_current": "INTEGER NOT NULL DEFAULT 1", "occurred_at":"TEXT", "superseded":"INTEGER NOT NULL DEFAULT 0"},
         }
@@ -197,6 +204,27 @@ class Database:
         conn.execute("UPDATE documents SET project=(SELECT name FROM sources WHERE sources.id=documents.source_id) WHERE project=''")
         conn.execute("UPDATE knowledge SET source_bound=1 WHERE fingerprint IS NOT NULL OR id IN (SELECT knowledge_id FROM knowledge_evidence)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_documents_project ON documents(project)")
+        from .scope import document_scope, low_value
+        for row in conn.execute("SELECT * FROM documents WHERE project_key=''").fetchall():
+            metadata = document_scope(row)
+            conn.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?', (metadata['project_key'],metadata['scope'],row['id']))
+        # Run exactly once on upgrade, preserving text, history and assignments.
+        # Legacy extraction did not carry enough context to establish scope.
+        if not conn.execute("SELECT 1 FROM settings WHERE key='scoped_knowledge_v1'").fetchone():
+            for row in conn.execute('SELECT * FROM knowledge').fetchall():
+                docs = conn.execute('''SELECT DISTINCT d.project,d.project_key FROM knowledge_evidence e
+                    JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(row['id'],)).fetchall()
+                legacy = row['created_by'] != 'human' or bool(row['source_bound'])
+                noise = low_value(row['title'],row['body'])
+                project = docs[0]['project'] if len(docs)==1 else ''
+                key = docs[0]['project_key'] if len(docs)==1 else ''
+                conn.execute('''UPDATE knowledge SET scope=?,project=?,project_key=?,quality=?,quality_reason=?,
+                    review_hold=CASE WHEN ? THEN 1 ELSE review_hold END,
+                    needs_review=CASE WHEN ? THEN 1 ELSE needs_review END WHERE id=?''',
+                    ('unknown' if legacy else 'global',project,key,'noise' if noise else 'uncertain' if legacy else 'useful',
+                     '旧知识缺少讨论上下文，请核对适用范围与内容价值' if legacy else '',legacy,legacy,row['id']))
+            conn.execute("INSERT INTO settings(key,value) VALUES('scoped_knowledge_v1','1')")
+        conn.execute('CREATE INDEX IF NOT EXISTS ix_knowledge_topic ON knowledge(project_key,topic,scope)')
 
 
     @contextmanager

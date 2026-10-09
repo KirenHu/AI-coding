@@ -16,6 +16,7 @@ import zipfile
 from collections import defaultdict
 
 from .knowledge import KIND_LABELS
+from .knowledge_policy import READY_SQL, unavailable_reason
 
 WIKILINK = re.compile(r"\[\[K(0*[1-9]\d{0,16})(?:\|([^|\]\n]{1,160}))?\]\]")
 
@@ -117,7 +118,7 @@ def export_wiki_archive(con: sqlite3.Connection) -> bytes:
     may change without breaking note-to-note links because IDs stay stable.
     """
     records = [dict(row) for row in con.execute("""
-        SELECT id,kind,title,body,status,version,needs_review,source_bound
+        SELECT *
         FROM knowledge WHERE status!='archived' ORDER BY id
     """)]
     ids = {int(k['id']) for k in records}
@@ -130,19 +131,24 @@ def export_wiki_archive(con: sqlite3.Connection) -> bytes:
             FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
             WHERE e.knowledge_id=? ORDER BY e.id
         """, (k['id'],))]
-        projects = sorted({e['project'] for e in evidence if e['project']})
+        projects = ([k['project']] if k['scope']!='global' and k['project'] else
+                    sorted({e['project'] for e in evidence if e['project']}) if k['scope']!='global' else [])
         project = projects[0] if projects else '我的笔记'
         groups[project].append(k)
         title = k['title'].replace('\r', ' ').replace('\n', ' ').strip()
         link_name = f"K{k['id']:06d}"
+        usable=bool(con.execute('SELECT k.id FROM knowledge k WHERE k.id=? AND '+READY_SQL,(k['id'],)).fetchone())
         meta = ['---', f"worktwin_id: {k['id']}",
                 'title: ' + json.dumps(title, ensure_ascii=False),
+                'aliases: ' + json.dumps([title],ensure_ascii=False),
                 'kind: ' + json.dumps(k['kind']),
                 'status: ' + json.dumps(k['status']),
                 f"version: {k['version']}",
-                'project: ' + json.dumps(project, ensure_ascii=False), '---', '']
-        caution = ('> **需要复核**：证据已变更或知识尚未确认。\n'
-                   if k['needs_review'] or k['status'] != 'confirmed' else '')
+                'project: ' + json.dumps(project, ensure_ascii=False),
+                *[name+': '+json.dumps(k[name],ensure_ascii=False) for name in
+                    ('project_key','scope','topic','scope_detail','quality','outcome','updated_at')],
+                'ai_usable: '+('true' if usable else 'false'),'---','']
+        caution = ('> **暂不供 AI 使用**：'+unavailable_reason(con,k)+'。\n' if not usable else '')
         body = [*meta, f"# {title}", '', caution,
                 _export_body_links(k['body'], ids), '', '## 原始依据', '']
         if not evidence:
@@ -156,7 +162,7 @@ def export_wiki_archive(con: sqlite3.Connection) -> bytes:
                 body.append(f"- {e['source_title']}（{flag}{origin}）：{quote}")
         folder = f"projects/{_safe_folder(project)}" if projects else "personal"
         exported.append((f"{folder}/{link_name}.md",
-                         '\n'.join(x for x in body if x != '') + '\n'))
+                         '\n'.join(body) + '\n'))
 
     index = ['# WorkTwin · 知识索引', '',
              '可在 Obsidian 等支持 [[Wiki 链接]] 的 Markdown 工具中浏览。',

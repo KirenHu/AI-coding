@@ -45,7 +45,9 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                 assert expected_quote in raw
                 answer = json.dumps({'items': [{
                     'title': '审批采用工作流节点', 'kind': 'decision',
-                    'body': '复用现有工作流上下文，避免独立系统重复维护。', 'quote': expected_quote
+                        'body': '复用现有工作流上下文，避免独立系统重复维护。', 'quote': expected_quote,
+                        'topic':'审批架构','scope_detail':'审批系统的架构设计',
+                        'value_reason':'解释审批为何采用工作流节点','attribution':'document','outcome':'none'
                 }]}, ensure_ascii=False)
             else:
                 assert '[K1]' in raw  # twin is given assigned knowledge and its provenance

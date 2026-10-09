@@ -107,7 +107,7 @@ def test_revocation_during_model_call_and_stale_publication(tmp_path):
     app=create_server(tmp_path/'s.sqlite',inference_client=Slow(),publisher_tokens={'alice':'owner-credential-token'})
     with TestClient(app) as c:
         h={'Authorization':'Bearer owner-credential-token'}
-        body={'assets':[{'id':1,'title':'知识','body':'审批流程采用统一引擎','version':1}], 'twins':[{'id':1,'name':'助手','knowledge_ids':[1]}], 'revision':2}
+        body={'assets':[{'id':1,'title':'知识','body':'审批流程采用统一引擎','version':1,'scope':'global'}], 'twins':[{'id':1,'name':'助手','knowledge_ids':[1]}], 'revision':2}
         pub=c.put('/v1/publications/'+'a'*32,headers=h,json=body)
         assert pub.status_code==200,pub.text
         pid=pub.json()['publications']['1']

@@ -11,6 +11,7 @@ from .knowledge import store_candidates
 from .parsers import split_chunks
 from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
 from .gardener import KnowledgeGardener
+from .scope import document_scope
 
 
 class KnowledgeWorker:
@@ -72,7 +73,7 @@ class KnowledgeWorker:
             con.execute("UPDATE ai_jobs SET state='queued',claim_token=NULL WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts<4")
             con.execute("UPDATE ai_jobs SET state='error',error='整理任务多次中断，请重试' WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts>=4")
             row = con.execute("""SELECT j.id job_id,j.document_id,j.content_sha,d.content,
-                    COALESCE(s.adapter,s.kind) adapter
+                    d.id,d.source_id,d.project,d.project_key,d.scope,d.file_type,COALESCE(s.adapter,s.kind) adapter
                     FROM ai_jobs j JOIN documents d ON d.id=j.document_id
                     JOIN sources s ON s.id=d.source_id
                     WHERE j.state='queued' AND (j.next_run_at IS NULL OR j.next_run_at<=datetime('now'))
@@ -95,9 +96,12 @@ class KnowledgeWorker:
                             raise RuntimeError('job superseded')
                     return outer.client.chat(messages,max_tokens=max_tokens)
             leased_client=LeasedClient()
-            items = extract_knowledge(job["content"], transcript=job["adapter"] in ("codex", "claude"), client=leased_client)
             with self.db.connect() as con:
+                metadata=document_scope(job)
+                con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],job['document_id']))
                 known = existing_for_project(con, job["document_id"])
+            items = extract_knowledge(job["content"], transcript=job["adapter"] in ("codex", "claude"),
+                                      client=leased_client,scope=metadata,existing=known)
             # Compare candidates with already structured, AI-authorized knowledge.
             # A model can propose a revision but cannot apply it automatically.
             plan = make_consolidation_plan(leased_client, items, known)
