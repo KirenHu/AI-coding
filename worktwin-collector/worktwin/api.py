@@ -31,6 +31,7 @@ from .relations import related_knowledge, export_wiki_archive, WIKILINK
 from .inference import GatewayClient
 from .credentials import DesktopSecrets
 from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRuntime
+from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
 from .answers import answer_from_knowledge
 from .publishing import Publisher, PublishingClient
@@ -604,11 +605,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             candidate=PersonalModel(payload.base_url,key,payload.model)
             if not candidate.configured:
                 raise ValueError('请填写 API Key')
-            candidate.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=16)
-            secure.set('personal_model_key',key)
+            candidate.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=MODEL_TEST_TOKENS)
         except Exception as exc:
-            message=str(exc) if isinstance(exc,ValueError) else '连接测试或安全保存失败，未启用新配置；请检查模型信息和系统安全存储'
-            raise HTTPException(400,message) from exc
+            message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '无法读取模型密钥，请解锁系统安全存储或重新填写 API Key'
+            raise HTTPException(400,message+'；未启用新配置') from None
+        try:
+            secure.set('personal_model_key',candidate.key)
+        except Exception:
+            message='模型调用成功，但密钥保存失败；请解锁系统钥匙串或凭据管理器后重试；未启用新配置'
+            raise HTTPException(400,message) from None
         db.set_setting('personal_base_url',candidate.url)
         db.set_setting('personal_model',candidate.model)
         model_client.replace(candidate,'personal',tested=True)
@@ -621,12 +626,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(403,'企业员工不能配置个人模型')
         try:
             if not payload.api_key and payload.base_url.rstrip('/')!=db.setting('personal_base_url'):
-                raise ValueError()
+                raise ValueError('更换服务地址时请重新填写 API Key')
             key=payload.api_key or secure.get('personal_model_key')
             models=PersonalModel(payload.base_url,key).list_models()
             return {'models':models}
         except Exception as exc:
-            raise HTTPException(400,'无法获取模型列表，可以填写服务商提供的模型名称；请检查地址和 API Key') from exc
+            message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '无法读取模型密钥，请解锁系统安全存储或重新填写 API Key'
+            raise HTTPException(400,message+'；也可手动填写模型名称') from None
 
     @app.post('/api/model/test',dependencies=[Depends(authorized)])
     def test_current_model():
@@ -635,7 +641,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         try:
             model_client.test()
         except Exception as exc:
-            raise HTTPException(502,'模型调用失败，请检查连接、模型名称、凭据或服务额度') from exc
+            raise HTTPException(502,str(exc) if isinstance(exc,ModelConnectionError) else '模型调用失败，请检查连接、模型名称、凭据或服务额度') from None
         return {'ok':True}
 
     @app.put("/api/connection", dependencies=[Depends(authorized)])

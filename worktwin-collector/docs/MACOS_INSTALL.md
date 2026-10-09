@@ -1,24 +1,24 @@
-# macOS 安装与“App 已损坏”排查（v1.1.1）
+# macOS 安装与“App 已损坏”排查（v1.1.2）
 
 WorkTwin 在 GitHub Actions 上用 PyInstaller 构建。1.0.0 曾在打包后的
 `WorkTwin.app` 内追加许可文件，可能使 PyInstaller 刚完成的资源签名失效。
 1.0.1 把这些资料纳入 PyInstaller 数据文件，再要求严格校验最终 App 签名、
 验证 DMG 完整性，并在 CI 里从 **真正的 DMG** 挂载、复制和运行。
 
-**注意：v1.1.1 的公开测试安装包仍属于 ad-hoc 签名（文件名带 `-unsigned`），没有 Apple
+**注意：v1.1.2 的公开测试安装包仍属于 ad-hoc 签名（文件名带 `-unsigned`），没有 Apple
 Developer ID 签名和 Apple 公证。签名完整不等于 macOS Gatekeeper 信任。**
 Chrome/Safari 下载后可能显示“无法验证开发者”或“已损坏，无法打开”等安全拦截。
 macOS 无需永久关闭任何系统安全保护。
 
 ## 安装前核对
 
-1. 只从 [WorkTwin 官方 GitHub Release](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.1.1) 下载对应架构。
+1. 只从 [WorkTwin 官方 GitHub Release](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.1.2) 下载对应架构。
    Apple Silicon（M 系列）选择 `macOS-arm64-unsigned.dmg`；Intel 选择 `macOS-x86_64-unsigned.dmg`。
 2. 同页下载 `SHA256SUMS.txt`。打开终端执行（以 Apple Silicon 为例）：
 
    ```bash
    cd ~/Downloads
-   shasum -a 256 WorkTwin-Collector-1.1.1-macOS-arm64-unsigned.dmg
+   shasum -a 256 WorkTwin-Collector-1.1.2-macOS-arm64-unsigned.dmg
    ```
 
    将输出与 `SHA256SUMS.txt` 中对应一行**逐字比较**。不一致时删除文件重新下载，切勿绕过安全检查。

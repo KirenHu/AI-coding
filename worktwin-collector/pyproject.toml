@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "worktwin-collector"
-version = "1.1.1"
+version = "1.1.2"
 description = "Local-first work memory collector with grounded, editable knowledge"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,7 @@ dependencies = [
   "markdown-it-py>=3,<5",
   "keyring>=25,<26",
   "cryptography>=43,<47",
+  "certifi>=2024.7.4",
 ]
 
 [project.optional-dependencies]

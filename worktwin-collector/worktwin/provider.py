@@ -8,9 +8,10 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
+from .model_transport import chat_payload, model_urlopen
 
 
 class Message(BaseModel):
@@ -78,15 +79,16 @@ class ProviderService:
                 if calls >= self.daily_calls or tokens + reserved > self.daily_tokens or recent >= self.minute_calls:
                     raise HTTPException(429, '企业模型调用额度已达上限，请稍后重试或联系管理员')
                 con.execute('INSERT INTO usage(id,actor,state,reserved,model) VALUES(?,?,?,?,?)', (request_id, actor_hash, 'running', reserved, self.model))
-            payload = json.dumps({'model': self.model, 'messages': messages,
-                                  'max_tokens': body.max_tokens, 'temperature': body.temperature}, ensure_ascii=False).encode()
+            payload = json.dumps(chat_payload(self.url,self.model,messages,body.max_tokens,body.temperature), ensure_ascii=False).encode()
             request = Request(self.url + '/chat/completions', data=payload, method='POST',
                               headers={'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json'})
             try:
-                with (transport or urlopen)(request, timeout=120) as response:
+                with (transport or model_urlopen)(request, timeout=120) as response:
                     data = json.load(response)
                 if not isinstance(data['choices'][0]['message']['content'], str):
                     raise ValueError('Invalid response')
+                if not data['choices'][0]['message']['content'].strip() or data['choices'][0].get('finish_reason')=='length':
+                    raise ValueError('Empty or truncated response')
                 total = (data.get('usage') or {}).get('total_tokens')
                 total = total if isinstance(total, int) and total >= 0 else None
                 with self.connect() as con:

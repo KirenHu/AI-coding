@@ -23,6 +23,7 @@ from .answers import answer_from_knowledge
 from .provider import ChatRequest, ProviderService
 from .enterprise_settings import EnterpriseSettings
 from .model_settings import ModelInput, ModelListInput, PersonalModel, validate_url
+from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 
 
 class Asset(BaseModel):
@@ -122,7 +123,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
     initial_limits={k:config.get(k,os.getenv(env,default)) for k,env,default in (
         ('daily_calls','WORKTWIN_DAILY_CALL_LIMIT','1000'),('daily_tokens','WORKTWIN_DAILY_TOKEN_LIMIT','2000000'),('minute_calls','WORKTWIN_MINUTE_CALL_LIMIT','20'))}
     provider = None if inference_client else ProviderService(store.path.with_name('usage.sqlite'),config=config.model_config(),limits=initial_limits,allow_unconfigured=True)
-    app = FastAPI(title='WorkTwin Enterprise', version='1.1.1', docs_url=None, redoc_url=None)
+    app = FastAPI(title='WorkTwin Enterprise', version='1.1.2', docs_url=None, redoc_url=None)
     app.state.store = store
     app.state.provider = provider
     app.state.settings = config
@@ -187,7 +188,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
 
     @app.get('/health')
     def health():
-        return {'ok': True, 'version': '1.1.1'}
+        return {'ok': True, 'version': '1.1.2'}
 
     @app.get('/v1/me')
     def me(identity=Depends(owner)):
@@ -196,9 +197,9 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
     @app.post('/v1/model/test')
     def test_model(identity=Depends(owner)):
         if inference_client:
-            inference_client.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=16)
+            inference_client.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=MODEL_TEST_TOKENS)
         else:
-            provider.complete(identity,ChatRequest(messages=[{'role':'user','content':'请只回复 OK。'}],max_tokens=16))
+            provider.complete(identity,ChatRequest(messages=[{'role':'user','content':'请只回复 OK。'}],max_tokens=MODEL_TEST_TOKENS))
         return {'ok':True,**public_model()}
 
     @app.get('/v1/admin/settings')
@@ -213,10 +214,11 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
         try:
             url=validate_url(body.base_url)
             if not body.api_key and url!=old['url']:
-                raise ValueError()
+                raise ValueError('更换模型服务地址时请重新填写 API Key')
             return {'models':PersonalModel(url,body.api_key or old['key']).list_models()}
         except Exception as exc:
-            raise HTTPException(400,'无法获取模型列表，可直接填写服务商提供的模型名称') from exc
+            message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '无法获取模型列表'
+            raise HTTPException(400,message+'；可直接填写服务商提供的模型名称') from None
 
     @app.put('/v1/admin/model')
     def admin_model(body: AdminModelInput, identity=Depends(administrator)):
@@ -231,9 +233,10 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                 candidate=PersonalModel(url,key,body.model)
                 if not candidate.configured:
                     raise ValueError('请填写模型 API Key')
-                candidate.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=16)
+                candidate.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=MODEL_TEST_TOKENS)
             except Exception as exc:
-                raise HTTPException(400,'测试失败，未更改现有配置；请检查地址、模型、API Key 和服务额度') from exc
+                message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '模型测试失败，请检查网络或服务商设置'
+                raise HTTPException(400,message+'；未更改现有配置') from None
             limits={k:getattr(body,k) for k in ('daily_calls','daily_tokens','minute_calls')}
             config.save_model({'url':url,'key':key,'model':body.model},limits)
             provider=ProviderService(store.path.with_name('usage.sqlite'),config={'url':url,'key':key,'model':body.model},limits=limits)

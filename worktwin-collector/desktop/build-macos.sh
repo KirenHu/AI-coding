@@ -19,6 +19,7 @@ args=(
   --name WorkTwin
   --osx-bundle-identifier io.github.kirenhu.worktwin
   --collect-data worktwin
+  --collect-data certifi
   --collect-submodules worktwin
   --collect-submodules uvicorn
   --collect-submodules keyring.backends
@@ -42,7 +43,7 @@ suffix="-unsigned"
 if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.1.1-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.1.2-macOS-$(uname -m)${suffix}.dmg"
 hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg"
 hdiutil verify "$dmg"
 

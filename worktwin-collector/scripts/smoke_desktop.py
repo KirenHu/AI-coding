@@ -78,6 +78,18 @@ def main() -> int:
                         data=b'{"edition":"personal"}')
                     with opener.open(request, timeout=5) as response:
                         assert json.load(response)['edition'] == 'personal'
+                    # Reach the real provider from the *frozen app*, without a
+                    # valid key or a billable generation. This catches missing
+                    # CA certificates that localhost startup cannot exercise.
+                    request = Request('http://127.0.0.1:8765/api/model/personal/models', method='POST', headers=headers,
+                        data=json.dumps({'base_url':'https://api.deepseek.com', 'api_key':'worktwin-native-smoke-invalid-key'}).encode())
+                    try:
+                        opener.open(request, timeout=40)
+                        raise AssertionError('Invalid smoke credential unexpectedly accepted')
+                    except HTTPError as exc:
+                        detail=json.load(exc)['detail']
+                        assert exc.code==400 and ('HTTP 401' in detail or 'HTTP 403' in detail), detail
+                    print('PASS: frozen app verified real DeepSeek HTTPS and received authentication rejection; no real key or generation used')
                     request = Request('http://127.0.0.1:8765/api/knowledge', method='POST', headers=headers,
                         data=json.dumps({'title':'Native smoke', 'body':'**Packaged Markdown**', 'status':'confirmed'}).encode())
                     with opener.open(request, timeout=5) as response:
@@ -88,7 +100,7 @@ def main() -> int:
                         assert json.load(response)['stopping'] is True
                     process.wait(timeout=15)
                     assert process.returncode == 0, process.returncode
-                    print("PASS: packaged startup, settings and credential backend load, SQLite write, Markdown rendering, and graceful shutdown")
+                    print("PASS: packaged startup, settings and credential backend load, provider HTTPS, SQLite write, Markdown rendering, and graceful shutdown")
                     return 0
                 except (ConnectionError, HTTPError, URLError, TimeoutError, OSError) as exc:
                     last_error = exc

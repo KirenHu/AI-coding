@@ -51,6 +51,13 @@ def main():
                 expect(page.locator('#data-path')).to_contain_text('模型设置仍可使用')
                 page.unroute('**/api/data-location')
                 page.locator('#personal-url').fill(model_url);page.locator('#personal-model').fill('personal-model');page.locator('#personal-key').fill('ui-private-key')
+                # Provider diagnostics must reach the form instead of being
+                # replaced by the old generic address/key failure message.
+                page.route('**/api/model/personal/models',lambda route:route.fulfill(status=400,json={'detail':'模型账户余额不足（HTTP 402）；也可手动填写模型名称'}))
+                page.locator('#personal-list-models').click()
+                expect(page.locator('#personal-list-result')).to_contain_text('余额不足（HTTP 402）')
+                expect(page.locator('#personal-key')).to_have_value('ui-private-key')
+                page.unroute('**/api/model/personal/models')
                 page.locator('#personal-list-models').click()
                 expect(page.locator('#personal-list-result')).to_contain_text('获取到 2 个模型')
                 page.locator('#save-personal-model').click()
@@ -61,6 +68,7 @@ def main():
                 page.screenshot(path=str(ROOT/'release/WorkTwin-1.1-personal.png'),full_page=True)
                 page.locator('#personal-model').fill('broken');page.locator('#save-personal-model').click()
                 expect(page.locator('#settings-result')).to_contain_text('未启用新配置')
+                expect(page.locator('#settings-result')).to_contain_text('API Key 无效')
                 page.once('dialog',lambda d:d.dismiss())
                 page.locator('[data-page=knowledge]').click()
                 expect(page.locator('#personal-model')).to_have_value('broken')

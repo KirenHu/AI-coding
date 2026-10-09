@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import threading
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from pydantic import BaseModel, Field
 
 from .inference import GatewayClient
+from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS, chat_payload, model_urlopen
 
 
 class ModelInput(BaseModel):
@@ -23,6 +24,7 @@ class ModelListInput(BaseModel):
 
 
 def validate_url(url):
+    url = url.strip()
     parsed = urlparse(url)
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError('服务地址不能包含密码、查询参数或片段')
@@ -34,7 +36,7 @@ def validate_url(url):
 class PersonalModel:
     def __init__(self, url='', key='', model=''):
         self.url = validate_url(url) if url else ''
-        self.key = key
+        self.key = key.strip()
         self.model = model.strip()
 
     @property
@@ -45,24 +47,35 @@ class PersonalModel:
         if not self.url or not self.key:
             raise ValueError('请先填写模型服务地址和 API Key')
         request=Request(self.url+'/models',headers={'Authorization':'Bearer '+self.key})
-        with urlopen(request,timeout=30) as response:
+        with model_urlopen(request,timeout=30) as response:
             raw=response.read(1024*1024+1)
         if len(raw)>1024*1024:
             raise ValueError('模型列表响应过大')
-        data=json.loads(raw)
+        try:
+            data=json.loads(raw)
+            if not isinstance(data,dict) or not isinstance(data.get('data'),list):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ModelConnectionError('服务没有返回兼容的模型列表，可手动填写模型名称') from None
         return sorted({m['id'] for m in data.get('data',[])[:2000] if isinstance(m,dict) and isinstance(m.get('id'),str) and 0<len(m['id'])<=150})
 
     def chat(self, messages, max_tokens=1800):
         if not self.configured:
             raise RuntimeError('请先配置个人模型')
         request = Request(self.url + '/chat/completions', method='POST',
-                          data=json.dumps({'model':self.model,'messages':messages,'max_tokens':max_tokens,'temperature':0.1},ensure_ascii=False).encode(),
+                          data=json.dumps(chat_payload(self.url,self.model,messages,max_tokens),ensure_ascii=False).encode(),
                           headers={'Authorization':'Bearer '+self.key,'Content-Type':'application/json'})
-        with urlopen(request, timeout=120) as response:
-            data = json.load(response)
-        content = data['choices'][0]['message']['content']
+        try:
+            with model_urlopen(request, timeout=120) as response:
+                data = json.load(response)
+            choice = data['choices'][0]
+            content = choice['message']['content']
+        except (ValueError, TypeError, KeyError, IndexError):
+            raise ModelConnectionError('模型服务返回格式不兼容，请确认支持 Chat Completions 接口') from None
+        if choice.get('finish_reason') == 'length':
+            raise ModelConnectionError('模型输出达到长度上限，未返回完整答案；请使用非思考模型或增加输出额度')
         if not isinstance(content, str) or not content.strip():
-            raise RuntimeError('模型没有返回有效文本')
+            raise ModelConnectionError('模型没有返回有效答案，可能只返回了思考内容；请确认模型支持非思考模式')
         return content
 
 
@@ -113,8 +126,8 @@ class ModelRuntime:
         except Exception as exc:
             with self.lock:
                 if client is self.client:
-                    self.status, self.error = 'error', '模型调用失败，请检查连接、模型名称、凭据或服务额度'
-            raise RuntimeError('模型调用失败，请检查连接、模型名称、凭据或服务额度') from exc
+                    self.status, self.error = 'error', str(exc) if isinstance(exc,ModelConnectionError) else '模型调用失败，请检查连接、模型名称、凭据或服务额度'
+            raise ModelConnectionError(str(exc) if isinstance(exc,ModelConnectionError) else '模型调用失败，请检查连接、模型名称、凭据或服务额度') from None
         with self.lock:
             if client is not self.client:
                 raise RuntimeError('模型设置已更改，请重试')
@@ -122,4 +135,4 @@ class ModelRuntime:
         return result
 
     def test(self):
-        return self.chat([{'role':'user','content':'请只回复 OK。'}], max_tokens=16)
+        return self.chat([{'role':'user','content':'请只回复 OK。'}], max_tokens=MODEL_TEST_TOKENS)

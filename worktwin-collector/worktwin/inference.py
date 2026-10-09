@@ -11,9 +11,10 @@ import json
 import os
 import re
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from .knowledge import KIND_LABELS, user_turns
+from .model_transport import model_urlopen
 
 
 class GatewayClient:
@@ -37,7 +38,7 @@ class GatewayClient:
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",
         }, method="POST")
-        with urlopen(request, timeout=120) as response:
+        with model_urlopen(request, timeout=120) as response:
             data = json.load(response)
         return str(data["choices"][0]["message"]["content"])
 
