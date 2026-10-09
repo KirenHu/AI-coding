@@ -53,7 +53,7 @@ jobs:
     needs: python-test
     strategy:
       matrix:
-        runner: [macos-14, macos-15-intel]
+        runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:

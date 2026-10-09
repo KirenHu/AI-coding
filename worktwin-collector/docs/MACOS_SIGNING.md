@@ -32,3 +32,5 @@ CI 通过后仍需账户持有人在正常启用 Gatekeeper 的 Mac 上，用浏
 在 ARM64 和 Intel CI 均通过前，不宣称正式包已完成公证与验收。历史 1.0.1 Release 的 unsigned 文件说明仍适用于旧包。
 
 参考：[Apple 公证流程](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)、[PyInstaller macOS 签名](https://pyinstaller.org/en/stable/feature-notes.html#macos-binary-code-signing)。
+
+ARM64 Runner 使用 `macos-15`，Intel 使用 `macos-15-intel`。GitHub 已公告 macOS 14 将于 2026-11-02 退役：[Runner 退役公告](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/)。
