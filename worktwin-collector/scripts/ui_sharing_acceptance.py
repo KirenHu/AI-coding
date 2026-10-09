@@ -39,7 +39,7 @@ def main():
         local,lt=start(app,p1)
         try:
             with httpx.Client(base_url=local_url,trust_env=False,timeout=30) as c, sync_playwright() as pw:
-                html=c.get('/').text.replace('<link rel="stylesheet" href="/assets/styles.css" />','').replace('<script defer src="/assets/app.js"></script>','')
+                html=re.sub(r'<link rel="stylesheet" href="/assets/styles\.css(?:\?[^"]*)?" />|<script defer src="/assets/app\.js(?:\?[^"]*)?"></script>', '', c.get('/').text)
                 browser=pw.chromium.launch(headless=True,executable_path=os.environ.get('CHROMIUM_PATH') or None,args=['--no-sandbox'])
                 context=browser.new_context(viewport={'width':1440,'height':1000})
                 page=context.new_page()

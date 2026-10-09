@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-images=(release/WorkTwin-Collector-1.1.0-macOS-$(uname -m)*.dmg)
+images=(release/WorkTwin-Collector-1.1.1-macOS-$(uname -m)*.dmg)
 if (( ${#images[@]} != 1 )); then
   echo "Expected one macOS DMG for $(uname -m), got ${#images[@]}" >&2
   exit 1

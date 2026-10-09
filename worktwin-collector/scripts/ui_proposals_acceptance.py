@@ -55,7 +55,7 @@ def main():
                     con.execute('''INSERT INTO knowledge_proposals(document_id,content_sha,target_id,target_version,action,kind,title,body,quote,reason,fingerprint)
                      VALUES(?,?,?,?,?,?,?,?,?,?,?)''',(docs[0]['id'],file[0],kid,1,'replace','decision','新通知规则','新版通知规则由业务系统自动发送，旧手工流程不再使用。',quote,'新的结论替换旧方式','synthetic-proposal-test'))
                     review_flags(con,[kid])
-                html=html.replace('<link rel="stylesheet" href="/assets/styles.css" />','').replace('<script defer src="/assets/app.js"></script>','')
+                html=re.sub(r'<link rel="stylesheet" href="/assets/styles\.css(?:\?[^"]*)?" />|<script defer src="/assets/app\.js(?:\?[^"]*)?"></script>', '', html)
                 def backend(path,options):
                     res=client.request(options.get('method','GET'),str(path),headers=options.get('headers') or {},content=options.get('body'))
                     return {'status':res.status_code,'body':res.text}

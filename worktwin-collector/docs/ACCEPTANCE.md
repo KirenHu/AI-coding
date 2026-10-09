@@ -1,12 +1,12 @@
-# WorkTwin Collector 1.1.0 验收范围
+# WorkTwin Collector 1.1.1 验收范围
 
-macOS v1.1.0 增补：在 macOS ARM/Intel Runner 验证实际 **DMG 容器完整性、挂载 App 的 codesign --verify --deep --strict、复制 App 后代码签名、打包程序的 HTTP/SQLite 启停**，并明确记录 Gatekeeper 对 ad-hoc 签名的拒绝。该组检查不能替代 Apple Developer ID 签名、公证或用户实际首次下载双击测试；见 [安装排查](MACOS_INSTALL.md)。
+macOS v1.1.1 增补：在 macOS ARM/Intel Runner 验证实际 **DMG 容器完整性、挂载 App 的 codesign --verify --deep --strict、复制 App 后代码签名、打包程序的 HTTP/SQLite 启停**，并明确记录 Gatekeeper 对 ad-hoc 签名的拒绝。该组检查不能替代 Apple Developer ID 签名、公证或用户实际首次下载双击测试；见 [安装排查](MACOS_INSTALL.md)。
 
 所有自动数据为临时合成资料，模型为确定性测试实现或本机模拟 HTTP 供应商，不调用真实付费模型。测试运行真实 SQLite、FastAPI/uvicorn 与浏览器脚本，不以静态页面替代后端。
 
 | 验收 | 实现与检查 |
 |---|---|
-| 后端回归 | 66 项 pytest（包含个人配置、密钥持久保存、失败回滚、管理员权限、员工撤销和草稿准入的新回归）：采集/适配器、证据、更新/养护、任务恢复、来源权限、问答范围、共享与撤销、预算、链接和 Markdown 安全 |
+| 后端回归 | 67 项 pytest（包含个人配置、密钥持久保存、失败回滚、管理员权限、员工撤销和草稿准入的新回归）：采集/适配器、证据、更新/养护、任务恢复、来源权限、问答范围、共享与撤销、预算、链接和 Markdown 安全 |
 | 合成回答评测 | 8 项：知识引用、无依据拒答、撤权、隐私隔离；结果不代表生产准确率 |
 | 批量与 HTTP | 80 份合成资料增量/幂等扫描；独立 HTTP 网关模拟供应商调用 |
 | 浏览器主流程 | 授权目录、编辑知识、创建分身、勾选授权、来源撤销 |
@@ -31,6 +31,10 @@ PYTHONPATH=. python scripts/ui_settings_acceptance.py
 
 ## 1.1 本地运行记录（2026-10-09）
 
-66 项后端回归通过，8/8 合成回答断言通过，80 份增量扫描与真实 HTTP 验收通过。四个浏览器脚本已在 Chrome Headless Shell 中实际执行并通过，未发现 JavaScript 错误；受本地进程限制，浏览器用单进程模式，主流程/更新流通过本地 HTTP 桥接，设置/接收者页面同时验证实际 origin、刷新和 sessionStorage。Python wheel/sdist 构建通过。
+67 项后端回归通过，8/8 合成回答断言通过，80 份增量扫描与真实 HTTP 验收通过。四个浏览器脚本已在 Chrome Headless Shell 中实际执行并通过，未发现 JavaScript 错误；受本地进程限制，浏览器用单进程模式，主流程/更新流通过本地 HTTP 桥接，设置/接收者页面同时验证实际 origin、刷新和 sessionStorage。Python wheel/sdist 构建通过。
 
 用户已授权上传及生成测试安装包，改动已提交至 [PR #13](https://github.com/KirenHu/AI-coding/pull/13)。CI 执行四组浏览器验收和三个平台的原生打包检查；原生启动检查还确认设置接口和系统凭据后端能加载。实际运行状态见该 PR 及 main 的 GitHub Actions 记录。物理系统钥匙串交互提示和 Apple 公证仍未验收。
+
+## 1.1.1 升级兼容修复
+
+新增资源版本地址与禁止旧资源缓存的回归检查；浏览器验收模拟旧后台版本和备份目录接口失败，分别验证明确的重新启动指引及模型表单保留。67 项后端测试与四组浏览器脚本本地通过。原生 smoke 还检查 HTML 界面版本与打包服务版本一致。安装包发布状态以 GitHub Actions 的实际记录为准。

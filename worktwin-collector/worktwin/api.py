@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 import json
 import re
@@ -117,6 +118,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
     local_token = secrets.token_urlsafe(32)
+    # Each build uses a different resource URL, so a browser that has cached
+    # the previous app cannot execute its script against the upgraded HTML.
+    asset_version = hashlib.sha256(
+        (STATIC / 'app.js').read_bytes() + (STATIC / 'styles.css').read_bytes()
+    ).hexdigest()[:16]
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -148,7 +154,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         # by another website, cached in browser history, or sent as a referrer.
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        if request.url.path == "/" or request.url.path.startswith("/api/"):
+        if request.url.path == "/" or request.url.path.startswith(("/api/", "/assets/")):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -172,6 +178,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/", response_class=HTMLResponse)
     def home():
         html = (STATIC / "index.html").read_text(encoding="utf-8")
+        html = html.replace('href="/assets/styles.css"', f'href="/assets/styles.css?v={asset_version}"')
+        html = html.replace('src="/assets/app.js"', f'src="/assets/app.js?v={asset_version}"')
         response = HTMLResponse(html.replace("__LOCAL_TOKEN_VALUE__", local_token))
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
