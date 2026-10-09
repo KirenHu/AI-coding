@@ -21,3 +21,9 @@ worktwin-server-data/
 *.sqlite-shm
 
 enterprise.env
+
+# Signing credentials are never source artifacts.
+*.p12
+*.pfx
+*.p8
+*.keychain-db

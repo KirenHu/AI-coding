@@ -1,4 +1,4 @@
-name: WorkTwin 1.0.1 acceptance and release
+name: WorkTwin acceptance and signed release
 
 on:
   workflow_dispatch:
@@ -55,19 +55,38 @@ jobs:
       matrix:
         runner: [macos-14, macos-15-intel]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      WORKTWIN_REQUIRE_NOTARIZATION: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: zsh desktop/build-macos.sh
+      - name: Import Developer ID and prepare notarization credentials
+        if: env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: python desktop/prepare-macos-signing.py
+      - name: Build, sign and notarize App and DMG
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: zsh desktop/build-macos.sh
       - name: Mount the release DMG and verify its code seal, installed layout, and native startup
         run: zsh desktop/verify-macos-dmg.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: WorkTwin-${{ matrix.runner }}-unsigned
+          name: WorkTwin-${{ matrix.runner }}-${{ env.WORKTWIN_REQUIRE_NOTARIZATION == '1' && 'notarized' || 'unsigned' }}
           path: worktwin-collector/release/*.dmg
           if-no-files-found: error
+      - name: Remove signing credentials and ephemeral keychain
+        if: always() && env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
+        run: python desktop/cleanup-macos-signing.py
   windows:
     needs: python-test
     runs-on: windows-2022
@@ -107,6 +126,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release-assets
+          test -f WorkTwin-Collector-1.0.1-macOS-arm64.dmg
+          test -f WorkTwin-Collector-1.0.1-macOS-x86_64.dmg
+          if find . -name '*-unsigned.dmg' | read -r _; then
+            echo 'Refusing to publish an unsigned macOS DMG' >&2
+            exit 1
+          fi
           sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
           cd ..
           if gh release view worktwin-v1.0.1 >/dev/null 2>&1; then

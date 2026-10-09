@@ -63,3 +63,7 @@ open /Applications/WorkTwin.app
 
 官方背景：[Apple Developer 分发](https://developer.apple.com/macos/distribution/) ·
 [PyInstaller macOS 签名](https://pyinstaller.org/en/stable/feature-notes.html)
+
+## 正式签名流程
+
+新的 Developer ID 签名、公证及 Gatekeeper 发布条件见 [macOS 签名配置](MACOS_SIGNING.md)。本页的 unsigned 处理仅适用于历史测试包。正式包必须通过票据和 Gatekeeper 验收，不使用取消隔离作为验收手段。
