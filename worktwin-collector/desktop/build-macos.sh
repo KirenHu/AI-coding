@@ -21,6 +21,7 @@ args=(
   --collect-data worktwin
   --collect-submodules worktwin
   --collect-submodules uvicorn
+  --collect-submodules keyring.backends
   --add-data 'third_party/rowboat/LICENSE:third_party/rowboat'
   --add-data 'third_party/rowboat/NOTICE.md:third_party/rowboat'
 )
@@ -41,7 +42,7 @@ suffix="-unsigned"
 if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.0.1-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.1.0-macOS-$(uname -m)${suffix}.dmg"
 hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg"
 hdiutil verify "$dmg"
 

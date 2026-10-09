@@ -84,3 +84,37 @@ Electron 主程序、Node 工具总线或 Harbor 协作后端当成 WorkTwin 运
 - remio/AK Wiki 的主题编纂用于知识养护与 Wiki 组织；未获得开放源码，不声称复制其业务代码。
 
 最终验收必须同时覆盖知识编辑、链接与历史、后台更新、证据失效和分享范围，不能只以打包成功作为 1.0 的标准。
+
+## 7. 1.1 模型设置与权限源码对照（2026-10-09）
+
+本轮实际阅读 AnythingLLM 与 Open WebUI 的官方文档、模型设置组件、后端连接权限和许可证，并对照 WorkTwin 的个人/企业版需求。
+
+| 参考软件 | 实际阅读代码 | 采用到 WorkTwin 的行为 |
+|---|---|---|
+| AnythingLLM | `frontend/src/pages/GeneralSettings/LLMPreference/index.jsx`；`frontend/src/components/LLMSelection/GenericOpenAiOptions/index.jsx` | 设置中配置接口地址、模型、密码字段；获取服务的可用模型，获取失败保留手动输入；保存状态与未保存修改分开管理 |
+| Open WebUI | `src/lib/components/admin/Settings/Connections.svelte`；`backend/open_webui/routers/openai.py` 的管理员配置依赖、模型列表与逐模型权限检查 | 同一界面按管理员身份显示配置入口，服务端再次校验管理员权限；配置元信息与员工调用分开；权限在实际请求时校验 |
+| Rowboat | 既有 Markdown 索引、知识生成/养护及历史版本实现 | 保留此前已适配的 Markdown 解析与人工确认更新，不覆盖现有知识养护流程 |
+
+**本轮新增行为**：个人和管理员都能点击获取可用模型，模型名仍可自由输入；请求列表不保存配置，也不宣称模型调用成功。配置保存前发送一条不含工作资料的实际测试请求。获取列表期间地址/密钥变化则丢弃旧结果。员工不能使用个人配置和管理员模型列表接口。
+
+**代码复用决策**：AnythingLLM 的 React 组件与 Open WebUI 的 Svelte/服务端框架依赖不直接引入。WorkTwin 使用现有原生 JavaScript/Python 独立实现上述交互与校验，未复制这两者可执行源文件。AnythingLLM LICENSE 已核对为 MIT；Open WebUI 使用带额外品牌条款的自定义许可证，因此本轮只参考设计与工程机制，没有移植其代码。已有 Rowboat 的 Apache-2.0 小范围移植继续保留完整来源、许可和变更说明。
+
+可核查链接：
+
+- https://github.com/Mintplex-Labs/anything-llm/blob/master/frontend/src/pages/GeneralSettings/LLMPreference/index.jsx
+- https://github.com/Mintplex-Labs/anything-llm/blob/master/frontend/src/components/LLMSelection/GenericOpenAiOptions/index.jsx
+- https://github.com/Mintplex-Labs/anything-llm/blob/master/LICENSE
+- https://github.com/open-webui/open-webui/blob/main/src/lib/components/admin/Settings/Connections.svelte
+- https://github.com/open-webui/open-webui/blob/main/backend/open_webui/routers/openai.py
+- https://github.com/open-webui/open-webui/blob/main/LICENSE
+- https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-openai-compatible/
+- https://docs.useanything.com/setup/llm-configuration/overview
+
+读取版本的 Git blob SHA（文件内容标识，不当作提交标识）：
+
+- AnythingLLM LLMPreference：`ec3da5db9b7e26fd2358963a4752c7b86f1fd99a`
+- AnythingLLM GenericOpenAiOptions：`456a94c575bbf315b5e284f0a4810519f85cebe8`
+- AnythingLLM LICENSE：`cc42d1d080250fb38c47b81ed8f9fb1d64dc2965`
+- Open WebUI Connections：`65f1e54207b8f4f8464e1f30cf88aaa618b83b21`
+- Open WebUI openai.py：`63676d166e9174cb118fb965ebb717d98a65bf42`
+- Open WebUI LICENSE：`99f39e7feff29c93342877adad2d5c15e707444c`

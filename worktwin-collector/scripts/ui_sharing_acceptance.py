@@ -1,5 +1,6 @@
 """Real HTTP + browser sharing acceptance; deterministic provider, no paid key."""
 import json
+import os
 import re
 import socket
 import tempfile
@@ -39,8 +40,9 @@ def main():
         try:
             with httpx.Client(base_url=local_url,trust_env=False,timeout=30) as c, sync_playwright() as pw:
                 html=c.get('/').text.replace('<link rel="stylesheet" href="/assets/styles.css" />','').replace('<script defer src="/assets/app.js"></script>','')
-                browser=pw.chromium.launch(headless=True,args=['--no-sandbox'])
-                page=browser.new_page(viewport={'width':1440,'height':1000})
+                browser=pw.chromium.launch(headless=True,executable_path=os.environ.get('CHROMIUM_PATH') or None,args=['--no-sandbox'])
+                context=browser.new_context(viewport={'width':1440,'height':1000})
+                page=context.new_page()
                 errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
                 def bridge(path,options):
                     r=c.request(options.get('method','GET'),path,headers=options.get('headers',{}),content=options.get('body'))
@@ -50,12 +52,17 @@ def main():
                 page.evaluate("() => {window.fetch=async(path,opts={})=>{const r=await window.__bridge(path,opts);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})};}")
                 page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text())
                 page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
-                expect(page.get_by_text('连接企业知识服务')).to_be_visible()
-                page.locator('#model-status').click()
+                expect(page.locator('#model-status')).to_contain_text('模型未配置')
+                page.locator('#settings-link').click()
+                page.locator('[data-edition=enterprise]').click()
+                page.locator('#settings-enterprise-connect').click()
                 page.locator('#enterprise-url').fill(remote_url)
                 page.locator('#enterprise-token').fill('acceptance-employee-token')
                 page.locator('#connect-enterprise').click()
-                expect(page.get_by_text('企业知识模型已连接')).to_be_visible()
+                expect(page.locator('#model-status')).to_contain_text('尚未测试')
+                page.locator('#test-model').click()
+                expect(page.locator('#model-status')).to_contain_text('模型连接正常')
+                page.locator('[data-page=knowledge]').click()
                 # Create a real confirmed article with Markdown formatting.
                 page.get_by_role('button',name='新建知识').click()
                 page.locator('#edit-k-title').fill('审批节点说明')
@@ -94,20 +101,27 @@ def main():
                 # The recipient executes the shipped page and talks to the real
                 # shared HTTP API; no employee process or SQLite access is used.
                 with httpx.Client(base_url=remote_url,trust_env=False,timeout=30) as r:
-                    receiver=browser.new_page()
+                    receiver=page.context.new_page()
                     def shared_bridge(path,opts):
                         rr=r.request(opts.get('method','GET'),path,headers=opts.get('headers',{}),content=opts.get('body'))
                         return {'status':rr.status_code,'body':rr.text}
                     receiver.expose_function('__bridge',shared_bridge)
-                    shared_html=r.get('/share').text
-                    script=re.search(r'<script>(.*?)</script>',shared_html,re.S).group(1)
-                    receiver.set_content(shared_html.replace('<script>'+script+'</script>',''))
-                    receiver.evaluate("() => {window.fetch=async(path,opts={})=>{const r=await window.__bridge(path,opts);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})};}")
-                    receiver.add_script_tag(content=script.replace("new URLSearchParams(location.hash.slice(1)).get('access')||''",json.dumps(token)).replace("history.replaceState(null,'',location.pathname);",''))
+                    # A real origin allows sessionStorage and refresh acceptance.
+                    def serve_shared(route):
+                        from urllib.parse import urlsplit
+                        parsed=urlsplit(route.request.url)
+                        response=r.request(route.request.method,parsed.path,headers=route.request.headers,content=route.request.post_data)
+                        route.fulfill(status=response.status_code,body=response.content,headers={'content-type':response.headers.get('content-type','text/html')})
+                    receiver.route('http://worktwin-sharing.test/**',serve_shared)
+                    receiver.goto('http://worktwin-sharing.test/share#access='+token)
+                    expect(receiver.locator('#name')).to_have_text('项目交接分身')
+                    receiver.reload()
                     expect(receiver.locator('#name')).to_have_text('项目交接分身')
                     receiver.locator('#question').fill('审批怎么实现？')
                     receiver.locator('#ask').click()
                     expect(receiver.locator('#answer')).to_contain_text('已授权知识生成的回答')
+                    receiver.locator('#citations .citation').first.click()
+                    expect(receiver.locator('#citation-detail')).to_contain_text('审批复用')
                     # Stop the owner's process entirely; published answers remain.
                     local.should_exit=True;lt.join(10)
                     assert not lt.is_alive()
@@ -118,7 +132,7 @@ def main():
                     grant=r.get('/v1/twins/'+pid+'/grants',headers=h).json()[0]
                     assert r.delete('/v1/twins/'+pid+'/grants/'+grant['id'],headers=h).status_code==200
                     receiver.locator('#ask').click()
-                    expect(receiver.locator('#answer')).to_contain_text('已到期或已撤销')
+                    expect(receiver.locator('#name')).to_contain_text('已到期或已撤销')
                     assert not errors,errors
                 page.locator('#share-url').evaluate("el => el.value='测试链接已隐藏'")
                 page.screenshot(path=str(ROOT/'release'/'WorkTwin-1.0-sharing.png'),full_page=True)

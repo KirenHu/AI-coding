@@ -85,7 +85,7 @@ def main():
                         }}''')
                         page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text(encoding='utf-8'))
                         page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text(encoding='utf-8'))
-                        expect(page.locator('.nav-link')).to_have_count(3)
+                        expect(page.locator('.main-nav .nav-link')).to_have_count(3)
                         expect(page.get_by_role('heading', name='我的知识库')).to_be_visible()
                         page.locator('[data-page=sources]').click()
                         page.get_by_role('button', name='授权采集').first.click()

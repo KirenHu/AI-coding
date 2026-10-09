@@ -30,3 +30,7 @@
 `worktwin/rowboat_markdown.py` 将 Rowboat `apps/x/packages/core/src/knowledge/knowledge_index.ts` 的字段、列表、标题提取方式移植为 Python，固定源提交 `f07c3fcd7793e99d850ee61363a91eafa16d6afb`。运行时用于文档标题和知识别名/关键词检索；其余索引、版本存储与养护实现使用 WorkTwin 的 Python/SQLite 架构。没有移植 Node 服务或 isomorphic-git 运行时。
 
 原始 Apache-2.0 LICENSE 与本次改动说明在 `third_party/rowboat/`；wheel 与桌面包随附。新增 `markdown-it-py` 依赖（MIT）用于禁用原始 HTML 的 Markdown 展示。设计参考、已移植范围和尚未完成部分分别记录于 [竞品审计](COMPETITOR_AUDIT.md)。
+
+### 1.1 设置能力参考
+
+实际阅读 AnythingLLM 的模型设置和可用模型选择代码、Open WebUI 的管理员连接与后端权限实现；设计参考及文件版本见竞品审计第 7 节。本轮独立实现个人/企业设置与模型列表，没有新增两者运行依赖或复制源文件。密钥存储使用 `keyring`（MIT）与 `cryptography`（Apache-2.0/BSD），按其依赖方式分发。

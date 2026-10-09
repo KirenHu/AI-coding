@@ -6,6 +6,7 @@ import secrets
 import threading
 from urllib.request import Request, urlopen
 from .inference import GatewayClient
+from .knowledge_policy import SHARE_SQL
 
 
 class PublishingClient(GatewayClient):
@@ -48,12 +49,7 @@ class Publisher:
             for t in twins:
                 rows = [dict(r) for r in con.execute('''SELECT k.id,k.title,k.body,k.version FROM twin_knowledge tk
                     JOIN knowledge k ON k.id=tk.knowledge_id WHERE tk.twin_id=?
-                    AND k.status='confirmed' AND k.needs_review=0 AND k.kind!='preference'
-                    AND (k.source_bound=0 OR EXISTS(SELECT 1 FROM knowledge_evidence e
-                        WHERE e.knowledge_id=k.id AND e.is_current=1 AND e.superseded=0))
-                    AND NOT EXISTS(SELECT 1 FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
-                        JOIN sources s ON s.id=d.source_id WHERE e.knowledge_id=k.id
-                        AND (s.allow_share=0 OR s.allow_ai=0))''',(t['id'],))]
+                    AND ''' + SHARE_SQL,(t['id'],))]
                 t['knowledge_ids']=[r['id'] for r in rows]
                 assets.update({r['id']:r for r in rows})
             return {'twins':twins,'assets':list(assets.values())}

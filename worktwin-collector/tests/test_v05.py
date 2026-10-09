@@ -46,6 +46,7 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         assert app.state.knowledge_worker.process_next()['state']=='done'
         old=client.get('/api/knowledge',headers=auth).json()[0]
         tid=client.post('/api/twins',headers=auth,json={'name':'业务交接'}).json()['id']
+        assert client.put(f'/api/knowledge/{old["id"]}',headers=auth,json={**{key:old[key] for key in ('kind','title','body')},'status':'confirmed'}).status_code==200
         assert client.put(f'/api/twins/{tid}/knowledge',headers=auth,json={'knowledge_ids':[old['id']]}).status_code==200
         new=folder/'02-new.md'
         new.write_text('最终决定不再使用旧版路由，而由业务工作台统一执行审批路由。',encoding='utf-8')
@@ -60,9 +61,9 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         assert client.put(f'/api/twins/{tid}/knowledge',headers=auth,json={'knowledge_ids':[old['id']]}).status_code==400
         assert client.post(f'/api/knowledge/proposals/{pid}/accept',headers=auth).status_code==200
         item=next(k for k in client.get('/api/knowledge',headers=auth).json() if k['id']==old['id'])
-        assert item['version']==2 and item['status']=='confirmed' and item['needs_review']==0
+        assert item['version']==3 and item['status']=='confirmed' and item['needs_review']==0
         assert '新的项目路由' in item['body']
-        assert len(client.get(f'/api/knowledge/{old["id"]}/history',headers=auth).json())==1
+        assert len(client.get(f'/api/knowledge/{old["id"]}/history',headers=auth).json())==2
         assert client.get('/api/twins',headers=auth).json()[0]['knowledge_count']==1
         model.requests.clear()
         answer=client.post(f'/api/twins/{tid}/ask',headers=auth,json={'question':'现在怎么执行路由？'})
