@@ -14,7 +14,7 @@ PATTERNS = {
 }
 
 
-TURN_HEADING = re.compile(r"^### (用户|AI) · ([^\n]*)\n", re.M)
+TURN_HEADING = re.compile(r"^### (用户|AI|操作) · ([^\n]*)\n", re.M)
 
 
 def visible_turns(text: str) -> list[dict]:
@@ -23,7 +23,7 @@ def visible_turns(text: str) -> list[dict]:
     for idx, match in enumerate(headings):
         end = headings[idx+1].start() if idx+1 < len(headings) else len(text)
         value = text[match.end():end].strip()
-        if value:
+        if value and match.group(1) != "操作":
             result.append({'role': 'user' if match.group(1)=='用户' else 'assistant',
                            'text': value, 'occurred_at': match.group(2).strip()[:32]})
     return result
