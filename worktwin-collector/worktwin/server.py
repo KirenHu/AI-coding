@@ -11,6 +11,7 @@ import os
 import secrets
 import sqlite3
 import time
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from pydantic import BaseModel, Field
 
 from .answers import answer_from_knowledge
 from .provider import ChatRequest, ProviderService
+from .enterprise_settings import EnterpriseSettings
+from .model_settings import ModelInput, ModelListInput, PersonalModel, validate_url
 
 
 class Asset(BaseModel):
@@ -49,6 +52,16 @@ class GrantInput(BaseModel):
 
 class Question(BaseModel):
     question: str = Field(min_length=2, max_length=500)
+
+
+class AdminModelInput(ModelInput):
+    daily_calls: int = Field(default=1000, ge=1, le=1000000)
+    daily_tokens: int = Field(default=2000000, ge=100, le=1000000000)
+    minute_calls: int = Field(default=20, ge=1, le=10000)
+
+
+class EmployeeInput(BaseModel):
+    identity: str = Field(min_length=1, max_length=90, pattern=r'^[\w.@ -]+$')
 
 
 class SharedStore:
@@ -100,14 +113,19 @@ class SharedStore:
 
 def create_server(path: Path | None = None, *, inference_client=None, publisher_tokens: dict | None = None) -> FastAPI:
     credentials = publisher_tokens if publisher_tokens is not None else json.loads(os.getenv('WORKTWIN_PUBLISHER_TOKENS', '{}'))
-    if not credentials or len(set(credentials.values())) != len(credentials) or any(not k or not v for k,v in credentials.items()):
+    admin_token = os.getenv('WORKTWIN_ADMIN_TOKEN','')
+    if (not credentials and len(admin_token)<32) or (admin_token and (len(admin_token)<32 or admin_token in credentials.values())) or len(set(credentials.values())) != len(credentials) or any(not k or not v for k,v in credentials.items()):
         raise RuntimeError('设置 WORKTWIN_PUBLISHER_TOKENS 为员工标识到独立令牌的 JSON 映射')
     store = SharedStore(path or Path(os.getenv('WORKTWIN_SERVER_DATA_DIR', './worktwin-server-data')) / 'sharing.sqlite')
-    provider = None if inference_client else ProviderService(store.path.with_name('usage.sqlite'))
-    model_tokens = [x.strip() for x in os.getenv('WORKTWIN_ENTERPRISE_TOKENS', '').split(',') if x.strip()]
-    app = FastAPI(title='WorkTwin Enterprise', version='1.0.0', docs_url=None, redoc_url=None)
+    config = EnterpriseSettings(store, credentials)
+    provider_lock = threading.RLock()
+    initial_limits={k:config.get(k,os.getenv(env,default)) for k,env,default in (
+        ('daily_calls','WORKTWIN_DAILY_CALL_LIMIT','1000'),('daily_tokens','WORKTWIN_DAILY_TOKEN_LIMIT','2000000'),('minute_calls','WORKTWIN_MINUTE_CALL_LIMIT','20'))}
+    provider = None if inference_client else ProviderService(store.path.with_name('usage.sqlite'),config=config.model_config(),limits=initial_limits,allow_unconfigured=True)
+    app = FastAPI(title='WorkTwin Enterprise', version='1.1.0', docs_url=None, redoc_url=None)
     app.state.store = store
     app.state.provider = provider
+    app.state.settings = config
 
     @app.middleware('http')
     async def headers(request: Request, call_next):
@@ -129,10 +147,27 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
         return response
 
     def owner(authorization: str = Header(default='')):
-        for identity, token in credentials.items():
-            if secrets.compare_digest(authorization, 'Bearer ' + token):
-                return identity
+        if admin_token and secrets.compare_digest(authorization, 'Bearer '+admin_token):
+            return '__administrator__'
+        identity = config.identify(authorization.removeprefix('Bearer '))
+        if identity:
+            return identity
         raise HTTPException(401, '发布凭据无效')
+
+    def administrator(authorization: str = Header(default='')):
+        if not admin_token or not secrets.compare_digest(authorization, 'Bearer '+admin_token):
+            raise HTTPException(403,'此操作仅限企业管理员')
+        return '__administrator__'
+
+    def model_access(authorization):
+        if (admin_token and secrets.compare_digest(authorization, 'Bearer '+admin_token)) or config.identify(authorization.removeprefix('Bearer ')):
+            return True
+        return False
+
+    def public_model():
+        if inference_client:
+            return {'model':'测试模型','model_configured':True}
+        return {'model':provider.model,'model_configured':bool(provider.key and provider.model)}
 
     def audit(con, action, identity, resource):
         con.execute('INSERT INTO audit(action,owner,resource) VALUES(?,?,?)', (action,identity,resource))
@@ -152,20 +187,118 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
 
     @app.get('/health')
     def health():
-        return {'ok': True, 'version': '1.0.0'}
+        return {'ok': True, 'version': '1.1.0'}
 
     @app.get('/v1/me')
     def me(identity=Depends(owner)):
-        return {'ok':True,'identity':identity}
+        return {'ok':True,'identity':identity,'role':'admin' if identity=='__administrator__' else 'employee',**public_model()}
+
+    @app.post('/v1/model/test')
+    def test_model(identity=Depends(owner)):
+        if inference_client:
+            inference_client.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=16)
+        else:
+            provider.complete(identity,ChatRequest(messages=[{'role':'user','content':'请只回复 OK。'}],max_tokens=16))
+        return {'ok':True,**public_model()}
+
+    @app.get('/v1/admin/settings')
+    def admin_settings(identity=Depends(administrator)):
+        return {**public_model(),'base_url':provider.url if provider else '', 'has_api_key':bool(provider and provider.key),
+                'daily_calls':provider.daily_calls if provider else 1000,'daily_tokens':provider.daily_tokens if provider else 2000000,
+                'minute_calls':provider.minute_calls if provider else 20,'employees':config.employees()}
+
+    @app.post('/v1/admin/models')
+    def admin_models(body: ModelListInput, identity=Depends(administrator)):
+        old=config.model_config()
+        try:
+            url=validate_url(body.base_url)
+            if not body.api_key and url!=old['url']:
+                raise ValueError()
+            return {'models':PersonalModel(url,body.api_key or old['key']).list_models()}
+        except Exception as exc:
+            raise HTTPException(400,'无法获取模型列表，可直接填写服务商提供的模型名称') from exc
+
+    @app.put('/v1/admin/model')
+    def admin_model(body: AdminModelInput, identity=Depends(administrator)):
+        nonlocal provider
+        with provider_lock:
+            old=config.model_config()
+            try:
+                url=validate_url(body.base_url)
+                if not body.api_key and url!=old['url']:
+                    raise ValueError('更换模型服务地址时请重新填写 API Key')
+                key=body.api_key or old['key']
+                candidate=PersonalModel(url,key,body.model)
+                if not candidate.configured:
+                    raise ValueError('请填写模型 API Key')
+                candidate.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=16)
+            except Exception as exc:
+                raise HTTPException(400,'测试失败，未更改现有配置；请检查地址、模型、API Key 和服务额度') from exc
+            limits={k:getattr(body,k) for k in ('daily_calls','daily_tokens','minute_calls')}
+            config.save_model({'url':url,'key':key,'model':body.model},limits)
+            provider=ProviderService(store.path.with_name('usage.sqlite'),config={'url':url,'key':key,'model':body.model},limits=limits)
+            app.state.provider=provider
+        return {'ok':True,**public_model()}
+
+    @app.post('/v1/admin/employees')
+    def issue_employee(body: EmployeeInput, identity=Depends(administrator)):
+        if body.identity=='__administrator__':
+            raise HTTPException(400,'该员工标识不可使用')
+        token=config.issue(body.identity)
+        return {'identity':body.identity,'token':token}
+
+    @app.delete('/v1/admin/employees/{employee}')
+    def revoke_employee(employee: str, identity=Depends(administrator)):
+        if not config.revoke(employee):
+            raise HTTPException(404,'员工不存在')
+        with store.connect() as con:
+            con.execute('UPDATE grants SET revoked=1 WHERE twin_id IN (SELECT id FROM twins WHERE owner=?)',(employee,))
+            audit(con,'revoke_employee',identity,employee)
+        return {'revoked':True}
 
     @app.post('/v1/chat/completions')
     def completions(body: ChatRequest, authorization: str = Header(default='')):
-        if not any(secrets.compare_digest(authorization, 'Bearer ' + t) for t in [*model_tokens, *credentials.values()]):
+        if not model_access(authorization):
             raise HTTPException(401, '未获得企业模型访问权限')
         if inference_client:
             content = inference_client.chat([m.model_dump() for m in body.messages], max_tokens=body.max_tokens)
+            if not model_access(authorization):
+                raise HTTPException(401,'企业 Token 已撤销，请联系管理员')
             return {'choices':[{'message':{'content':content}}]}
-        return provider.complete(authorization, body)
+        result=provider.complete(authorization, body)
+        if not model_access(authorization):
+            raise HTTPException(401,'企业 Token 已撤销，请联系管理员')
+        return result
+
+    @app.get('/v1/shared/knowledge/{knowledge_id}')
+    def shared_knowledge(knowledge_id: int, authorization: str = Header(default='')):
+        with store.connect() as con:
+            row=view(con,authorization.removeprefix('Bearer '))
+            asset=con.execute('''SELECT a.local_id id,a.title,a.body FROM assets a JOIN assignments x ON x.asset_id=a.local_id
+                WHERE x.twin_id=? AND a.owner=? AND a.installation=? AND a.local_id=?''',
+                (row['id'],row['owner'],row['installation'],knowledge_id)).fetchone()
+            if not asset:
+                raise HTTPException(404,'这篇知识不在当前分享范围内')
+            return dict(asset)
+
+    @app.post('/v1/twins/{twin_id}/preview-ask')
+    def preview_ask(twin_id: str, body: Question, authorization: str = Header(default=''), identity=Depends(owner)):
+        with store.connect() as con:
+            row=owned(con,twin_id,identity)
+            revision=row['version']
+            rows=[dict(r) for r in con.execute('''SELECT a.local_id id,a.title,a.body FROM assets a JOIN assignments x ON x.asset_id=a.local_id
+                WHERE x.twin_id=? AND a.owner=? AND a.installation=?''',(twin_id,identity,row['installation']))]
+        class ScopedModel:
+            def chat(self,messages,max_tokens=1600):
+                if inference_client:
+                    return inference_client.chat(messages,max_tokens=max_tokens)
+                return provider.complete(identity,ChatRequest(messages=messages,max_tokens=max_tokens))['choices'][0]['message']['content']
+        result=answer_from_knowledge(ScopedModel(),body.question,rows)
+        owner(authorization)
+        with store.connect() as con:
+            if owned(con,twin_id,identity)['version']!=revision:
+                raise HTTPException(409,'发布版本已更新，请重新提问')
+        return {**result,'scope':'published','publication_version':revision}
 
     @app.put('/v1/publications/{installation}')
     def publish(installation: str, body: Publication, identity=Depends(owner)):

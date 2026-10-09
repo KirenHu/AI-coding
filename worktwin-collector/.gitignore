@@ -21,3 +21,7 @@ worktwin-server-data/
 *.sqlite-shm
 
 enterprise.env
+
+credential.key
+credentials.json
+credentials.tmp

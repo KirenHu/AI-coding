@@ -60,6 +60,7 @@ def test_twin_knowledge_acl_and_revocation(tmp_path):
         approved=next(k for k in entries if '工作流节点' in k['body'])
         denied=next(k for k in entries if '472995' in k['body'])
         tid=c.post('/api/twins',headers=h,json={'name':'产品交接','description':'给项目接任者'}).json()['id']
+        assert c.put(f'/api/knowledge/{approved["id"]}',headers=h,json={**{key:approved[key] for key in ('kind','title','body')},'status':'confirmed'}).status_code==200
         select=c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[approved['id']]})
         assert select.status_code==200,select.text
         assert c.get(f'/api/twins/{tid}',headers=h).json()['knowledge_ids']==[approved['id']]

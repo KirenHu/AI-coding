@@ -104,6 +104,7 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
             assert len(extracted) == 1 and extracted[0]['evidence'][0]['is_current']
             twin = api.post('/api/twins', headers=access, json={'name': '项目交接助手'}).json()['id']
             knowledge_id = extracted[0]['id']
+            assert api.put(f'/api/knowledge/{extracted[0]["id"]}',headers=access,json={**{key:extracted[0][key] for key in ('kind','title','body')},'status':'confirmed'}).status_code==200
             api.put(f'/api/twins/{twin}/knowledge', headers=access, json={'knowledge_ids': [knowledge_id]})
             answer = api.post(f'/api/twins/{twin}/ask', headers=access, json={
                 'question': '为什么把审批配置为工作流节点？'})

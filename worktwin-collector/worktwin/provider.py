@@ -25,20 +25,21 @@ class ChatRequest(BaseModel):
 
 
 class ProviderService:
-    def __init__(self, path: Path | None = None):
-        self.url = os.getenv('WORKTWIN_BYOK_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
-        self.key = os.getenv('WORKTWIN_BYOK_API_KEY', '')
-        self.model = os.getenv('WORKTWIN_BYOK_MODEL', '')
-        if not self.key or not self.model:
+    def __init__(self, path: Path | None = None, *, config=None, limits=None, allow_unconfigured=False):
+        config, limits = config or {}, limits or {}
+        self.url = config.get('url',os.getenv('WORKTWIN_BYOK_BASE_URL', 'https://api.openai.com/v1')).rstrip('/')
+        self.key = config.get('key',os.getenv('WORKTWIN_BYOK_API_KEY', ''))
+        self.model = config.get('model',os.getenv('WORKTWIN_BYOK_MODEL', ''))
+        if (not self.key or not self.model) and not allow_unconfigured:
             raise RuntimeError('企业服务需设置 WORKTWIN_BYOK_API_KEY 和 WORKTWIN_BYOK_MODEL')
         parsed = urlparse(self.url)
         if parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1')):
             raise ValueError('模型提供方必须使用 HTTPS，除非连接本机测试服务')
         self.path = path or Path(os.getenv('WORKTWIN_SERVER_DATA_DIR', './worktwin-server-data')) / 'usage.sqlite'
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.daily_calls = int(os.getenv('WORKTWIN_DAILY_CALL_LIMIT', '1000'))
-        self.daily_tokens = int(os.getenv('WORKTWIN_DAILY_TOKEN_LIMIT', '2000000'))
-        self.minute_calls = int(os.getenv('WORKTWIN_MINUTE_CALL_LIMIT', '20'))
+        self.daily_calls = int(limits.get('daily_calls',os.getenv('WORKTWIN_DAILY_CALL_LIMIT', '1000')))
+        self.daily_tokens = int(limits.get('daily_tokens',os.getenv('WORKTWIN_DAILY_TOKEN_LIMIT', '2000000')))
+        self.minute_calls = int(limits.get('minute_calls',os.getenv('WORKTWIN_MINUTE_CALL_LIMIT', '20')))
         self.semaphore = threading.BoundedSemaphore(int(os.getenv('WORKTWIN_MODEL_CONCURRENCY', '4')))
         with self.connect() as con:
             con.execute('''CREATE TABLE IF NOT EXISTS usage (
@@ -58,6 +59,8 @@ class ProviderService:
             con.close()
 
     def complete(self, actor: str, body: ChatRequest, *, transport=None) -> dict:
+        if not self.key or not self.model:
+            raise HTTPException(503,'企业模型尚未配置，请联系管理员')
         messages = [m.model_dump() for m in body.messages]
         chars = sum(len(m['content']) for m in messages)
         if chars > 80000:

@@ -65,6 +65,17 @@ def main() -> int:
                         raise AssertionError("Packaged app did not initialize local database")
                     token = re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', page).group(1)
                     headers = {'X-Worktwin-Token': token, 'Content-Type': 'application/json'}
+                    with opener.open(Request('http://127.0.0.1:8765/api/settings', headers=headers), timeout=5) as response:
+                        settings = json.load(response)
+                    assert settings['edition'] == 'personal', settings
+                    assert not settings['storage_error'] and not settings['model_error'], settings
+                    if sys.platform in ('darwin', 'win32'):
+                        expected_storage = '系统钥匙串' if sys.platform == 'darwin' else 'Windows 凭据管理器'
+                        assert settings['secret_storage'] == expected_storage, settings
+                    request = Request('http://127.0.0.1:8765/api/edition', method='PUT', headers=headers,
+                        data=b'{"edition":"personal"}')
+                    with opener.open(request, timeout=5) as response:
+                        assert json.load(response)['edition'] == 'personal'
                     request = Request('http://127.0.0.1:8765/api/knowledge', method='POST', headers=headers,
                         data=json.dumps({'title':'Native smoke', 'body':'**Packaged Markdown**', 'status':'confirmed'}).encode())
                     with opener.open(request, timeout=5) as response:
@@ -75,7 +86,7 @@ def main() -> int:
                         assert json.load(response)['stopping'] is True
                     process.wait(timeout=15)
                     assert process.returncode == 0, process.returncode
-                    print("PASS: packaged startup, SQLite write, Markdown rendering, and graceful shutdown")
+                    print("PASS: packaged startup, settings and credential backend load, SQLite write, Markdown rendering, and graceful shutdown")
                     return 0
                 except (ConnectionError, HTTPError, URLError, TimeoutError, OSError) as exc:
                     last_error = exc

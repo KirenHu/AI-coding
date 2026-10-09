@@ -60,7 +60,7 @@ def main():
                     res=client.request(options.get('method','GET'),str(path),headers=options.get('headers') or {},content=options.get('body'))
                     return {'status':res.status_code,'body':res.text}
                 with sync_playwright() as p:
-                    browser=p.chromium.launch(headless=True,executable_path=os.environ.get('CHROMIUM_PATH') or '/usr/bin/chromium',args=['--no-sandbox'])
+                    browser=p.chromium.launch(headless=True,executable_path=os.environ.get('CHROMIUM_PATH') or None,args=['--no-sandbox'])
                     try:
                         page=browser.new_page(viewport={'width':1380,'height':910})
                         errors=[]

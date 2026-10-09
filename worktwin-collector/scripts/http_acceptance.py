@@ -78,6 +78,7 @@ def main():
                 assert created.status_code == 200, created.text
                 kid = created.json()['id']
                 twin = client.post('/api/twins', headers=h, json={'name': '交接助手'}).json()['id']
+                assert client.put(f'/api/sources/{added.json()["id"]}/ai',headers=h,json={'allow_ai':True}).status_code==200
                 assigned = client.put(f'/api/twins/{twin}/knowledge', headers=h, json={'knowledge_ids': [kid]})
                 assert assigned.status_code == 200, assigned.text
                 assert client.get('/api/twins', headers=h).json()[0]['knowledge_count'] == 1

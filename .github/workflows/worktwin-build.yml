@@ -1,4 +1,4 @@
-name: WorkTwin 1.0.1 acceptance and release
+name: WorkTwin 1.1.0 acceptance and release
 
 on:
   workflow_dispatch:
@@ -37,12 +37,20 @@ jobs:
         run: PYTHONPATH=. python scripts/ui_proposals_acceptance.py
       - name: Browser acceptance of remote sharing and owner offline use
         run: PYTHONPATH=. python scripts/ui_sharing_acceptance.py
+      - name: Browser acceptance of personal and enterprise settings
+        run: PYTHONPATH=. python scripts/ui_settings_acceptance.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: WorkTwin-browser-screenshots
+          path: worktwin-collector/release/*.png
+          if-no-files-found: ignore
       - name: Build source and standard Python distribution
         run: |
           python -m build
           mkdir -p release
-          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.0.1-source.zip"
-          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.0.1-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
+          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.1.0-source.zip"
+          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.1.0-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
           cp dist/*.whl dist/*.tar.gz release/
       - uses: actions/upload-artifact@v4
         with:
@@ -83,7 +91,7 @@ jobs:
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release
-          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.0.1-Windows-x64.zip
+          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.1.0-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: WorkTwin-Windows-unsigned
@@ -101,7 +109,7 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-      - name: Create checksums and publish the verified 1.0 release
+      - name: Create checksums and publish the verified 1.1 release
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
@@ -109,8 +117,8 @@ jobs:
           cd release-assets
           sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
           cd ..
-          if gh release view worktwin-v1.0.1 >/dev/null 2>&1; then
-            gh release upload worktwin-v1.0.1 release-assets/* --clobber
+          if gh release view worktwin-v1.1.0 >/dev/null 2>&1; then
+            gh release upload worktwin-v1.1.0 release-assets/* --clobber
           else
-            gh release create worktwin-v1.0.1 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.0.1 (macOS packaging fix)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
+            gh release create worktwin-v1.1.0 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.1.0 (personal and enterprise settings)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
           fi

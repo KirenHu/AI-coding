@@ -10,6 +10,8 @@ import zipfile
 import secrets
 import subprocess
 import sys
+import sqlite3
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -26,6 +28,9 @@ from .db import Database
 from .knowledge import KIND_LABELS
 from .relations import related_knowledge, export_wiki_archive, WIKILINK
 from .inference import GatewayClient
+from .credentials import DesktopSecrets
+from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRuntime
+from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
 from .answers import answer_from_knowledge
 from .publishing import Publisher, PublishingClient
 from . import __version__
@@ -75,6 +80,7 @@ class ConnectionInput(BaseModel):
 class TwinInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
     description: str = Field(default="", max_length=500)
+    knowledge_ids: list[int] | None = Field(default=None,max_length=1500)
 
 
 class TwinKnowledgeInput(BaseModel):
@@ -83,16 +89,32 @@ class TwinKnowledgeInput(BaseModel):
 
 class AskInput(BaseModel):
     question: str = Field(min_length=2, max_length=500)
+    scope: Literal['local','published'] = 'local'
+
+
+class EditionInput(BaseModel):
+    edition: Literal['personal','enterprise']
 
 
 def create_app(path: Path | None = None, *, start_worker: bool = True, interval: int = 20,
-               inference_client: GatewayClient | None = None, publishing_client=None) -> FastAPI:
+               inference_client: GatewayClient | None = None, publishing_client=None, secret_store=None) -> FastAPI:
     db = Database(path or database_path())
     collector = Collector(db, interval=interval)
     saved_url = db.setting("enterprise_url") or os.getenv('WORKTWIN_SERVER_URL', '')
-    saved_token = db.setting("enterprise_token") or os.getenv('WORKTWIN_SERVER_TOKEN', '')
-    model_client = inference_client or (GatewayClient(url=saved_url, token=saved_token) if saved_url else GatewayClient())
-    publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url else None))
+    secure = secret_store or DesktopSecrets(db.path)
+    storage_error = ''
+    try:
+        saved_token = secure.get('enterprise_token') or db.setting('enterprise_token') or os.getenv('WORKTWIN_SERVER_TOKEN','')
+        if db.setting('enterprise_token'):
+            secure.set('enterprise_token', saved_token)
+            db.set_setting('enterprise_token','')
+    except Exception:
+        saved_token = os.getenv('WORKTWIN_SERVER_TOKEN','')
+        storage_error = '系统凭据存储不可用，请解锁后重新连接企业服务'
+    share_active=db.setting('share_connection_enabled','1')=='1'
+    enterprise = GatewayClient(url=saved_url,token=saved_token) if saved_url and share_active else GatewayClient(url='',token='')
+    model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
+    publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
     local_token = secrets.token_urlsafe(32)
 
@@ -134,6 +156,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.db = db
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
+    app.state.model = model_client
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
 
     def authorized(x_worktwin_token: str | None = Header(default=None)):
@@ -324,7 +347,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             return result
 
     @app.get("/api/knowledge")
-    def list_knowledge(status: str = "active", kind: str = "all", limit: int = Query(default=300, ge=1, le=1000)):
+    def list_knowledge(status: str = "active", kind: str = "all", limit: int = Query(default=300, ge=1, le=1000), offset: int = Query(default=0,ge=0)):
         conditions, params = [], []
         if status == "active":
             conditions.append("k.status!='archived'")
@@ -336,7 +359,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             params.append(kind)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         with db.connect() as con:
-            rows = [dict(r) for r in con.execute("SELECT k.* FROM knowledge k" + where + " ORDER BY k.needs_review DESC,k.updated_at DESC,k.id DESC LIMIT ?", [*params,limit])]
+            rows = [dict(r) for r in con.execute("SELECT k.* FROM knowledge k" + where + " ORDER BY k.needs_review DESC,k.updated_at DESC,k.id DESC LIMIT ? OFFSET ?", [*params,limit,offset])]
             for row in rows:
                 from markdown_it import MarkdownIt
                 display_body=WIKILINK.sub(lambda m: '['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+str(int(m.group(1)))+')',row['body'])
@@ -345,7 +368,50 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     SELECT e.document_id,e.chunk_id,e.quote,e.is_current,e.superseded,d.title document_title,d.project,d.relative_path
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
                     WHERE e.knowledge_id=? ORDER BY e.id LIMIT 8""", (row["id"],))]
+                row['unavailable_reason']=unavailable_reason(con,row)
+                row['share_unavailable_reason']=unavailable_reason(con,row,sharing=True)
+                row['can_use']=not row['unavailable_reason']
+                row['can_share']=not row['share_unavailable_reason']
             return rows
+
+    @app.get('/api/knowledge-counts')
+    def knowledge_counts():
+        with db.connect() as con:
+            return {'total':con.execute('SELECT count(*) FROM knowledge').fetchone()[0],
+                    'draft':con.execute("SELECT count(*) FROM knowledge WHERE status='draft'").fetchone()[0],
+                    'archived':con.execute("SELECT count(*) FROM knowledge WHERE status='archived'").fetchone()[0]}
+
+    @app.get('/api/knowledge-item/{knowledge_id}')
+    def get_knowledge(knowledge_id: int):
+        with db.connect() as con:
+            row=con.execute('SELECT * FROM knowledge WHERE id=?',(knowledge_id,)).fetchone()
+            if not row:
+                raise HTTPException(404,'知识不存在')
+            from markdown_it import MarkdownIt
+            result=dict(row)
+            result['rendered_body']=MarkdownIt('commonmark',{'html':False}).render(WIKILINK.sub(lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',result['body']))
+            result['evidence']=[dict(e) for e in con.execute('''SELECT e.*,d.title document_title,d.project FROM knowledge_evidence e
+                JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(knowledge_id,))]
+            return result
+
+    @app.post('/api/knowledge/{knowledge_id}/restore',dependencies=[Depends(authorized)])
+    def restore_knowledge(knowledge_id: int):
+        with db.connect() as con:
+            old=con.execute('SELECT * FROM knowledge WHERE id=?',(knowledge_id,)).fetchone()
+            if not old or old['status']!='archived':
+                raise HTTPException(400,'只能恢复已归档的知识')
+            con.execute('INSERT INTO knowledge_history(knowledge_id,version,kind,title,body,status) VALUES(?,?,?,?,?,?)',
+                        (knowledge_id,old['version'],old['kind'],old['title'],old['body'],old['status']))
+            con.execute("UPDATE knowledge SET status='draft',version=version+1,updated_at=datetime('now') WHERE id=?",(knowledge_id,))
+            review_flags(con,[knowledge_id])
+        return {'restored':True,'status':'draft'}
+
+    @app.delete('/api/knowledge/{knowledge_id}',dependencies=[Depends(authorized)])
+    def delete_knowledge(knowledge_id: int):
+        with db.connect() as con:
+            if not con.execute("DELETE FROM knowledge WHERE id=? AND (kind='preference' OR status='archived')",(knowledge_id,)).rowcount:
+                raise HTTPException(400,'请先归档知识再删除')
+        return {'removed':True}
 
     @app.post("/api/knowledge", dependencies=[Depends(authorized)])
     def create_knowledge(payload: KnowledgeInput):
@@ -482,9 +548,87 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def settings():
         # Model provider credentials remain on the enterprise gateway server.
         return {"enterprise_model_ready": model_client.configured,
-                "gateway_managed_by": "enterprise", "cloud_sync": publisher.client.configured,
+                "edition":model_client.mode,"edition_selected":bool(db.setting('edition')),
+                "model_status":model_client.status,"model_error":model_client.error,
+                "model_name":getattr(model_client.client,'model','') or db.setting('enterprise_model_name'),
+                "personal_base_url":db.setting('personal_base_url'),"personal_model":db.setting('personal_model'),
+                "has_personal_key":bool(getattr(model_client.client,'key','')) if model_client.mode=='personal' else False,
+                "enterprise_url":publisher.client.url,"enterprise_role":db.setting('enterprise_role','employee'),
+                "secret_storage":secure.label,"storage_error":storage_error,
+                "gateway_managed_by":model_client.mode, "cloud_sync": publisher.client.configured,
                 "publication_error": db.setting("publication_error"),
                 "automatic_ai_processing": True}
+
+    def check_service_switch():
+        with db.connect() as con:
+            if (con.execute('SELECT count(*) FROM publications WHERE enabled=1').fetchone()[0] or db.setting('publication_error')):
+                raise HTTPException(409,'请先停止全部分身分享并确认同步成功，再切换版本或服务')
+
+    @app.put('/api/edition',dependencies=[Depends(authorized)])
+    def choose_edition(payload: EditionInput):
+        if payload.edition!=model_client.mode:
+            check_service_switch()
+            # Switching away from the enterprise disconnects its publication
+            # transport. This prevents new personal knowledge from syncing there.
+            if payload.edition=='personal':
+                try:
+                    client=PersonalModel(db.setting('personal_base_url'),secure.get('personal_model_key'),db.setting('personal_model'))
+                except Exception as exc:
+                    raise HTTPException(400,'无法读取个人模型凭据，请解锁安全存储后重试') from exc
+            else:
+                client=GatewayClient(url='',token='')
+            publisher.client=PublishingClient(url='',token='')
+            db.set_setting('share_connection_enabled','0')
+            model_client.replace(client,payload.edition)
+            if not client.configured:
+                model_client.status='not_configured'
+        db.set_setting('edition',payload.edition)
+        return {'edition':payload.edition}
+
+    @app.put('/api/model/personal',dependencies=[Depends(authorized)])
+    def save_personal_model(payload: ModelInput):
+        if model_client.mode!='personal':
+            raise HTTPException(403,'企业版使用企业统一分配的模型，请在管理员设置中操作')
+        try:
+            if not payload.api_key and payload.base_url.rstrip('/')!=db.setting('personal_base_url'):
+                raise ValueError('更换服务地址时请重新填写 API Key')
+            key=payload.api_key or secure.get('personal_model_key')
+            candidate=PersonalModel(payload.base_url,key,payload.model)
+            if not candidate.configured:
+                raise ValueError('请填写 API Key')
+            candidate.chat([{'role':'user','content':'请只回复 OK。'}],max_tokens=16)
+            secure.set('personal_model_key',key)
+        except Exception as exc:
+            message=str(exc) if isinstance(exc,ValueError) else '连接测试或安全保存失败，未启用新配置；请检查模型信息和系统安全存储'
+            raise HTTPException(400,message) from exc
+        db.set_setting('personal_base_url',candidate.url)
+        db.set_setting('personal_model',candidate.model)
+        model_client.replace(candidate,'personal',tested=True)
+        knowledge_worker.schedule()
+        return {'connected':True,'model':candidate.model}
+
+    @app.post('/api/model/personal/models',dependencies=[Depends(authorized)])
+    def personal_models(payload: ModelListInput):
+        if model_client.mode!='personal':
+            raise HTTPException(403,'企业员工不能配置个人模型')
+        try:
+            if not payload.api_key and payload.base_url.rstrip('/')!=db.setting('personal_base_url'):
+                raise ValueError()
+            key=payload.api_key or secure.get('personal_model_key')
+            models=PersonalModel(payload.base_url,key).list_models()
+            return {'models':models}
+        except Exception as exc:
+            raise HTTPException(400,'无法获取模型列表，可以填写服务商提供的模型名称；请检查地址和 API Key') from exc
+
+    @app.post('/api/model/test',dependencies=[Depends(authorized)])
+    def test_current_model():
+        if not model_client.configured:
+            raise HTTPException(400,'请先完成模型设置或企业连接')
+        try:
+            model_client.test()
+        except Exception as exc:
+            raise HTTPException(502,'模型调用失败，请检查连接、模型名称、凭据或服务额度') from exc
+        return {'ok':True}
 
     @app.put("/api/connection", dependencies=[Depends(authorized)])
     def connection(payload: ConnectionInput):
@@ -495,17 +639,83 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise ValueError('服务不可用')
         except Exception as exc:
             raise HTTPException(400,'无法连接企业服务，请检查地址或凭据') from exc
-        if publisher.client.configured and (new_client.url != publisher.client.url or new_client.token != publisher.client.token):
-            with db.connect() as con:
-                if (con.execute('SELECT count(*) FROM publications WHERE enabled=1').fetchone()[0]
-                        or db.setting('publication_error')):
-                    raise HTTPException(409,'请先停止所有分身分享并同步成功，再切换企业服务')
+        if new_client.url != publisher.client.url or new_client.token != publisher.client.token or model_client.mode!='enterprise':
+            check_service_switch()
+        try:
+            secure.set('enterprise_token',new_client.token)
+        except Exception as exc:
+            raise HTTPException(400,'系统安全存储不可用，未保存企业 Token；请解锁后重试') from exc
         db.set_setting('enterprise_url',new_client.url)
-        db.set_setting('enterprise_token',new_client.token)
-        model_client.url,model_client.token=new_client.url,new_client.token
+        db.set_setting('enterprise_token','')
+        db.set_setting('enterprise_role',info.get('role','employee'))
+        db.set_setting('enterprise_model_name',info.get('model',''))
+        model_client.replace(GatewayClient(url=new_client.url,token=new_client.token),'enterprise')
         publisher.client=new_client
+        db.set_setting('share_connection_enabled','1')
         db.set_setting('publication_digest','')
-        return {'connected':True}
+        return {'connected':True,'model_tested':False,'role':info.get('role','employee')}
+
+    @app.put('/api/sharing/connection',dependencies=[Depends(authorized)])
+    def share_connection(payload: ConnectionInput):
+        if model_client.mode!='personal':
+            return connection(payload)
+        try:
+            client=PublishingClient(url=payload.url,token=payload.token)
+            info=client.request('GET','/v1/me')
+            if not info.get('ok'):
+                raise ValueError()
+        except Exception as exc:
+            raise HTTPException(400,'分享服务连接失败，请检查地址和 Token') from exc
+        if client.url!=publisher.client.url or client.token!=publisher.client.token:
+            check_service_switch()
+        try:
+            secure.set('enterprise_token',client.token)
+        except Exception as exc:
+            raise HTTPException(400,'无法安全保存分享 Token，请解锁系统安全存储') from exc
+        db.set_setting('enterprise_url',client.url)
+        db.set_setting('enterprise_token','')
+        db.set_setting('enterprise_role',info.get('role','employee'))
+        db.set_setting('share_connection_enabled','1')
+        db.set_setting('publication_digest','')
+        publisher.client=client
+        return {'connected':True,'edition':'personal'}
+
+    def admin_request(method,path,body=None):
+        if model_client.mode!='enterprise' or not publisher.client.configured:
+            raise HTTPException(403,'请先使用企业管理员 Token 连接企业服务')
+        try:
+            # Role is enforced again by the remote service, never trusted only
+            # from a local setting or a hidden menu.
+            return publisher.client.request(method,'/v1/admin/'+path,body)
+        except Exception as exc:
+            from urllib.error import HTTPError
+            if isinstance(exc,HTTPError) and exc.code==403:
+                raise HTTPException(403,'此操作仅限企业管理员，请使用管理员 Token') from exc
+            raise HTTPException(400,'管理操作失败，现有配置未确认更改；请检查权限、连接和填写内容') from exc
+
+    @app.get('/api/admin/settings')
+    def admin_settings():
+        return admin_request('GET','settings')
+
+    @app.put('/api/admin/model',dependencies=[Depends(authorized)])
+    def admin_model(payload: dict):
+        result=admin_request('PUT','model',payload)
+        db.set_setting('enterprise_model_name',result.get('model',''))
+        model_client.status,model_client.error='connected',''
+        return result
+
+    @app.post('/api/admin/models',dependencies=[Depends(authorized)])
+    def admin_models(payload: ModelListInput):
+        return admin_request('POST','models',payload.model_dump())
+
+    @app.post('/api/admin/employees',dependencies=[Depends(authorized)])
+    def admin_employee(payload: dict):
+        return admin_request('POST','employees',payload)
+
+    @app.delete('/api/admin/employees/{employee}',dependencies=[Depends(authorized)])
+    def admin_revoke(employee: str):
+        from urllib.parse import quote
+        return admin_request('DELETE','employees/'+quote(employee,safe=''))
 
     @app.post("/api/sharing/sync", dependencies=[Depends(authorized)])
     def sync_sharing():
@@ -542,6 +752,16 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             except Exception:
                 result['error']='无法连接分享服务；尚不能确认远程分享状态。'
         return result
+
+    @app.get('/api/twins/{twin_id}/preview')
+    def twin_preview(twin_id: int):
+        with db.connect() as con:
+            if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
+                raise HTTPException(404,'分身不存在')
+            rows=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,))]
+            result=[{'id':r['id'],'title':r['title'],'local_reason':unavailable_reason(con,r),'share_reason':unavailable_reason(con,r,sharing=True)} for r in rows]
+        return {'selected_count':len(rows),'usable_count':sum(not r['local_reason'] for r in result),
+                'publishable_count':sum(not r['share_reason'] for r in result),'knowledge':result}
 
     @app.post("/api/twins/{twin_id}/sharing", dependencies=[Depends(authorized)])
     def create_share(twin_id: int, payload: ShareInput):
@@ -583,9 +803,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             rows = [dict(x) for x in con.execute("""SELECT t.*,
                 (SELECT count(*) FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-                  WHERE tk.twin_id=t.id AND k.status!='archived' AND k.needs_review=0 AND
-                    (k.source_bound=0 OR EXISTS(SELECT 1 FROM knowledge_evidence e
-                    WHERE e.knowledge_id=k.id AND e.is_current=1 AND e.superseded=0))) knowledge_count
+                  WHERE tk.twin_id=t.id AND """ + READY_SQL + """) knowledge_count
                 FROM twins t ORDER BY t.updated_at DESC,t.id DESC""")]
             return rows
 
@@ -608,10 +826,17 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/twins/{twin_id}", dependencies=[Depends(authorized)])
     def update_twin(twin_id: int,payload: TwinInput):
         with db.connect() as con:
+            if payload.knowledge_ids is not None:
+                allowed={r[0] for r in con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL)}
+                if not set(payload.knowledge_ids).issubset(allowed):
+                    raise HTTPException(400,'包含不可用知识，请核对状态后重新保存')
             row = con.execute("UPDATE twins SET name=?,description=?,updated_at=datetime('now') WHERE id=?",
                               (payload.name.strip(),payload.description.strip(),twin_id))
             if not row.rowcount:
                 raise HTTPException(404,"数字分身不存在")
+            if payload.knowledge_ids is not None:
+                con.execute('DELETE FROM twin_knowledge WHERE twin_id=?',(twin_id,))
+                con.executemany('INSERT INTO twin_knowledge VALUES(?,?)',[(twin_id,k) for k in sorted(set(payload.knowledge_ids))])
         return {"updated":True}
 
     @app.delete("/api/twins/{twin_id}", dependencies=[Depends(authorized)])
@@ -629,11 +854,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not con.execute("SELECT id FROM twins WHERE id=?",(twin_id,)).fetchone():
                 raise HTTPException(404,"数字分身不存在")
             allowed = {r[0] for r in con.execute("""SELECT k.id FROM knowledge k
-                WHERE k.status!='archived' AND k.needs_review=0 AND
-                (k.source_bound=0 OR EXISTS(SELECT 1 FROM knowledge_evidence e
-                WHERE e.knowledge_id=k.id AND e.is_current=1 AND e.superseded=0))""")}
+                WHERE """+READY_SQL)}
             if not requested.issubset(allowed):
-                raise HTTPException(400,"包含已归档、无有效来源或需要重新核实的知识")
+                raise HTTPException(400,"包含尚未确认、已归档、需要核对、个人偏好或未允许 AI 使用的知识")
             con.execute("DELETE FROM twin_knowledge WHERE twin_id=?",(twin_id,))
             con.executemany("INSERT INTO twin_knowledge(twin_id,knowledge_id) VALUES(?,?)",
                             [(twin_id,k) for k in sorted(requested)])
@@ -642,17 +865,21 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
 
     @app.post("/api/twins/{twin_id}/ask", dependencies=[Depends(authorized)])
     def ask_twin(twin_id: int, payload: AskInput):
+        if payload.scope=='published':
+            try:
+                pubid=publisher.public_id(twin_id)
+                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',{'question':payload.question})
+            except Exception as exc:
+                raise HTTPException(503,'无法读取当前已发布版本，请检查分享服务或先启用分享') from exc
         if not model_client.configured:
-            raise HTTPException(503,"企业尚未配置模型服务，请联系管理员")
+            raise HTTPException(503,"请先完成个人模型设置或企业连接")
         with db.connect() as con:
             twin = con.execute("SELECT name,description FROM twins WHERE id=?",(twin_id,)).fetchone()
             if not twin:
                 raise HTTPException(404,"数字分身不存在")
-            rows = [dict(x) for x in con.execute("""SELECT k.id,k.title,k.body FROM twin_knowledge tk
+            rows = [dict(x) for x in con.execute("""SELECT k.id,k.title,k.body,k.version FROM twin_knowledge tk
                 JOIN knowledge k ON k.id=tk.knowledge_id
-                WHERE tk.twin_id=? AND k.status!='archived' AND k.needs_review=0
-                AND (k.source_bound=0 OR EXISTS (SELECT 1 FROM knowledge_evidence e
-                WHERE e.knowledge_id=k.id AND e.is_current=1 AND e.superseded=0))""",(twin_id,))]
+                WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))]
             for r in rows:
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -667,16 +894,33 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         try:
             result=answer_from_knowledge(model_client,payload.question,rows)
         except Exception as exc:
-            raise HTTPException(502,"企业模型请求失败，请联系管理员或稍后重试") from exc
+            raise HTTPException(502,"模型请求失败，请检查设置、服务额度或稍后重试") from exc
         # Recheck authorization after a slow model call.
         with db.connect() as con:
-            current={r[0] for r in con.execute("""SELECT k.id FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-                WHERE tk.twin_id=? AND k.status!='archived' AND k.needs_review=0
-                AND NOT EXISTS(SELECT 1 FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
-                    JOIN sources s ON s.id=d.source_id WHERE e.knowledge_id=k.id AND s.allow_ai=0)""",(twin_id,))}
-        if not {r['id'] for r in rows}.issubset(current):
+            current={(r[0],r[1]) for r in con.execute("""SELECT k.id,k.version FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
+                WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))}
+        if not {(r['id'],r['version']) for r in rows}.issubset(current):
             raise HTTPException(409,'分身知识授权已更新，请重新提问')
         return result
+
+    @app.get('/api/backup')
+    def backup():
+        # SQLite backup gives a consistent live snapshot, including WAL data.
+        # API keys and enterprise tokens live outside this database.
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'worktwin.sqlite'
+            with db.connect() as con, sqlite3.connect(target) as copy:
+                con.backup(copy)
+                copy.execute("DELETE FROM settings WHERE key='enterprise_token'")
+            buffer=io.BytesIO()
+            with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as archive:
+                archive.write(target,'worktwin.sqlite')
+                archive.writestr('恢复说明.txt','先退出 WorkTwin，再备份当前数据目录。将压缩包中的 worktwin.sqlite 替换到数据目录，并移走同名 -wal 和 -shm 文件，然后重新启动。模型密钥和企业 Token 不在此备份中；换电脑后需重新配置。恢复旧备份可能包含过期分享状态，恢复后先核对远程分享。')
+            return Response(buffer.getvalue(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="WorkTwin-backup.zip"'})
+
+    @app.get('/api/data-location')
+    def data_location():
+        return {'path':str(db.path.parent)}
 
     @app.get("/api/export-markdown", dependencies=[Depends(authorized)])
     def export_markdown():
