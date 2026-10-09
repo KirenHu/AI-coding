@@ -48,7 +48,7 @@ if [[ "$formal" == 1 ]]; then
   # Staple the App before placing it into the deliverable container.
   ditto -c -k --keepParent "$app" dist/WorkTwin-notary.zip
   python desktop/notarize-macos.py dist/WorkTwin-notary.zip "$app"
-  rm -f dist/WorkTwin-notary.zip
+  rm -f dist/WorkTwin-notary.zip dist/WorkTwin-notary.zip.notary.json
 fi
 
 mkdir -p release

@@ -52,10 +52,11 @@ jobs:
   macos:
     needs: python-test
     strategy:
+      fail-fast: false
       matrix:
         runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 300
     env:
       WORKTWIN_REQUIRE_NOTARIZATION: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '1' || '0' }}
     steps:
@@ -84,6 +85,18 @@ jobs:
           name: WorkTwin-${{ matrix.runner }}-${{ env.WORKTWIN_REQUIRE_NOTARIZATION == '1' && 'notarized' || 'unsigned' }}
           path: worktwin-collector/release/*.dmg
           if-no-files-found: error
+      - name: Preserve signed package and receipt if Apple processing outlasts CI
+        if: failure() && env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WorkTwin-${{ matrix.runner }}-pending-notarization
+          path: |
+            worktwin-collector/dist/WorkTwin-notary.zip
+            worktwin-collector/dist/*.notary.json
+            worktwin-collector/release/*.dmg
+            worktwin-collector/release/*.notary.json
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Remove signing credentials and ephemeral keychain
         if: always() && env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
         run: python desktop/cleanup-macos-signing.py
