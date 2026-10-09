@@ -24,6 +24,7 @@ def eligible_file(path: Path, kind: str) -> bool:
 
 
 def source_files(root: Path, kind: str):
+    resolved_root = Path(root).resolve()
     for current, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink() and d not in EXCLUDED_FOLDERS and not (d.startswith(".") and kind not in ("codex", "claude"))]
         for name in files:
@@ -31,7 +32,7 @@ def source_files(root: Path, kind: str):
             if not eligible_file(path, kind) or path.is_symlink() or not path.is_file():
                 continue
             try:
-                if path.stat().st_size <= (MAX_SESSION_BYTES if kind in ("codex", "claude") else MAX_FILE_BYTES) and path.resolve().is_relative_to(root):
+                if path.stat().st_size <= (MAX_SESSION_BYTES if kind in ("codex", "claude") else MAX_FILE_BYTES) and path.resolve().is_relative_to(resolved_root):
                     yield path
             except (OSError, ValueError):
                 continue

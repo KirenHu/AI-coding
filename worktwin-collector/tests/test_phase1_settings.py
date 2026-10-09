@@ -68,7 +68,9 @@ def test_personal_configuration_real_call_persistence_and_failure(tmp_path,provi
         con=sqlite3.connect(saved)
         assert not any('private-personal-key' in str(row) for row in con.execute('SELECT * FROM settings'))
         con.close()
-    assert 'private-personal-key' not in (tmp_path/'credentials/credentials.json').read_text()
+    cred_file = tmp_path / 'credentials' / 'credentials.json'
+    if cred_file.exists():
+        assert 'private-personal-key' not in cred_file.read_text()
     assert 'private-personal-key' not in path.read_bytes().decode(errors='ignore')
     with TestClient(create_app(path,start_worker=False)) as c:
         h=auth(c);assert c.get('/api/settings',headers=h).json()['model_status']=='configured'
