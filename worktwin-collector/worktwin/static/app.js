@@ -59,12 +59,13 @@ async function go(page,force=false){
 }
 
 // Information sources: category + explicit capture / enterprise-model permission.
-const typeLabel={folder:'本地工作文件',codex:'Codex 对话',claude:'Claude Code 对话'};
+const typeLabel={folder:'本地文件夹',codex:'Codex',claude:'Claude Code'};
+function sourceName(s){const kind=sourceType(s);const legacy={folder:['工作文件','本地工作文件'],codex:['Codex 对话'],claude:['Claude Code 对话']};return legacy[kind]?.includes(s.name)?typeLabel[kind]:s.name}
 function sourceType(s){return s.adapter||s.kind}
 async function renderSources(){
   const [sources,stats,jobs]=await Promise.all([api('sources'),api('stats'),api('ai/jobs')]);state.sources=sources;
   const count=k=>sources.filter(s=>sourceType(s)===k).length;
-  const types=[['folder','工作文件', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark']];
+  const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark']];
   content.innerHTML=pageHeader('INFORMATION SOURCES','信息采集','只采集你允许的工作资料。随时暂停，也可以彻底撤销授权。',`<button class="btn secondary" id="scan">${icon('refresh')} 立即检查更新</button>`)+
     `<div class="source-overview">${types.map(([kind,name,desc,ico])=>`<div class="source-type"><div class="type-symbol">${icon(ico)}</div><b>${name}</b><small>${desc}</small><button class="btn secondary small" data-add-source="${kind}">${icon('plus')} ${count(kind)?'再添加':'授权采集'}</button></div>`).join('')}</div>`+
     `<div class="group-heading"><h2>已授权的数据范围</h2><span class="soft-caption">${sources.length} 个数据源</span></div>`+
@@ -81,25 +82,25 @@ async function renderSources(){
   content.querySelectorAll('[data-share-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.shareToggle}/share`,{method:'PUT',body:{allow_share:b.checked}}),'sources'))b.checked=!b.checked}));
   content.querySelectorAll('[data-remove-source]').forEach(b=>b.onclick=async()=>{
     const id=Number(b.dataset.removeSource);const row=state.sources.find(x=>x.id===id);
-    if(!confirm(`彻底移除「${row?.name||'数据源'}」？这会删除其索引、AI 提炼知识以及相关分身的知识授权，无法撤回。`))return;
+    if(!confirm(`彻底移除「${row?sourceName(row):'数据源'}」？这会删除其索引、AI 提炼知识以及相关分身的知识授权，无法撤回。`))return;
     await perform(()=>api(`sources/${id}`,{method:'DELETE'}),'sources');
   });
 }
-function sourceRow(s){const kind=sourceType(s);return `<div class="source-item"><div class="source-summary"><div class="source-name">${esc(s.name)} <span class="state-label ${s.enabled?'':'grey'}">${s.enabled?'采集中':'已暂停'}</span></div><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div><div class="source-caption"><span class="soft-caption">${esc(typeLabel[kind]||'工作资料')} · ${s.document_count} 份资料</span>${s.last_error?`<span class="state-label danger">${esc(s.last_error)}</span>`:''}</div></div>
-  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许采集 ${esc(s.name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}/> 允许采集</label>
-  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(s.name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}/> 允许 AI 整理</label>
-  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许分身分享 ${esc(s.name)}" data-share-toggle="${s.id}" ${s.allow_share?'checked':''}/> 允许分身分享</label>
-  <button class="icon-button" title="撤销来源并清除知识" aria-label="删除 ${esc(s.name)}" data-remove-source="${s.id}">${icon('trash')}</button></div>`}
+function sourceRow(s){const kind=sourceType(s),name=sourceName(s);return `<div class="source-item"><div class="source-summary"><div class="source-name">${esc(name)} <span class="state-label ${s.enabled?'':'grey'}">${s.enabled?'采集中':'已暂停'}</span></div><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div><div class="source-caption"><span class="soft-caption">${esc(typeLabel[kind]||'工作资料')} · ${s.document_count} 份资料</span>${s.last_error?`<span class="state-label danger">${esc(s.last_error)}</span>`:''}</div></div>
+  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}/> 允许采集</label>
+  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}/> 允许 AI 整理</label>
+  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许分身分享 ${esc(name)}" data-share-toggle="${s.id}" ${s.allow_share?'checked':''}/> 允许分身分享</label>
+  <button class="icon-button" title="撤销来源并清除知识" aria-label="删除 ${esc(name)}" data-remove-source="${s.id}">${icon('trash')}</button></div>`}
 async function addSource(initial='folder'){
   const defaults=await api('default-paths');
-  dialog('授权信息采集',`<div class="choice-tabs">${[['folder','工作文件'],['codex','Codex'],['claude','Claude Code']].map(([type,name])=>`<button class="choice-tab" data-type="${type}">${name}</button>`).join('')}</div>
+  dialog('授权信息采集',`<div class="choice-tabs">${[['folder','本地文件夹'],['codex','Codex'],['claude','Claude Code']].map(([type,name])=>`<button class="choice-tab" data-type="${type}">${name}</button>`).join('')}</div>
     <div class="field"><label for="new-source-name">数据源名称</label><input id="new-source-name" autocomplete="off"/></div>
     <div class="field"><label for="new-source-path">授权文件夹</label><div style="display:flex;gap:9px"><input id="new-source-path" autocomplete="off" spellcheck="false"/><button class="btn secondary" id="browse-folder" type="button">选择…</button></div><div class="field-note" id="path-note"></div></div>
     <label class="check-row"><input id="new-source-ai" type="checkbox"/> <span><b>允许 AI 自动整理这些资料</b><br/>内容将发送到当前配置的模型服务，自动提炼可搜索的知识；不勾选则只在本地建立索引。</span></label>
     <div class="permission-note">后续仅采集这个已授权目录及其子目录；默认忽略密钥、.env、node_modules 和 .git 等内容。你可以随时撤销授权。</div>`,
     `<button class="btn secondary" data-close>取消</button><button class="btn" id="save-source">授权并开始采集</button>`);
   let kind=initial;
-  function choose(type){kind=type;el('new-source-name').value={folder:'工作文件',codex:'Codex 对话',claude:'Claude Code 对话'}[type];el('new-source-path').value=type==='codex'?defaults.codex:type==='claude'?defaults.claude:'';el('path-note').textContent=type==='folder'?'请明确选择允许采集的工作目录。':`默认位置${(type==='codex'?defaults.codex_exists:defaults.claude_exists)?'已检测到':'尚未发现'}，你也可以自行修改。`;document.querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type))}
+  function choose(type){kind=type;el('new-source-name').value={folder:'本地文件夹',codex:'Codex',claude:'Claude Code'}[type];el('new-source-path').value=type==='codex'?defaults.codex:type==='claude'?defaults.claude:'';el('path-note').textContent=type==='folder'?'请明确选择允许采集的工作目录。':`默认位置${(type==='codex'?defaults.codex_exists:defaults.claude_exists)?'已检测到':'尚未发现'}，你也可以自行修改。`;document.querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type))}
   document.querySelectorAll('[data-type]').forEach(x=>x.onclick=()=>choose(x.dataset.type));choose(initial);
   el('browse-folder').onclick=async()=>{try{const result=await api('pick-folder',{method:'POST'});el('new-source-path').value=result.path}catch(e){notify(e.message)}};
   el('save-source').onclick=()=>busy(el('save-source'),async()=>{
