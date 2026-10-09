@@ -83,6 +83,14 @@ def parse_claude_session(path: Path) -> tuple[str, str]:
                             actions.append(action)
                         action["done"] = True
                         action["failed"] = block.get("is_error") is True
+            # Claude serializes tool results as role=user events. Even if
+            # such an event includes adjacent text blocks, it is not a real
+            # user turn and must never be used as a user confirmation.
+            if role == "user" and isinstance(blocks, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in blocks
+            ):
+                continue
             text = visible_content(blocks)
             if not text:
                 continue
