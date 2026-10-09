@@ -240,8 +240,8 @@ class Database:
         conn.execute('CREATE INDEX IF NOT EXISTS ix_knowledge_topic ON knowledge(project_key,topic,scope)')
         # 1.1.7: the old collector treated unverified folder labels as
         # project identities. Repair only those automatically inferred keys.
-        # Preserve explicitly verified document assignments and any manual
-        # knowledge edits; freeze unreviewed extracted notes rather than
+        # Preserve verified assignments and manually corrected scope; freeze
+        # any notes that still carry an unverified directory-derived scope
         # allowing old cross-document associations to remain usable.
         if not conn.execute("SELECT 1 FROM settings WHERE key='project_identity_v2'").fetchone():
             unsafe = [r['id'] for r in conn.execute("""
@@ -251,7 +251,7 @@ class Database:
                 conn.execute("UPDATE documents SET project_key=?,scope='session' WHERE id=?",
                              ('session:' + str(doc_id), doc_id))
                 conn.execute("""UPDATE knowledge SET review_hold=1,needs_review=1 WHERE
-                    source_bound=1 AND created_by!='human' AND id IN
+                    source_bound=1 AND project_key LIKE 'source:%' AND id IN
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)""", (doc_id,))
             conn.execute("INSERT INTO settings(key,value) VALUES('project_identity_v2','1')")
 
