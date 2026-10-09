@@ -65,7 +65,7 @@ def main() -> int:
                         raise AssertionError("Packaged app did not initialize local database")
                     token = re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', page).group(1)
                     headers = {'X-Worktwin-Token': token, 'Content-Type': 'application/json'}
-                    with opener.open(Request('http://127.0.0.1:8765/api/config', headers=headers), timeout=5) as response:
+                    with opener.open(Request('http://127.0.0.1:8765/api/settings', headers=headers), timeout=5) as response:
                         settings = json.load(response)
                     assert settings['edition'] == 'personal', settings
                     assert not settings['storage_error'] and not settings['model_error'], settings
