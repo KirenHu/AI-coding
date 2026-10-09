@@ -246,18 +246,31 @@ async function openKnowledge(id){
 }
 async function showDocument(id){
   try{
-    const d=await api(`documents/${id}`);
+    const [d,projects]=await Promise.all([api(`documents/${id}`),api('projects/verified')]);
     // Preview stacks above the knowledge drawer; closing returns to the editor
     // without discarding unsaved edits.
     const preview=document.createElement('div');preview.className='overlay source-preview';preview.style.zIndex='90';
     preview.innerHTML=`<div class="dialog wide" role="dialog" aria-modal="true" aria-label="原始资料"><div class="dialog-header"><h2>${esc(d.title)}</h2><button class="icon-button" data-close-preview>${icon('close')}</button></div><div class="dialog-body"><p class="soft-caption">${esc(d.relative_path)} · ${esc(d.source_name)}</p><div class="source-content">${esc(d.content)}</div>${d.truncated?'<p class="field-note">仅显示前 80,000 字符。</p>':''}</div><div class="dialog-footer"><button class="btn secondary" data-close-preview>返回知识</button></div></div>`;
     el('overlay-root').appendChild(preview);
     const scopeForm=document.createElement('section');scopeForm.className='source-reference';
-    scopeForm.innerHTML=`<h3>核对所属项目</h3><p class="field-note">${d.project_verified?'已确认项目：'+esc(d.project):'目录只作为线索，业务项目尚未确认。'}仅当整份资料属于同一个项目时确认；包含多个项目时请保持待核对。</p><div class="field"><label>项目名称</label><input id="source-project" maxlength="200" value="${esc(d.project_verified?d.project:'')}" placeholder="例如：WorkTwin"/></div><button class="btn secondary small" id="save-source-project">确认项目并重新整理此资料</button>`;
+    const projectOptions=projects.map(p=>`<option value="${esc(p.project_key)}" ${d.project_verified&&d.project_key===p.project_key?'selected':''}>${esc(p.name)} · ${p.document_count} 份已确认资料</option>`).join('');
+    scopeForm.innerHTML=`<h3>核对所属项目</h3><p class="field-note">${d.project_verified?'已确认项目：'+esc(d.project):'目录只是线索，所属业务项目尚未确认。'}仅当整份资料属于同一项目时确认；同名项目不会自动合并。</p><div class="field"><label>项目关系</label><select id="source-existing-project"><option value="">创建独立项目（允许与已有项目同名）</option>${projectOptions}</select></div><div class="field"><label>项目名称</label><input id="source-project" maxlength="200" value="${esc(d.project_verified?d.project:'')}" placeholder="例如：WorkTwin"/></div><button class="btn secondary small" id="save-source-project">确认项目并重新整理此资料</button>`;
     preview.querySelector('.dialog-body').prepend(scopeForm);
+    const existingSelect=scopeForm.querySelector('#source-existing-project');
+    const projectInput=scopeForm.querySelector('#source-project');
+    function reflectProject(){
+      const linked=projects.find(p=>p.project_key===existingSelect.value);
+      if(linked){projectInput.value=linked.name;projectInput.disabled=true}
+      else {projectInput.disabled=false;if(d.project_verified)projectInput.value=''}
+    }
+    existingSelect.onchange=reflectProject;
+    reflectProject();
     scopeForm.querySelector('#save-source-project').onclick=()=>busy(scopeForm.querySelector('#save-source-project'),async()=>{
-      const project=scopeForm.querySelector('#source-project').value.trim();if(!project){notify('请填写所属项目');return}
-      if(await perform(()=>api(`documents/${id}/scope`,{method:'PUT',body:{project}}),null)){notify('项目已确认，资料已安排重新整理');preview.remove()}
+      const project=projectInput.value.trim();if(!project){notify('请填写项目名称');return}
+      const existing_project_key=existingSelect.value||null;
+      if(await perform(()=>api(`documents/${id}/scope`,{method:'PUT',body:{project,existing_project_key}}),null)){
+        notify('项目已确认，资料已安排重新整理');preview.remove()
+      }
     });
     preview.onclick=e=>{if(e.target===preview||e.target.closest('[data-close-preview]'))preview.remove()};
   }catch(e){notify(e.message)}
