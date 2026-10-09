@@ -139,6 +139,7 @@ class LogPermissionInput(BaseModel):
 
 class DocumentScopeInput(BaseModel):
     project: str = Field(min_length=1,max_length=200)
+    existing_project_key: str | None = Field(default=None,max_length=1000)
 
 
 class EditionInput(BaseModel):
@@ -405,6 +406,16 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             result["content"] = result["content"][:80000]
             result["truncated"] = len(row["content"]) > 80000
             return result
+
+    @app.get("/api/projects/verified")
+    def list_verified_projects():
+        """Existing explicit project identities, not guesses from directories."""
+        with db.connect() as con:
+            return [dict(row) for row in con.execute("""SELECT project_key,
+                MIN(project) name,COUNT(*) document_count
+                FROM documents WHERE deleted=0 AND project_verified=1
+                  AND scope='project' AND project_key!=''
+                GROUP BY project_key ORDER BY name,project_key""")]
 
     @app.get("/api/knowledge")
     def list_knowledge(status: str = "active", kind: str = "all", limit: int = Query(default=300, ge=1, le=1000), offset: int = Query(default=0,ge=0)):
@@ -961,20 +972,42 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         project=payload.project.strip()
         if not project:
             raise HTTPException(400,'请填写项目名称')
-        key='manual:'+hashlib.sha256(project.encode()).hexdigest()[:24]
         with db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
             d=con.execute('SELECT * FROM documents WHERE id=? AND deleted=0',(document_id,)).fetchone()
             if not d:
                 raise HTTPException(404,'资料不存在')
-            if d['project_key']!=key or d['scope']!='project':
+            if payload.existing_project_key:
+                # Referencing an existing *verified identity* is a deliberate
+                # link. Two unrelated projects may have the same display name.
+                matched=con.execute("""SELECT project FROM documents
+                    WHERE project_verified=1 AND scope='project' AND deleted=0
+                      AND project_key=? ORDER BY id LIMIT 1""",
+                    (payload.existing_project_key,)).fetchone()
+                if not matched:
+                    raise HTTPException(400,'项目未确认、已移除或不可关联')
+                if matched['project']!=project:
+                    raise HTTPException(400,'项目名称与所选已有项目不一致')
+                key=payload.existing_project_key
+            elif d['project_verified'] and d['project']==project and d['project_key']:
+                # Reconfirming an unchanged project cannot fork its identity.
+                key=d['project_key']
+            else:
+                # Never derive an identity from a name, working directory,
+                # source ID, or model guess.
+                key='manual:'+secrets.token_hex(16)
+            changed=d['project_key']!=key or d['scope']!='project' or not d['project_verified']
+            if changed:
                 con.execute('''UPDATE knowledge SET review_hold=1,needs_review=1 WHERE id IN
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)''',(document_id,))
             con.execute("UPDATE documents SET project=?,project_key=?,scope='project',project_verified=1 WHERE id=?",(project,key,document_id))
-            con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state) VALUES(?,?,'queued')
-                ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
-                attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL''',(document_id,d['sha256']))
-        knowledge_worker.schedule()
-        return {'project':project,'project_key':key,'queued':True}
+            if changed:
+                con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state) VALUES(?,?,'queued')
+                    ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
+                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL''',(document_id,d['sha256']))
+        if changed:
+            knowledge_worker.schedule()
+        return {'project':project,'project_key':key,'queued':changed}
 
     @app.put("/api/twins/{twin_id}", dependencies=[Depends(authorized)])
     def update_twin(twin_id: int,payload: TwinInput):
