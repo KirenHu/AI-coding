@@ -74,6 +74,8 @@ def main():
                 page.locator('[data-page=twins]').click();page.get_by_role('button',name='创建数字分身').click()
                 page.locator('#twin-name').fill('交接助手');page.get_by_role('button',name='创建并选择知识').click()
                 page.locator('[data-select-entry]').first.check();page.locator('#twin-edit-name').fill('更新后的助手');page.locator('#save-selections').click()
+                expect(page.locator('#toast')).to_contain_text('分身信息和 1 篇知识授权已保存')
+                expect(page.locator('#twin-edit-name')).to_be_enabled()
                 expect(page.locator('#twin-edit-name')).to_have_value('更新后的助手')
                 expect(page.locator('#selected-count')).to_have_text('已选择 1 篇')
                 # A rejected request must preserve input and show no success feedback.

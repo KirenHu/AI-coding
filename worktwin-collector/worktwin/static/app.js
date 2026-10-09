@@ -250,7 +250,6 @@ async function renderTwinEditor(id){
     `<div class="twin-editor"><div class="twin-settings"><h2>基本信息</h2><div class="field"><label for="twin-edit-name">名称</label><input id="twin-edit-name" value="${esc(t.name)}" maxlength="90"/></div><div class="field"><label for="twin-edit-desc">使用场景</label><textarea id="twin-edit-desc" maxlength="500" rows="4">${esc(t.description)}</textarea></div><button class="btn secondary small" id="save-twin-info">保存分身配置</button>
     <div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><label class="field-note" for="ask-scope">试问范围</label><select id="ask-scope"><option value="local">本地已保存授权</option><option value="published" ${state.shareReady?'':'disabled'}>服务端已发布版本</option></select><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">模型尚未配置，请前往设置完成连接。</p>'}<div id="twin-answer"></div><div class="divider"></div><h2>分享给协作者</h2><div id="sharing-panel">正在读取分享状态…</div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
     <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已选择 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">名称、用途和知识授权一起保存</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
-  await renderSharing(id);
   el('twins-back').onclick=()=>{if(!confirmDiscard())return;state.dirty=false;state.twinId=null;go('twins',true)};
   function renderSelection(){
     const q=el('twin-search').value.toLowerCase().trim();
@@ -262,13 +261,21 @@ async function renderTwinEditor(id){
     el('selection-list').querySelectorAll('[data-select-entry]').forEach(b=>b.onchange=()=>{const v=Number(b.dataset.selectEntry);if(b.checked)selected.add(v);else selected.delete(v);state.dirty=true;el('selected-count').textContent=`已选择 ${selected.size} 篇`});
   }
   el('twin-search').oninput=renderSelection;renderSelection();
-  async function saveTwin(button){return busy(button,async()=>{
+  async function saveTwin(button){
+    if(button.disabled)return;
+    const form=content.querySelector('.twin-editor');
+    const controls=[...form.querySelectorAll('#twin-edit-name,#twin-edit-desc,#twin-search,[data-select-entry],#save-twin-info,#save-selections')];
+    const disabled=controls.map(control=>control.disabled);
+    controls.forEach(control=>control.disabled=true);
+    try{
     const name=el('twin-edit-name').value.trim();if(!name){notify('名称不能为空');return}
     const valid=[...selected].filter(v=>availableToTwin(eligible.find(k=>k.id===v)||{}));
     if(await perform(()=>api(`twins/${id}`,{method:'PUT',body:{name,description:el('twin-edit-desc').value,knowledge_ids:valid}}),null)){
+      if(!form.isConnected)return;
       state.dirty=false;notify(`分身信息和 ${valid.length} 篇知识授权已保存${valid.length<selected.size?'；不可用知识已移出授权':''}`);await go('twins',true)
     }
-  })}
+    }finally{controls.forEach((control,index)=>{if(control.isConnected)control.disabled=disabled[index]})}
+  }
   el('save-selections').onclick=()=>saveTwin(el('save-selections'));
   el('save-twin-info').onclick=()=>saveTwin(el('save-twin-info'));
   watchChanges(el('twin-edit-name'));watchChanges(el('twin-edit-desc'));
@@ -283,6 +290,8 @@ async function renderTwinEditor(id){
     const scope=el('ask-scope').value;const turn={question,scope,answer:'正在查找授权知识…',citations:[]};(state.chats[id]||=[]).push(turn);renderChat();
     try{const r=await api(`twins/${id}/ask`,{method:'POST',body:{question,scope}});turn.answer=r.answer;turn.citations=r.citations;el('twin-question').value=''}catch(e){turn.answer=e.message}renderChat();
   });
+  // Bind editing controls before loading optional remote sharing information.
+  await renderSharing(id);
 }
 
 async function openConnection(sharing=false){
