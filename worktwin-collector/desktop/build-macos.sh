@@ -63,7 +63,19 @@ if [[ "$formal" == 1 ]]; then
   suffix=""
 fi
 dmg="release/WorkTwin-Collector-1.2.0-macOS-$(uname -m)${suffix}.dmg"
-hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg"
+# macOS Intel GitHub runners occasionally leave DiskImages busy at the
+# first attempt. Retry only this specific observed hdiutil failure once.
+if output=$(hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg" 2>&1); then
+  echo "$output"
+elif [[ "$output" == *"Resource busy"* ]]; then
+  echo "$output" >&2
+  echo "DiskImages is busy; retrying DMG creation once" >&2
+  sleep 5
+  hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg"
+else
+  echo "$output" >&2
+  exit 1
+fi
 hdiutil verify "$dmg"
 
 if [[ "$formal" == 1 ]]; then
