@@ -143,6 +143,32 @@ class DocumentScopeInput(BaseModel):
     existing_project_key: str | None = Field(default=None,max_length=1000)
 
 
+class CaptureToggle(BaseModel):
+    enabled: bool
+
+class CapturePair(BaseModel):
+    code: str = Field(min_length=10,max_length=128)
+
+class CaptureCommand(BaseModel):
+    sender_origin: str = Field(max_length=250)
+    envelope: dict
+
+class CaptureBind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+
+class CaptureEvent(BaseModel):
+    session_id: str = Field(max_length=100)
+    seq: int
+    kind: str = Field(max_length=30)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+    label: str = Field(default="",max_length=500)
+
+
 class EditionInput(BaseModel):
     edition: Literal['personal','enterprise']
 
@@ -245,31 +271,6 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def health():
         return {"ok": True, "app": "WorkTwin Collector", "cloud_sync": publisher.client.configured, "version": __version__,
                 "enterprise_model": model_client.configured}
-
-    class CaptureToggle(BaseModel):
-        enabled: bool
-
-    class CapturePair(BaseModel):
-        code: str = Field(min_length=10,max_length=128)
-
-    class CaptureCommand(BaseModel):
-        sender_origin: str = Field(max_length=250)
-        envelope: dict
-
-    class CaptureBind(BaseModel):
-        session_id: str = Field(max_length=100)
-        tab_id: int
-        document_id: str = Field(max_length=100)
-        current_url: str = Field(max_length=2048)
-
-    class CaptureEvent(BaseModel):
-        session_id: str = Field(max_length=100)
-        seq: int
-        kind: str = Field(max_length=30)
-        tab_id: int
-        document_id: str = Field(max_length=100)
-        current_url: str = Field(max_length=2048)
-        label: str = Field(default="",max_length=500)
 
     def capture_credential(request: Request) -> str:
         auth = request.headers.get("Authorization","")
