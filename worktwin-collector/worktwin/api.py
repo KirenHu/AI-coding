@@ -42,6 +42,7 @@ from .reconcile import review_flags, resolve_proposal
 from .answer_policy import check_answer
 from .scope import document_scope, scope_description, snapshot_history
 from .browser_capture import BrowserCapture
+from .browser_capture_status import TaskStatusMonitor
 
 STATIC = Path(__file__).parent / "static"
 
@@ -153,6 +154,9 @@ class CaptureCommand(BaseModel):
     sender_origin: str = Field(max_length=250)
     envelope: dict
 
+class CaptureSessionsStatus(BaseModel):
+    session_ids: list[str] = Field(default_factory=list,max_length=100)
+
 class CaptureBind(BaseModel):
     session_id: str = Field(max_length=100)
     tab_id: int
@@ -194,6 +198,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
     browser_capture = BrowserCapture(db)
+    browser_status_monitor = TaskStatusMonitor(browser_capture)
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -209,8 +214,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             collector.start()
             knowledge_worker.start()
             publisher.start()
+            browser_status_monitor.start()
         async with mcp_server.session_manager.run():
             yield
+        browser_status_monitor.stop()
         publisher.stop()
         collector.stop()
         knowledge_worker.stop()
@@ -243,6 +250,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
     app.state.browser_capture = browser_capture
+    app.state.browser_status_monitor = browser_status_monitor
     app.state.model = model_client
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
     app.mount('/mcp',mcp_app,name='twin-mcp')
@@ -319,6 +327,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.post("/capture/heartbeat")
     def capture_heartbeat(request: Request):
         return browser_capture.heartbeat(capture_credential(request))
+
+    @app.post("/capture/sessions/status")
+    def capture_sessions_status(request: Request,body: CaptureSessionsStatus):
+        return browser_capture.extension_sessions(capture_credential(request),body.session_ids)
 
     @app.post("/capture/command")
     def capture_command(request: Request,body: CaptureCommand):
