@@ -201,7 +201,7 @@ class BrowserCapture:
             self._extension(con,token)
         return {"ok":True}
 
-    def _command(self, con, envelope: dict, sender_origin: str) -> tuple[str,str,str]:
+    def _command(self, con, envelope: dict, sender_origin: str) -> tuple[str,str,str,str]:
         secret=os.environ.get("WORKTWIN_CAPTURE_FLOW_SECRET","")
         trusted=os.environ.get("WORKTWIN_CAPTURE_FLOW_ORIGIN","").rstrip("/")
         if len(secret)<32 or not trusted or sender_origin!=trusted or origin(sender_origin)!=trusted:
