@@ -147,7 +147,10 @@
     const value = event.data;
     if (!value || value.channel !== "worktwin.workflow" ||
         !["capture.start", "capture.complete"].includes(value.type)) return;
-    if (!Number.isFinite(lastGesture) || Date.now() - lastGesture > 1500) return;
+    // Only START is tied to a real user click. A signed COMPLETE may be
+    // emitted asynchronously when the workflow backend marks a task finished.
+    if (value.type === "capture.start" &&
+        (!Number.isFinite(lastGesture) || Date.now() - lastGesture > 1500)) return;
     if (typeof value.ticket !== "string" || value.ticket.length > 4500) return;
     chrome.runtime.sendMessage({type:"WT_FLOW_SIGNAL",ticket:value.ticket,
       source_origin:location.origin}, () => {void chrome.runtime.lastError});
