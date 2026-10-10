@@ -167,6 +167,34 @@ CREATE TABLE IF NOT EXISTS twin_mcp (
   allow_logs INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS twin_grants (
+    twin_id INTEGER NOT NULL REFERENCES twins(id) ON DELETE CASCADE,
+    subject_type TEXT NOT NULL CHECK(subject_type IN ('project','source','global','knowledge')),
+    subject_key TEXT NOT NULL,
+    effect TEXT NOT NULL DEFAULT 'allow' CHECK(effect IN ('allow','deny')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(twin_id,subject_type,subject_key,effect)
+);
+CREATE INDEX IF NOT EXISTS ix_twin_grants_subject ON twin_grants(subject_type,subject_key);
+CREATE TABLE IF NOT EXISTS project_entities (
+    project_key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    anchor_type TEXT NOT NULL DEFAULT '',
+    anchor TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'auto',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_project_entities_anchor ON project_entities(anchor_type,anchor)
+    WHERE anchor_type!='' AND anchor!='';
+CREATE TABLE IF NOT EXISTS project_memberships (
+    knowledge_id INTEGER PRIMARY KEY REFERENCES knowledge(id) ON DELETE CASCADE,
+    project_key TEXT NOT NULL REFERENCES project_entities(project_key) ON DELETE CASCADE,
+    confidence REAL NOT NULL DEFAULT 1,
+    status TEXT NOT NULL CHECK(status IN ('confirmed','provisional')),
+    reason TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_project_memberships_project ON project_memberships(project_key,status);
 CREATE TABLE IF NOT EXISTS knowledge_acceptance (
   model_signature TEXT PRIMARY KEY,
   policy_version TEXT NOT NULL,
@@ -194,6 +222,7 @@ class Database:
     def _migrate(conn: sqlite3.Connection) -> None:
         """Idempotent in-place upgrades from the 0.1 SQLite schema."""
         additions = {
+            "twins": {"knowledge_mode": "TEXT NOT NULL DEFAULT 'manual'"},
             "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0", "allow_share": "INTEGER NOT NULL DEFAULT 0"},
             "documents": {"project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''", "scope": "TEXT NOT NULL DEFAULT 'unknown'", "project_verified": "INTEGER NOT NULL DEFAULT 0"},
             "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0",
