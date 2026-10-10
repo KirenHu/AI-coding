@@ -107,11 +107,12 @@ def main():
             def do_GET(self):
                 host=self.headers.get("Host","")
                 if host.startswith("flow."):
-                    start=sign("capture.start","realsignal_start_123456")
-                    end=sign("capture.complete","realsignal_complete_123456")
+                    same_tab=self.path.startswith("/same-tab")
+                    start=sign("capture.start","realsignal_start_same123" if same_tab else "realsignal_start_123456")
+                    end=sign("capture.complete","realsignal_done_same123" if same_tab else "realsignal_complete_123456")
+                    attributes="" if same_tab else 'target="_blank" rel="noopener"'
                     content=("""<!doctype html><html><meta charset="utf-8"><body>
-<a id="business-link" target="_blank" rel="noopener"
-href='""" + target_ref["value"] + """'>前往第三方系统</a>
+<a id="business-link" """+attributes+""" href='""" + target_ref["value"] + """'>前往第三方系统</a>
 <script>
 document.getElementById("business-link").addEventListener("click",()=>{
 window.postMessage({channel:"worktwin.workflow",type:"capture.start",
@@ -223,10 +224,37 @@ document.getElementById("result").textContent="保存成功";
                     flow.evaluate("window.completeWorkTwinTask()")
                     wait(lambda:get("/api/capture/status",token)["sessions"][0]["task_state"]=="completed",
                         "Signed workflow completion did not close the task")
+                    # Verify the same-tab native href separately. The opener
+                    # source page is destroyed, but the local signal must
+                    # still match the newly committed document in that tab.
+                    before_ids={row["id"] for row in get("/api/capture/status",token)["sessions"]}
+                    same=ctx.new_page()
+                    same.goto(issuer_ref["value"]+"/same-tab",wait_until="domcontentloaded")
+                    same.locator("#business-link").click()
+                    same.wait_for_url("**/first?*")
+                    second=wait(lambda:next((
+                        x for x in get("/api/capture/status",token)["sessions"]
+                        if x["id"] not in before_ids and x["capture_state"]=="recording"),None),
+                        "Same-tab native navigation did not bind",24)
+                    time.sleep(.7)
+                    same.locator("#save").click()
+                    wait(lambda:len(get("/api/capture/sessions/"+second["id"],token)["steps"])>=1,
+                         "Same-tab DOM action was not recorded")
+                    same.locator("#next").click()
+                    same.wait_for_url("**/second")
+                    wait(lambda:next((x for x in get("/api/capture/status",token)["sessions"]
+                        if x["id"]==second["id"] and x["capture_state"]=="navigated"),None),
+                        "Same-tab internal navigation was not stopped")
+                    completion_page=ctx.new_page()
+                    completion_page.goto(issuer_ref["value"]+"/same-tab")
+                    completion_page.evaluate("window.completeWorkTwinTask()")
+                    wait(lambda:next((x for x in get("/api/capture/status",token)["sessions"]
+                        if x["id"]==second["id"] and x["task_state"]=="completed"),None),
+                        "Same-tab workflow completion signal was lost")
                     print(json.dumps({"result":"PASS","real_extension":True,
-                        "direct_link":True,"page_boundary":True,
-                        "navigation_stops":True,"workflow_completion":True,
-                        "steps":count},ensure_ascii=False))
+                        "native_new_tab":True,"native_same_tab":True,
+                        "page_boundary":True,"navigation_stops":True,
+                        "workflow_completion":True,"steps":count},ensure_ascii=False))
                 finally:
                     ctx.close()
         finally:
