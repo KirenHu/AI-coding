@@ -1,4 +1,4 @@
-# WorkTwin 1.0 架构
+# WorkTwin 1.2.0 架构
 
 员工本地进程负责授权采集、索引、知识编辑、审核与发布同步；企业进程持有模型供应商 Key、执行费用控制和保存允许分享的知识快照。UI 只有信息采集、我的知识库、我的数字分身。
 
@@ -18,6 +18,12 @@ flowchart TB
   Shared --> Recipient[持有到期链接的接收者]
   Recipient --> Enterprise
 ```
+
+## 浏览器任务采集（新增独立事件流）
+
+浏览器采集不是持续文件扫描的另一种目录。业务平台签名的开始/完成票据由插件并行于原生跳转送到本地 WorkTwin；经过可信 issuer、公钥、时效、nonce 及扩展配对验证后创建 browser_capture_sessions。只有流程按钮对应的新导航、精确 HTTPS 路径、tabId 与 documentId 全部匹配，才能绑定 DOM 观察器；在任何顶层文档导航、SPA 路由变化或打开后继标签页时停止。完成票据关闭任务，页面监控结束不自动等于任务完成。
+
+browser_capture_events 按递增 seq 保存脱敏事件，browser_capture_steps 保存归并的可观察操作，browser_capture_signals 防重放；browser_analysis 在用户额外授权时按多步骤向模型请求未验收的阶段总结。默认关闭且不直接生成知识，不进入文件扫描的 documents/ai_jobs SHA 更新链路。未来通过统一证据索引连接到知识审核流程，不跳过 scope、证据引用和分身授权。
 
 ## 本地状态与一致性
 
