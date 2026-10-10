@@ -1,8 +1,12 @@
-# WorkTwin Collector 1.1.8
+# WorkTwin Collector 1.1.8（任务触发式浏览器采集预览）
 
 在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；已补充编程工具的执行状态线索，原始工具结果和跨会话项目归属仍待完善；提供绑定数字分身授权的本地只读 MCP，完整日志单独授权。个人自行配置模型，企业使用统一分配的模型与 Token。
 
 [已发布安装包与源码](https://github.com/KirenHu/AI-coding/releases) · [MCP 接入](docs/MCP.md) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
+
+## 浏览器采集预览
+
+「信息采集」新增手动启用的任务触发式浏览器行为采集，与文件夹及 Codex/Claude Code 来源并列；支持在 WorkTwin 内下载扩展 ZIP、一次性配对、观察与状态反馈。流程平台需要提供签名任务信号，并配置扩展允许通信的平台 Origin。仅捕获目标文档，不跟踪跳转后的网页；事件和本地步骤摘要暂不进入 AI 知识整理管线。完整协议及尚未通过的真实网页验收见 [浏览器采集](docs/BROWSER_CAPTURE.md)。
 
 ## 三个入口
 
