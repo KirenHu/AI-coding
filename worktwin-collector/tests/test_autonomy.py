@@ -36,7 +36,7 @@ def test_clear_successor_applies_without_acceptance_receipt(tmp_path):
         assert note['created_by']=='enterprise_ai'
         assert note['status']=='confirmed' and note['needs_review']==0
         assert con.execute('SELECT count(*) FROM knowledge_history WHERE knowledge_id=?',(kid,)).fetchone()[0] >= 1
-        assert len(con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL))==1
+        assert len(con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL).fetchall())==1
         assert apply_safe_replacements(con,did)==0
 
 
