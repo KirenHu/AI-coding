@@ -94,9 +94,14 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
     metadata = document_scope(doc)
     con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],doc_id))
     for item in candidates:
+        # One source can contain several projects; each extracted work unit may
+        # use a grounded project identity independent of the source's label.
+        item_scope=item.get('scope') or metadata['scope']
+        item_key=item.get('project_key') or metadata['project_key']
+        item_project=item.get('project') if item.get('project_key') else metadata['project']
         # Scope de-duplication to project and kind. Two departments repeating
         # the same sentence must not silently share one knowledge entry.
-        digest_source = metadata['project_key'] + "\0" + permission_key(con,doc_id) + "\0" + item["kind"] + "\0" + item["quote"]
+        digest_source = item_key + "\0" + permission_key(con,doc_id) + "\0" + item["kind"] + "\0" + item["quote"]
         fingerprint = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
         cursor = con.execute("INSERT OR IGNORE INTO knowledge(kind,title,body,created_by,source_bound,fingerprint) VALUES(?,?,?,?,1,?)",
                              (item["kind"], item["title"][:130], item["body"], created_by, fingerprint))
@@ -107,7 +112,7 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
         if cursor.rowcount > 0:
             con.execute('''UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=?,
                 quality_reason=?,attribution=?,outcome=?,extraction_version=? WHERE id=?''',
-                (metadata['scope'],metadata['project'],metadata['project_key'],item.get('topic',item['title'])[:100],
+                (item_scope,item_project,item_key,item.get('topic',item['title'])[:100],
                  item.get('scope_detail','仅适用于来源资料所描述的工作')[:500],item.get('quality','uncertain'),
                  item.get('value_reason','待核对可复用价值')[:500],item.get('attribution','user'),item.get('outcome','none'),
                  item.get('extraction_version',0),know_id))
