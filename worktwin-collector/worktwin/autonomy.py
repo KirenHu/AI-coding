@@ -57,13 +57,14 @@ def apply_safe_replacements(con, document_id: int) -> int:
         previous = source_time(con.execute("""SELECT MAX(occurred_at) FROM knowledge_evidence
             WHERE knowledge_id=? AND is_current=1 AND superseded=0""",
             (note['id'],)).fetchone()[0] or '')
-        # A newer timestamp or the disappearance of every old citation in a
-        # newly saved version of the same file is sufficient to establish order.
+        # A newer source timestamp or the absence of *every* prior exact
+        # citation in the new source is sufficient to establish order.
         # Mixed-document provenance cannot qualify for this fallback.
-        previous_evidence = con.execute("""SELECT document_id,is_current FROM knowledge_evidence
-            WHERE knowledge_id=?""",(note['id'],)).fetchall()
+        previous_evidence = con.execute("""SELECT document_id,is_current,quote
+            FROM knowledge_evidence WHERE knowledge_id=?""",(note['id'],)).fetchall()
         revised_same_file = (bool(previous_evidence) and
             all(ev['document_id']==document_id and ev['is_current']==0
+                and bool(ev['quote']) and ev['quote'] not in doc['content']
                 for ev in previous_evidence))
         if newer and previous:
             if newer <= previous:

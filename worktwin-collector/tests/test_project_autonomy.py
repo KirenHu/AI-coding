@@ -163,3 +163,32 @@ def test_scoped_grants_api_and_old_manual_pins(tmp_path):
         assert c.get('/api/twins',headers=h).json()[0]['knowledge_count']==0
         assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[note]}).status_code==200
         assert c.get('/api/twins',headers=h).json()[0]['knowledge_count']==1
+
+
+def test_repeated_project_name_with_different_repos_stays_separate(tmp_path):
+    """Within one discussion, the same display name must not reuse a cached identity."""
+    db=Database(tmp_path/'db.sqlite')
+    first='Atlas 项目维护 https://github.com/alpha-team/atlas-one 的发布流程。'
+    second='Atlas 项目维护 https://github.com/beta-team/atlas-two 的订阅流程。'
+    with db.connect() as con:
+        _,did=create_source(con,'same-name','notes.md',first+'\n'+second)
+        doc=con.execute('SELECT * FROM documents WHERE id=?',(did,)).fetchone()
+        plan=plan_work_units([grounded_item(first,'Atlas'),
+                              grounded_item(second,'Atlas')],doc,[],Judge())
+    assert plan[0]['scope']=='project'
+    assert plan[1]['scope']=='session'
+    assert plan[0]['project_key']!=plan[1]['project_key']
+
+
+def test_document_title_never_supplies_identity_to_unrelated_work_unit(tmp_path):
+    db=Database(tmp_path/'db.sqlite')
+    quote='Atlas 项目更新了一项用户流程。'
+    with db.connect() as con:
+        _,did=create_source(con,'title-leak',
+            'https://github.com/alpha-team/atlas-one',quote)
+        doc=con.execute('SELECT * FROM documents WHERE id=?',(did,)).fetchone()
+        plan=plan_work_units([grounded_item(quote,'Atlas')],doc,[{
+            'name':'Atlas','project_key':'auto:other','anchor_type':'repo',
+            'anchor':'alpha-team/atlas-one','summary':'another work unit'}],Judge())
+    assert plan[0]['scope']=='session'
+    assert plan[0]['project_key']!= 'auto:other'

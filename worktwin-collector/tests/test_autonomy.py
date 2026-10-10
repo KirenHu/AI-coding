@@ -80,3 +80,28 @@ def test_updated_file_revises_original_note_without_reconfirmation(tmp_path):
         note=con.execute('SELECT * FROM knowledge WHERE id=?',(target,)).fetchone()
         assert note['body']==plan[0]['body'] and note['needs_review']==0
         assert con.execute('SELECT count(*) FROM knowledge').fetchone()[0]==1
+
+
+def test_same_file_reindex_does_not_replace_when_old_quote_remains(tmp_path):
+    """A saved file is not proof that an old conclusion was superseded."""
+    db,did,item=setup(tmp_path)
+    with db.connect() as con:
+        assert activate_new(con,did,[item],Model())==1
+        target=con.execute('SELECT id FROM knowledge').fetchone()[0]
+        old_quote=con.execute('SELECT quote FROM knowledge_evidence WHERE knowledge_id=?',
+                              (target,)).fetchone()[0]
+        new_quote='新讨论说明 WorkTwin 的某项规则应再讨论。'
+        content=old_quote+'\n'+new_quote
+        con.execute('UPDATE documents SET content=?,sha256=? WHERE id=?',
+                    (content,'file-rescan-sha',did))
+        con.execute('UPDATE knowledge_evidence SET is_current=0 WHERE knowledge_id=?',
+                    (target,))
+        successor=dict(item,quote=new_quote,occurred_at='',
+                       body='新讨论并没有明确推翻之前的全部内容。')
+        proposal={0:{'target_id':target,'action':'replace',
+                     'title':item['title'],'body':successor['body'],
+                     'reason':'source reindexed',
+                     'changes_existing_conclusion':True}}
+        assert store_proposals(con,did,'file-rescan-sha',[successor],proposal)==1
+        assert apply_safe_replacements(con,did)==0
+        assert con.execute('SELECT body FROM knowledge WHERE id=?',(target,)).fetchone()[0]!=successor['body']

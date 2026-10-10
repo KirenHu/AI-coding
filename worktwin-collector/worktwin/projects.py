@@ -89,7 +89,7 @@ def plan_work_units(items, document, projects, decision_router):
     memo={}
     for item in items:
         anchors=source_anchors(' '.join(str(item.get(k) or '') for k in
-            ('quote','context_quote','confirmation_quote')),doc.get('title',''))
+            ('quote','context_quote','confirmation_quote')))
         hint=str(item.get('project_hint') or '').strip()[:120]
         # A name inferred from a directory is not a source-grounded identity.
         # An explicit verified project assigned by the owner always wins.
@@ -109,8 +109,11 @@ def plan_work_units(items, document, projects, decision_router):
                             'confidence':0,'reason':'来源没有可验证的项目名称'})
             continue
         key_hint=normalized_name(hint)
-        if key_hint in memo:
-            planned.append(dict(memo[key_hint]))
+        # Two work units may mention the same project name but different repos.
+        # Never reuse a match without the same independent identity clues.
+        memo_key=(key_hint,tuple(anchors['repositories']),tuple(anchors['pull_requests']))
+        if memo_key in memo:
+            planned.append(dict(memo[memo_key]))
             continue
         candidates=[p for p in available if normalized_name(p['name'])==key_hint or
             bool(anchors['repositories']) and p.get('anchor_type')=='repo' and
@@ -158,7 +161,7 @@ def plan_work_units(items, document, projects, decision_router):
             available.append({'project_key':assignment['project_key'],'name':hint,
                 'anchor_type':assignment.get('anchor_type',''),
                 'anchor':assignment.get('anchor',''),'origin':'auto'})
-        memo[key_hint]=assignment
+        memo[memo_key]=assignment
         planned.append(dict(assignment))
     return planned
 
