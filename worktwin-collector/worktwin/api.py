@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from .collector import Collector
 from .browser_capture import BrowserCapture, CaptureRejected
+from .browser_analysis import BrowserCaptureAnalyzer
 from .config import database_path, codex_sessions_path, claude_projects_path
 from .db import Database
 from .knowledge import KIND_LABELS
@@ -209,6 +210,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
+    browser_analyzer = BrowserCaptureAnalyzer(db, capture=browser_capture, client=model_client)
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -223,12 +225,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         if start_worker:
             collector.start()
             knowledge_worker.start()
+            browser_analyzer.start()
             publisher.start()
         async with mcp_server.session_manager.run():
             yield
         publisher.stop()
         collector.stop()
         knowledge_worker.stop()
+        browser_analyzer.stop()
 
     app = FastAPI(title="WorkTwin Collector", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     # A malicious website must not be able to access personal documents via
@@ -259,6 +263,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.publisher = publisher
     app.state.db = db
     app.state.browser_capture = browser_capture
+    app.state.browser_analyzer = browser_analyzer
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
     app.state.model = model_client
