@@ -340,6 +340,17 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_trace(capture_id:str):
         return capture_result(browser_capture.trace,capture_id)
 
+    @app.get("/api/capture/sessions/{capture_id}/export.md",dependencies=[Depends(authorized)])
+    def browser_capture_export(capture_id:str):
+        text=capture_result(browser_capture.export_markdown,capture_id)
+        return Response(text,media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="WorkTwin-Capture-'+capture_id+'.md"'})
+
+    @app.delete("/api/capture/sessions/{capture_id}",dependencies=[Depends(authorized)])
+    def browser_capture_delete(capture_id:str):
+        return capture_result(browser_capture.delete,capture_id)
+
     @app.post("/api/capture/ext/heartbeat")
     def browser_capture_heartbeat(payload:BrowserHeartbeatInput,
                                   token:str=Depends(capture_extension_token)):
