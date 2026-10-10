@@ -51,9 +51,18 @@ def apply_safe_replacements(con, document_id: int) -> int:
         previous = source_time(con.execute("""SELECT MAX(occurred_at) FROM knowledge_evidence
             WHERE knowledge_id=? AND is_current=1 AND superseded=0""",
             (note['id'],)).fetchone()[0] or '')
-        # A timestamp-free rewrite is not enough evidence of which conclusion
-        # is newer. We can still automatically activate its new independent note.
-        if not newer or not previous or newer <= previous:
+        # A newer timestamp or the disappearance of every old citation in a
+        # newly saved version of the same file is sufficient to establish order.
+        # Mixed-document provenance cannot qualify for this fallback.
+        previous_evidence = con.execute("""SELECT document_id,is_current FROM knowledge_evidence
+            WHERE knowledge_id=?""",(note['id'],)).fetchall()
+        revised_same_file = (bool(previous_evidence) and
+            all(ev['document_id']==document_id and ev['is_current']==0
+                for ev in previous_evidence))
+        if newer and previous:
+            if newer <= previous:
+                continue
+        elif not revised_same_file:
             continue
         try:
             resolve_proposal(con, proposal['id'], accept=True, actor='enterprise_ai')
