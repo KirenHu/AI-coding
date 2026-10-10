@@ -79,8 +79,12 @@ def plan_work_units(items, document, projects, decision_router):
                             'project':doc['project'],'status':'confirmed','confidence':1,
                             'reason':'用户已确认资料的项目归属'})
             continue
+        local_evidence=' '.join(str(item.get(k) or '') for k in
+            ('quote','context_quote','confirmation_quote'))
+        # A project mentioned elsewhere in a mixed document is not evidence
+        # that this particular work unit belongs to it.
         if (not hint or len(normalized_name(hint))<3 or
-            not (hint.casefold() in doc.get('content','').casefold())):
+            not (hint.casefold() in local_evidence.casefold())):
             planned.append({'scope':'session','project_key':'session:'+str(doc['id']),
                             'project':doc.get('project',''),'status':'isolated',
                             'confidence':0,'reason':'来源没有可验证的项目名称'})
