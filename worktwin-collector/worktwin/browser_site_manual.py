@@ -68,7 +68,8 @@ class BrowserSiteManuals:
         for observation in observations:
             groups[observation['signature']].append(observation)
         arranged = sorted(groups.values(),
-                          key=lambda items: max(x['recorded_at'] for x in items), reverse=True)
+                          key=lambda items: max((x['recorded_at'],x['record_order'])
+                                                for x in items), reverse=True)
         lines = [
             '# ' + site + ' · 网站操作手册',
             '',
@@ -78,7 +79,7 @@ class BrowserSiteManuals:
             '',
         ]
         for group in arranged:
-            last = max(group, key=lambda row: row['recorded_at'])
+            last = max(group, key=lambda row: (row['recorded_at'],row['record_order']))
             first_path = last['path'] or '/'
             timestamp = datetime.fromtimestamp(last['recorded_at']).strftime('%Y-%m-%d %H:%M')
             lines.extend([f'## 页面 {first_path}',
@@ -131,8 +132,8 @@ class BrowserSiteManuals:
                  json.dumps(steps,ensure_ascii=False),session['event_seq'],
                  session['ended_at'] or session['created_at']))
             observations = [dict(x) for x in con.execute("""
-                SELECT * FROM browser_site_observations WHERE site=?
-                ORDER BY recorded_at DESC,session_id DESC""",(site,))]
+                SELECT rowid AS record_order,* FROM browser_site_observations WHERE site=?
+                ORDER BY recorded_at DESC,rowid DESC""",(site,))]
             body = self._body(site, observations)
             record = con.execute("SELECT knowledge_id FROM browser_site_manuals WHERE site=?",
                                  (site,)).fetchone()
