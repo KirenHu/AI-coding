@@ -201,6 +201,57 @@ def main():
                         eventually(manual_bound,timeout=18)
                         target.locator('#add').click()
                         eventually(lambda:len(events(db,manual_sid))>=1,timeout=12)
+                        # A normal dialog, dynamic same-site iframe, srcdoc,
+                        # and open shadow-root control must all be observable.
+                        browser.route('https://portal.example.com/dialog-form',lambda route:
+                            route.fulfill(content_type='text/html',body=
+                              '<meta charset="utf-8"><label for="field">弹窗字段</label>'
+                              '<input id="field"><button id="inner-save">保存弹窗</button>'
+                              '<input type="password" id="secret">'))
+                        browser.route('https://outside.example.com/widget',lambda route:
+                            route.fulfill(content_type='text/html',body=
+                              '<button id="outside">FOREIGN_FRAME_ACTION</button>'))
+                        target.evaluate("""() => {
+                          const dialog=document.createElement('dialog');dialog.id='test-dialog';
+                          dialog.innerHTML='<button id="dialog-action">普通弹窗操作</button><div id="shadow-host"></div><iframe id="inner-frame" src="/dialog-form"></iframe><iframe id="inline-frame" srcdoc="<button id=inline-action>内嵌弹窗操作</button>"></iframe><iframe id="foreign-frame" src="https://outside.example.com/widget"></iframe>';
+                          document.body.append(dialog);dialog.showModal();
+                          dialog.querySelector('#shadow-host').attachShadow({mode:'open'}).innerHTML='<button id="shadow-action">影子弹窗操作</button>';
+                        }""")
+                        target.locator('#dialog-action').click()
+                        target.locator('#shadow-action').click()
+                        inner=target.frame_locator('#inner-frame')
+                        inner.locator('#inner-save').wait_for()
+                        # Wait for actual content script readiness, not merely the frame load.
+                        eventually(lambda:worker.evaluate("""async () => {
+                            const s=[...sessions.values()].find(s=>s.manual&&s.status==='capturing');
+                            const frames=await chrome.webNavigation.getAllFrames({tabId:s.tabId});
+                            const f=frames.find(f=>f.url.endsWith('/dialog-form'));
+                            if(!f)return false;
+                            const r=await chrome.scripting.executeScript({target:{tabId:s.tabId,documentIds:[f.documentId]},func:()=>globalThis.__worktwinCaptureActive===true});
+                            return r[0]?.result;
+                        }"""))
+                        inner.locator('#field').fill('PRIVATE_INPUT_VALUE')
+                        inner.locator('#inner-save').click()
+                        inline=target.frame_locator('#inline-frame')
+                        eventually(lambda:worker.evaluate("""async () => {
+                            const s=[...sessions.values()].find(s=>s.manual&&s.status==='capturing');
+                            const frames=await chrome.webNavigation.getAllFrames({tabId:s.tabId});
+                            const f=frames.find(f=>f.url==='about:srcdoc');
+                            if(!f)return false;
+                            const r=await chrome.scripting.executeScript({target:{tabId:s.tabId,documentIds:[f.documentId]},func:()=>globalThis.__worktwinCaptureActive===true});
+                            return r[0]?.result;
+                        }"""))
+                        inline.locator('#inline-action').click()
+                        eventually(lambda:all(any(label in captured for _,_,captured in events(db,manual_sid))
+                            for label in ['普通弹窗操作','影子弹窗操作','保存弹窗','弹窗字段','内嵌弹窗操作']))
+                        before_foreign=len(events(db,manual_sid))
+                        target.frame_locator('#foreign-frame').locator('#outside').click()
+                        inner.locator('#secret').fill('PRIVATE_PASSWORD')
+                        time.sleep(.5)
+                        assert len(events(db,manual_sid))==before_foreign,'foreign/sensitive frame input captured'
+                        assert 'PRIVATE_INPUT_VALUE' not in str(events(db,manual_sid))
+                        target.evaluate("document.querySelector('#test-dialog').remove()")
+                        assert manual_bound(),'embedded frame navigation stopped the parent session'
                         count_before=len(events(db,manual_sid))
                         target.locator('#next').click()
                         eventually(lambda:len(events(db,manual_sid))>count_before,timeout=12)
@@ -253,6 +304,16 @@ def main():
                         assert dashboard_page.locator('#knowledge-history').count()==1
                         listing=client.get('/api/browser-capture/sessions',
                             headers=dashboard).json()
+                        # Stop + restart on the same document (without a reload).
+                        worker.evaluate('heartbeat()')
+                        target.bring_to_front()
+                        restarted=client.put('/api/browser-capture/manual',headers=dashboard,
+                            json={'enabled':True,'url':'https://portal.example.com'}).json()['manual_session_id']
+                        worker.evaluate('heartbeat()')
+                        target.locator('#add').click()
+                        eventually(lambda:any('新增审批规则' in label for _,_,label in events(db,restarted)))
+                        client.put('/api/browser-capture/manual',headers=dashboard,json={'enabled':False})
+                        worker.evaluate('heartbeat()')
                         assert any(x['id']==manual_sid and x['mode']=='manual'
                                    for x in listing)
                         timeline=client.get('/api/browser-capture/sessions/'

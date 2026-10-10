@@ -57,3 +57,7 @@ html,body{height:100%;overflow:hidden}
 /* Editor helper and keyboard hints */
 .kbd-hint{font-size:10px;padding:2px 6px;background:#f1f2f5;border-radius:4px;color:#858b96;border:1px solid #e1e3e7;margin-left:6px;font-weight:normal}
 
+
+/* Sources are added and managed in the same category. */
+.source-groups{display:grid;gap:14px}.source-category{overflow:hidden}.source-category-head{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:18px}.source-category-title{display:flex;align-items:center;gap:13px}.source-category-title>svg{width:22px;height:22px;color:#6474aa}.source-category-title small{display:block;font-size:12px;color:#959aa4;margin-top:5px}.source-category .source-item{border-top:1px solid #f0f0ee}
+#refresh-notice{position:fixed;right:25px;bottom:78px;z-index:111;display:flex;align-items:center;gap:12px;max-width:min(580px,90vw);padding:12px 16px;border:1px solid #ced6ed;border-radius:9px;background:white;box-shadow:0 8px 25px #0002;font-size:13px}#refresh-notice .btn{white-space:nowrap}

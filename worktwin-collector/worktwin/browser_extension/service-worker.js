@@ -145,12 +145,29 @@ async function tryBind(session,details){
   pendingSite.delete(session.id);
   await inject(session).catch(()=>{});
 }
+function captureFrames(s,frames){
+  const byId=new Map((frames||[]).map(f=>[f.frameId,f]));
+  const top=byId.get(0);
+  if(top?.documentId!==s.documentId||
+      (s.manual?site(top.url):page(top.url))!==s.page)return [];
+  function allowed(f){
+    if(!f)return false;
+    if(f.frameId===0)return true;
+    return (site(f.url)===site(top.url)||['about:blank','about:srcdoc'].includes(f.url))
+      && allowed(byId.get(f.parentFrameId));
+  }
+  return frames.filter(allowed);
+}
 async function inject(s){
   if(s.status!=="capturing")return;
-  await chrome.scripting.executeScript({
-    target:{tabId:s.tabId,documentIds:[s.documentId]},
+  const frames=await chrome.webNavigation.getAllFrames({tabId:s.tabId});
+  // Dialogs frequently embed a second document. Include only frames within
+  // this authorized site; never request access to a third-party iframe.
+  const allowed=captureFrames(s,frames);
+  await Promise.all(allowed.map(f=>chrome.scripting.executeScript({
+    target:{tabId:s.tabId,documentIds:[f.documentId]},
     files:["content.js"],injectImmediately:true
-  });
+  }).catch(()=>{})));
   chrome.action.setBadgeText({text:"记录"});
   chrome.action.setBadgeBackgroundColor({color:"#196b59"});
 }
@@ -242,13 +259,17 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     return true;
   }
   if(message?.type==="capture:event" && sender?.tab?.id){
-    ready.then(()=>{
+    ready.then(async()=>{
     const s=[...sessions.values()].find(x=>
-      x.status==="capturing" && x.tabId===sender.tab.id &&
-      x.documentId===sender.documentId &&
-      (x.manual?site(sender.url||""):page(sender.url||""))===x.page);
+      x.status==="capturing" && x.tabId===sender.tab.id);
     if(s && ["click","change","submit","feedback"].includes(message.kind)){
-      enqueueEvent(s,message.kind,message.label,sender.url,sender.documentId)
+      const frames=captureFrames(s,await chrome.webNavigation.getAllFrames({tabId:s.tabId}));
+      const top=frames.find(f=>f.frameId===0);
+      const frame=frames.find(f=>f.frameId===sender.frameId);
+      if(frame?.documentId!==sender.documentId){reply({ok:false});return;}
+      // The session remains bound to the top document. Child navigation must
+      // not rebind or stop the whole task. Chrome supplies frame identity.
+      enqueueEvent(s,message.kind,message.label,top.url,s.documentId)
         .then(reply).catch(e=>reply({ok:false,error:String(e.message||e)}));
     }else reply({ok:false});
     });return true;
@@ -298,7 +319,14 @@ async function manualNavigation(s,details){
 }
 chrome.tabs.onActivated.addListener(()=>ready.then(syncManual).catch(()=>{}));
 chrome.webNavigation.onCommitted.addListener(details=>{
-  if(details.frameId!==0)return;
+  if(details.frameId!==0){
+    ready.then(()=>{
+      for(const s of sessions.values())if(s.status==="capturing"&&s.tabId===details.tabId){
+        inject(s).catch(()=>{});
+      }
+    });
+    return;
+  }
   ready.then(()=>{
   const previous=recent.get(details.tabId);
   const info={...details,at:Date.now(),
@@ -331,7 +359,6 @@ chrome.webNavigation.onHistoryStateUpdated.addListener(details=>{
   });
 });
 chrome.webNavigation.onCompleted.addListener(details=>{
-  if(details.frameId!==0)return;
   ready.then(()=>{
   for(const s of sessions.values())if(s.status==="capturing"&&s.tabId===details.tabId){
     inject(s).catch(()=>{});

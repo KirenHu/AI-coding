@@ -57,9 +57,16 @@ class SourceInput(BaseModel):
     root: str = Field(min_length=1)
     allow_ai: bool = False
     allow_share: bool = False
+    validate_transcript: bool = False
+
+
+class SourceDetectionInput(BaseModel):
+    kind: Literal['codex','claude','cursor']
+    root: str | None = None
 
 
 class KnowledgeInput(BaseModel):
+    expected_version: int | None = Field(default=None, ge=1)
     title: str = Field(min_length=1, max_length=130)
     body: str = Field(min_length=1, max_length=50000)
     kind: Literal["fact", "decision", "process", "preference"] = "fact"
@@ -483,6 +490,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(400, "所选文件夹不存在或无法访问")
         if payload.kind in ("codex", "claude", "cursor") and root == Path.home():
             raise HTTPException(400, "请选择会话记录目录，而不是整个主目录")
+        if payload.validate_transcript and payload.kind != 'folder':
+            from .source_detection import detect_transcripts
+            detected = detect_transcripts(payload.kind, str(root))
+            if not detected['recognized']:
+                raise HTTPException(400, '没有检测到对应助手的会话记录，请先完成一次会话，或在高级设置中检查记录位置')
         with db.connect() as con:
             if con.execute("SELECT id FROM sources WHERE root=?",(str(root),)).fetchone():
                 raise HTTPException(409, "这个目录已添加")
@@ -500,6 +512,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         claude = claude_projects_path()
         return {"codex": str(p), "codex_exists":p.is_dir(),
                 "claude":str(claude), "claude_exists":claude.is_dir(), "home":str(Path.home())}
+
+    @app.post('/api/sources/detect', dependencies=[Depends(authorized)])
+    def detect_source(payload: SourceDetectionInput):
+        from .source_detection import detect_transcripts
+        return detect_transcripts(payload.kind, payload.root)
 
     @app.post("/api/pick-folder", dependencies=[Depends(authorized)])
     def pick_folder():
@@ -736,9 +753,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/knowledge/{knowledge_id}", dependencies=[Depends(authorized)])
     def update_knowledge(knowledge_id: int, payload: KnowledgeInput):
         with db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
             old = con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
             if not old:
                 raise HTTPException(404,"知识不存在")
+            if payload.expected_version is not None and payload.expected_version != old['version']:
+                raise HTTPException(409,"知识已更新，请刷新后再保存；当前输入尚未丢弃")
             metadata=knowledge_metadata(payload,old=old)
             snapshot_history(con,old)
             con.execute("""UPDATE knowledge SET kind=?,title=?,body=?,status=?,version=version+1,

@@ -62,7 +62,7 @@ suffix="-unsigned"
 if [[ "$formal" == 1 ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.3.0-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.3.1-macOS-$(uname -m)${suffix}.dmg"
 # macOS Intel GitHub runners occasionally leave DiskImages busy at the
 # first attempt. Retry only this specific observed hdiutil failure once.
 if output=$(hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg" 2>&1); then

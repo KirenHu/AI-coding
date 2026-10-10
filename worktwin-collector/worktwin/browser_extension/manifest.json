@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WorkTwin · 任务触发式浏览器行为采集",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "仅在明确开启手动网站监控或可信流程任务时，采集已授权页面的脱敏操作事件",
   "permissions": [
     "tabs",
