@@ -180,6 +180,42 @@ def main():
                         assert "新增审批规则" in data["summary"] and data["summary_status"]=="final",data
                         assert data["summary_source"]=="rule"
                         assert all(isinstance(n,int) for n in data["evidence_seq"]),data
+                        # Separate manual mode: the user explicitly enters
+                        # a site, then activates one matching browser tab.
+                        site_started=client.put('/api/browser-capture/manual',
+                            headers=dashboard,json={'enabled':True,
+                                'url':'https://portal.example.com'})
+                        assert site_started.status_code==200,site_started.text
+                        manual_sid=site_started.json()['manual_session_id']
+                        target.bring_to_front()
+                        def manual_bound():
+                            with sqlite3.connect(db) as con:
+                                row=con.execute("""SELECT status FROM browser_capture_sessions
+                                    WHERE id=?""",(manual_sid,)).fetchone()
+                                return row and row[0]=='capturing'
+                        eventually(manual_bound,timeout=18)
+                        target.locator('#add').click()
+                        eventually(lambda:len(events(db,manual_sid))>=1,timeout=12)
+                        count_before=len(events(db,manual_sid))
+                        target.locator('#next').click()
+                        eventually(lambda:len(events(db,manual_sid))>count_before,timeout=12)
+                        eventually(manual_bound,timeout=12)
+                        target.locator('#save').click()
+                        eventually(lambda:any('保存' in label for _,kind,label in
+                                   events(db,manual_sid) if kind=='click'),timeout=12)
+                        assert manual_bound(),"manual mode stopped on same-site navigation"
+                        stopped_manual=client.put('/api/browser-capture/manual',
+                            headers=dashboard,json={'enabled':False})
+                        assert stopped_manual.status_code==200
+                        assert not stopped_manual.json()['manual_enabled']
+                        listing=client.get('/api/browser-capture/sessions',
+                            headers=dashboard).json()
+                        assert any(x['id']==manual_sid and x['mode']=='manual'
+                                   for x in listing)
+                        timeline=client.get('/api/browser-capture/sessions/'
+                            +manual_sid+'/events',headers=dashboard).json()
+                        assert any(e['kind']=='navigation' for e in timeline),timeline
+                        assert all('secret=' not in e['location'] for e in timeline)
                         print(json.dumps({"result":"PASS","extension":"MV3 Chromium",
                             "events":count,"first_page_only":True,"no_unrelated_tabs":True,
                             "summary":data["summary"]},ensure_ascii=False))
