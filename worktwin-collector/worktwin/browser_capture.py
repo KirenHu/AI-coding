@@ -87,6 +87,18 @@ def page_path(value: str) -> str:
         raise CaptureRejected("仅支持真实 HTTPS 业务页面") from exc
 
 
+def page_fingerprint(value: str) -> str:
+    """Match the full target URL without retaining tokens or query content.
+
+    A redirect or a same-path URL with different query parameters cannot
+    silently broaden the one-document workflow grant.
+    """
+    page_path(value)  # validate HTTPS origin and transport restrictions
+    parsed = urlsplit(value)
+    canonical=urlunsplit((parsed.scheme,parsed.netloc.lower(),parsed.path or "/",parsed.query,""))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def mask(value: object, limit: int = 140) -> str:
     """Defensive second layer; the extension must not transmit input values."""
     if not isinstance(value, str):
@@ -280,6 +292,7 @@ class BrowserCapture:
         task = p["task_id"]
         now = int(time.time())
         target = page_path(p.get("target_url", "")) if p["action"] == "capture.start" else None
+        target_hash = page_fingerprint(p["target_url"]) if p["action"] == "capture.start" else None
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             self._expire(con)
@@ -305,11 +318,11 @@ class BrowserCapture:
             capture_id = secrets.token_hex(16)
             con.execute("""INSERT INTO browser_capture_sessions
                 (id,issuer,task_id,subject,request_id,workflow_project_id,goal,
-                 target_path,created_at,expires_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                 target_path,target_url_hash,created_at,expires_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (capture_id, p["iss"], task, p["subject"], p["request_id"],
                  mask(p.get("project_id", ""), 100), mask(p.get("goal", ""), 240),
-                 target, now, now + MAX_CAPTURE_AGE))
+                 target, target_hash, now, now + MAX_CAPTURE_AGE))
             return {"action": "start", "session_id": capture_id,
                     "target_path": target, "task_id": task, "expires_at": now + MAX_CAPTURE_AGE}
 
@@ -325,7 +338,7 @@ class BrowserCapture:
             s = con.execute("""SELECT * FROM browser_capture_sessions WHERE id=?""",(session_id,)).fetchone()
             if not s or s["task_state"] != "open" or s["capture_state"] != "pending":
                 raise CaptureRejected("此采集会话已结束或不可绑定", 409)
-            if s["target_path"] != canonical:
+            if s["target_path"] != canonical or s["target_url_hash"] != page_fingerprint(page_url):
                 raise CaptureRejected("目标网页不匹配，禁止监控其他页面", 403)
             con.execute("""UPDATE browser_capture_sessions SET capture_state='recording',
                 bound_tab_id=?,bound_document_id=?,started_at=? WHERE id=?""",
@@ -344,7 +357,9 @@ class BrowserCapture:
             s = con.execute("""SELECT * FROM browser_capture_sessions WHERE id=?""",(session_id,)).fetchone()
             if not s or s["task_state"] != "open" or s["capture_state"] != "recording":
                 raise CaptureRejected("任务或当前页面未处于采集状态", 409)
-            if s["bound_tab_id"] != tab_id or s["bound_document_id"] != document_id or s["target_path"] != canonical:
+            if (s["bound_tab_id"] != tab_id or s["bound_document_id"] != document_id
+                    or s["target_path"] != canonical
+                    or s["target_url_hash"] != page_fingerprint(page_url)):
                 raise CaptureRejected("事件来自非授权标签页或页面", 403)
             last = s["last_seq"]
             gap = 0
