@@ -798,6 +798,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 (previous['title'],previous['body'],previous['kind'],previous['status'],
                  previous['topic'],previous['scope_detail'],previous['quality'],
                  previous['outcome'],knowledge_id))
+            # Pending AI proposals refer to the superseded current version.
+            # Never leave a restored note blocked by an obsolete proposal.
+            con.execute("""UPDATE knowledge_proposals
+                SET status='dismissed',resolved_at=datetime('now')
+                WHERE target_id=? AND status='pending'""",(knowledge_id,))
             # The restored article keeps the latest project assignment and its
             # unchanged source grants; downstream twin/MCP resolvers read them.
             review_flags(con,[knowledge_id])
