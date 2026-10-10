@@ -53,7 +53,7 @@ STATIC = Path(__file__).parent / "static"
 
 class SourceInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
-    kind: Literal["folder", "codex", "claude"] = "folder"
+    kind: Literal["folder", "codex", "claude", "cursor"] = "folder"
     root: str = Field(min_length=1)
     allow_ai: bool = False
     allow_share: bool = False
@@ -481,13 +481,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         root = Path(payload.root).expanduser().resolve()
         if not root.is_dir():
             raise HTTPException(400, "所选文件夹不存在或无法访问")
-        if payload.kind in ("codex", "claude") and root == Path.home():
-            raise HTTPException(400, "请选择 Codex sessions 目录，而不是整个主目录")
+        if payload.kind in ("codex", "claude", "cursor") and root == Path.home():
+            raise HTTPException(400, "请选择会话记录目录，而不是整个主目录")
         with db.connect() as con:
             if con.execute("SELECT id FROM sources WHERE root=?",(str(root),)).fetchone():
                 raise HTTPException(409, "这个目录已添加")
             row = con.execute("INSERT INTO sources(name,kind,adapter,root,allow_ai,allow_share) VALUES(?,?,?,?,?,?)",
-                              (payload.name, "folder" if payload.kind == "claude" else payload.kind,
+                              (payload.name, "folder" if payload.kind in ("claude", "cursor") else payload.kind,
                                payload.kind, str(root), int(payload.allow_ai), int(payload.allow_share)))
             source_id = int(row.lastrowid)
         db.event("source_added", f"已授权：{payload.name}",source_id)
@@ -669,9 +669,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             docs=con.execute('''SELECT d.id,d.sha256 FROM documents d JOIN sources s ON s.id=d.source_id
                 WHERE s.enabled=1 AND s.allow_ai=1 AND d.deleted=0''').fetchall()
             for d in docs:
+                con.execute('UPDATE transcript_streams SET processed_seq=0 WHERE document_id=?',(d['id'],))
                 con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state,attempts) VALUES(?,?,'queued',0)
                     ON CONFLICT(document_id) DO UPDATE SET content_sha=excluded.content_sha,state='queued',attempts=0,
-                    error=NULL,next_run_at=NULL,claim_token=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
+                    error=NULL,next_run_at=NULL,claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,
+                    batch_through_seq=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
         knowledge_worker.schedule()
         return {'queued':len(docs)}
 
@@ -1310,9 +1312,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)''',(document_id,))
             con.execute("UPDATE documents SET project=?,project_key=?,scope='project',project_verified=1 WHERE id=?",(project,key,document_id))
             if changed:
+                con.execute('UPDATE transcript_streams SET processed_seq=0 WHERE document_id=?',(document_id,))
                 con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state) VALUES(?,?,'queued')
                     ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
-                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL''',(document_id,d['sha256']))
+                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL,
+                    batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL''',(document_id,d['sha256']))
         if changed:
             knowledge_worker.schedule()
         return {'project':project,'project_key':key,'queued':changed}

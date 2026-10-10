@@ -1,6 +1,6 @@
-# WorkTwin Collector 1.2.1（知识版本回退、项目持续纠错、主动网页记录）
+# WorkTwin Collector 1.3.0（增量工作记录、成果证据、持续项目纠错）
 
-在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；已补充编程工具的执行状态线索，原始工具结果仍待完善；工作单元级跨来源项目归属已进入 1.1.9 开发与验收；提供绑定数字分身授权的本地只读 MCP，完整日志单独授权。个人自行配置模型，企业使用统一分配的模型与 Token。
+在后台采集本人授权的本地资料和 AI 编程会话，持续维护当前有效的个人知识库，并通过数字分身与只读 MCP 提供给其他 AI。本轮基于 1.2.1，保留历史版本回退、主动网页记录、网站操作手册及动态知识授权。支持 Codex、Claude Code，以及 Cursor CLI 导出的 JSONL；模型继续使用个人 BYOK 或企业统一配置。
 
 [已发布安装包与源码](https://github.com/KirenHu/AI-coding/releases) · [MCP 接入](docs/MCP.md) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
 
@@ -66,7 +66,7 @@ PYTHONPATH=. python scripts/ui_settings_acceptance.py
 python -m build
 ```
 
-自动验收使用合成资料和确定性测试模型，覆盖真实 HTTP、SQLite、浏览器与打包应用启动。真实付费模型效果、员工历史资料准确率、企业 SSO、系统长期休眠唤醒、签名和公证仍需要组织环境验证，1.1 不宣称已经完成这些验收。
+自动验收使用合成资料和确定性测试模型，覆盖真实 HTTP、SQLite、浏览器与打包应用启动。真实付费模型效果、员工历史资料准确率、企业 SSO、系统长期休眠唤醒、签名和公证仍需要组织环境验证，本测试版本不宣称已经完成这些验收。
 
 [判断模型与动态知识授权](docs/DECISION_MODEL.md) · [macOS 安装和 Gatekeeper 排查](docs/MACOS_INSTALL.md) · [架构](docs/ARCHITECTURE.md) · [一期边界](docs/PHASE1.md) · [后续工作](docs/ROADMAP.md) · [评测](docs/EVALUATION.md) · [开源组件](docs/OSS.md)
 
@@ -86,7 +86,7 @@ python -m build
 
 ### 正式发布与日常 CI 解耦
 
-PR / main push 只执行功能验收和未公证包的构建，不自动触发 Apple 公证或 GitHub 正式 Release。完成 Apple 证书与实际验收后，需在 `main` 手动运行 `WorkTwin 1.2.0 acceptance and signed release`，选择 `macos_architecture=all` 并勾选 `signed_release`，才会执行双架构 Developer ID 签名、公证、Gatekeeper 校验和正式发布；任何未公证 DMG 不允许出现在正式发布资产中。
+PR / main push 只执行功能验收和未公证包的构建，不自动触发 Apple 公证或 GitHub 正式 Release。完成 Apple 证书与实际验收后，需在 `main` 手动运行 `WorkTwin 1.3.0 acceptance and signed release`，选择 `macos_architecture=all` 并勾选 `signed_release`，才会执行双架构 Developer ID 签名、公证、Gatekeeper 校验和正式发布；任何未公证 DMG 不允许出现在正式发布资产中。
 
  
 ## 1.2.1 交互闭环
@@ -105,3 +105,14 @@ PR / main push 只执行功能验收和未公证包的构建，不自动触发 A
 手册仅描述本机实际观察到的控件动作、页面反馈和必要路径，绝不猜测输入值或后台完成结果。未单独启用浏览器 AI 概括时，完全在本机以规则整理；用户授权后才调用已配置的模型概括脱敏事件。本人编辑过的手册不再被自动改写。
 
 **原来的企业任务触发采集仍不会进入个人知识库。** 浏览器手册归属单独的网站项目范围；数字分身不会因为已有的普通工作项目授权而自动获得网站手册，必须由用户明确授予相关范围。
+
+
+## 1.3.0 持续工作知识
+
+- **追加会话只处理新增部分**：按文件字节位置采集，事件落库后独立记录 AI 处理进度。模型失败重试原批次，前序对话仅用于理解新增记录；追加期间不会不断废弃正在执行的模型任务。
+- **长会话与暂时不可读文件**：会话分批读取，超出旧大小限制不等于被删除；只有确认消失的文件才进入删除处理。
+- **实际工作证据**：记录授权文件的内容 hash、变化行数、相关 Git 身份与附近会话事件。文件变化、工具执行成功、测试报告和用户验收分别保留，不自动将 AI 的完成声明当作已验收。
+- **双向项目纠错**：新证据可建立关联，依据消失或出现明确反证时可撤销关联并缩小适用范围。保留知识编号与正文，通过现有分身权限计算器更新可读范围，不创建逐条审核任务。
+- **Cursor CLI**：在信息采集中选择 Cursor CLI，并指定保存 `agent --print --output-format stream-json` 导出 `.jsonl` 的目录。不读取 Cursor IDE 内部数据库，不会代用户执行命令。
+- **兼容升级**：原数据库首次升级前保存同目录 `<数据库文件名>.pre-1.3.0.sqlite`；新表不替换已有知识、历史和授权。需要退回旧版时，退出 WorkTwin，先保存当前数据库，再将该备份复制回原数据库路径并使用 1.2.1；升级后的新数据不会存在于旧备份中。钥匙串和系统凭据保持原位置。
+- **引擎选择**：当前仍使用现有知识引擎。Hindsight 作为独立研发验证入口，不随桌面包安装，不默认上传资料或额外调用模型。没有真实服务与同样本对比结果前不切换。

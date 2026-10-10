@@ -69,13 +69,13 @@ async function go(page,force=false){
 }
 
 // Information sources: category + explicit capture / enterprise-model permission.
-const typeLabel={folder:'本地文件夹',codex:'Codex',claude:'Claude Code'};
+const typeLabel={folder:'本地文件夹',codex:'Codex',claude:'Claude Code',cursor:'Cursor CLI'};
 function sourceName(s){const kind=sourceType(s);const legacy={folder:['工作文件','本地工作文件'],codex:['Codex 对话'],claude:['Claude Code 对话']};return legacy[kind]?.includes(s.name)?typeLabel[kind]:s.name}
 function sourceType(s){return s.adapter||s.kind}
 async function renderSources(){
   const [sources,stats,jobs,capture]=await Promise.all([api('sources'),api('stats'),api('ai/jobs'),api('browser-capture')]);state.sources=sources;
   const count=k=>sources.filter(s=>sourceType(s)===k).length;
-  const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark']];
+  const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark'],['cursor','Cursor CLI','导出的 JSONL 记录，不含 IDE 内部对话','book']];
   content.innerHTML=pageHeader('INFORMATION SOURCES','信息采集','只采集你允许的工作资料。随时暂停，也可以彻底撤销授权。',`<button class="btn secondary" id="scan">${icon('refresh')} 立即检查更新</button>`)+
     `<div class="source-overview">${types.map(([kind,name,desc,ico])=>`<div class="source-type"><div class="type-symbol">${icon(ico)}</div><b>${name}</b><small>${desc}</small><button class="btn secondary small" data-add-source="${kind}">${icon('plus')} ${count(kind)?'再添加':'授权采集'}</button></div>`).join('')}</div>`+
     '<div class="group-heading"><h2>浏览器行为采集</h2><span class="soft-caption">指定网站手动记录 / 企业任务触发</span></div>'+
@@ -274,14 +274,19 @@ function sourceRow(s){const kind=sourceType(s),name=sourceName(s);return `<div c
   <button class="icon-button" title="撤销来源并清除知识" aria-label="删除 ${esc(name)}" data-remove-source="${s.id}">${icon('trash')}</button></div>`}
 async function addSource(initial='folder'){
   const defaults=await api('default-paths');
-  dialog('授权信息采集',`<div class="choice-tabs">${[['folder','本地文件夹'],['codex','Codex'],['claude','Claude Code']].map(([type,name])=>`<button class="choice-tab" data-type="${type}">${name}</button>`).join('')}</div>
+  dialog('授权信息采集',`<div class="choice-tabs">${[['folder','本地文件夹'],['codex','Codex'],['claude','Claude Code'],['cursor','Cursor CLI']].map(([type,name])=>`<button class="choice-tab" data-type="${type}">${name}</button>`).join('')}</div>
     <div class="field"><label for="new-source-name">数据源名称</label><input id="new-source-name" autocomplete="off"/></div>
     <div class="field"><label for="new-source-path">授权文件夹</label><div style="display:flex;gap:9px"><input id="new-source-path" autocomplete="off" spellcheck="false"/><button class="btn secondary" id="browse-folder" type="button">选择…</button></div><div class="field-note" id="path-note"></div></div>
     <label class="check-row"><input id="new-source-ai" type="checkbox"/> <span><b>允许 AI 自动整理这些资料</b><br/>内容将发送到当前配置的模型服务，自动提炼可搜索的知识；不勾选则只在本地建立索引。</span></label>
     <div class="permission-note">后续仅采集这个已授权目录及其子目录；默认忽略密钥、.env、node_modules 和 .git 等内容。你可以随时撤销授权。</div>`,
     `<button class="btn secondary" data-close>取消</button><button class="btn" id="save-source">授权并开始采集</button>`);
   let kind=initial;
-  function choose(type){kind=type;el('new-source-name').value={folder:'本地文件夹',codex:'Codex',claude:'Claude Code'}[type];el('new-source-path').value=type==='codex'?defaults.codex:type==='claude'?defaults.claude:'';el('path-note').textContent=type==='folder'?'请明确选择允许采集的工作目录。':`默认位置${(type==='codex'?defaults.codex_exists:defaults.claude_exists)?'已检测到':'尚未发现'}，你也可以自行修改。`;document.querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type))}
+  function choose(type){
+    kind=type;el('new-source-name').value=typeLabel[type];
+    el('new-source-path').value=type==='codex'?defaults.codex:type==='claude'?defaults.claude:'';
+    el('path-note').textContent=type==='folder'?'请明确选择允许采集的工作目录。':type==='cursor'?'选择保存 Cursor CLI stream-json 导出记录（.jsonl）的文件夹；暂不读取 Cursor IDE 内部会话。':`默认位置${defaults[type+'_exists']?'已检测到':'尚未发现'}，你也可以自行修改。`;
+    document.querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type));
+  }
   document.querySelectorAll('[data-type]').forEach(x=>x.onclick=()=>choose(x.dataset.type));choose(initial);
   el('browse-folder').onclick=async()=>{try{const result=await api('pick-folder',{method:'POST'});el('new-source-path').value=result.path}catch(e){notify(e.message)}};
   el('save-source').onclick=()=>busy(el('save-source'),async()=>{

@@ -34,3 +34,7 @@
 ### 1.1 设置能力参考
 
 实际阅读 AnythingLLM 的模型设置和可用模型选择代码、Open WebUI 的管理员连接与后端权限实现；设计参考及文件版本见竞品审计第 7 节。本轮独立实现个人/企业设置与模型列表，没有新增两者运行依赖或复制源文件。密钥存储使用 `keyring`（MIT）与 `cryptography`（Apache-2.0/BSD），按其依赖方式分发。
+
+### 1.3 持续工作证据
+
+参考 memU 的会话适配边界，独立实现按字节位置读取的 Codex、Claude Code 和 Cursor CLI 适配器；未复制 memU 源码或引入其数据库。Hindsight 仅通过标准 HTTP 在独立研发脚本中验证，桌面程序没有新增 Hindsight SDK、PostgreSQL、Docker 或本地模型依赖。OpenViking 仅作设计参考，未复制 AGPL 主项目或 Apache 示例代码。具体版本、许可证核对与候选引擎采用条件见 [知识引擎验证](KNOWLEDGE_ENGINE_PROBE.md)。

@@ -228,10 +228,32 @@ class Database:
         if os.name == "posix":
             self.path.parent.chmod(0o700)
         with self.connect() as conn:
+            self._backup_before_continuous_upgrade(conn)
             conn.executescript(SCHEMA)
             self._migrate(conn)
+            from .ingest import ensure_schema as ingest_schema
+            from .artifacts import ensure_schema as artifact_schema
+            ingest_schema(conn)
+            artifact_schema(conn)
+            conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('continuous_evidence_v1','1')")
         if os.name == "posix":
             self.path.chmod(0o600)
+
+    def _backup_before_continuous_upgrade(self, conn: sqlite3.Connection) -> None:
+        """Keep the pre-upgrade database once, so the 1.2.1 app can be restored."""
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'sources' not in tables:
+            return
+        if 'settings' in tables and conn.execute(
+                "SELECT 1 FROM settings WHERE key='continuous_evidence_v1'").fetchone():
+            return
+        backup = self.path.with_name(self.path.name + '.pre-1.3.0.sqlite')
+        if not backup.exists():
+            with sqlite3.connect(backup) as destination:
+                conn.backup(destination)
+            import os
+            if os.name == 'posix':
+                backup.chmod(0o600)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -249,7 +271,8 @@ class Database:
                 "topic": "TEXT NOT NULL DEFAULT ''", "scope_detail": "TEXT NOT NULL DEFAULT ''", "quality": "TEXT NOT NULL DEFAULT 'uncertain'", "outcome": "TEXT NOT NULL DEFAULT 'none'"},
             "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1", "origin": "TEXT NOT NULL DEFAULT 'consolidation'",
                 "evidence_json": "TEXT NOT NULL DEFAULT '{}'", "occurred_at": "TEXT"},
-            "ai_jobs": {"next_run_at": "TEXT", "claim_token": "TEXT"},
+            "ai_jobs": {"next_run_at": "TEXT", "claim_token": "TEXT",
+                "batch_generation": "INTEGER", "batch_from_seq": "INTEGER", "batch_through_seq": "INTEGER"},
             "knowledge_evidence": {"is_current": "INTEGER NOT NULL DEFAULT 1", "occurred_at":"TEXT", "superseded":"INTEGER NOT NULL DEFAULT 0"},
         }
         for table, fields in additions.items():

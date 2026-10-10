@@ -119,7 +119,11 @@ def main():
                         expect(page.get_by_text('为什么审批采用工作流节点').first).to_be_visible()
                         page.locator('[data-select-entry]').first.check()
                         page.get_by_role('button', name='保存授权').click()
-                        expect(page.get_by_text('已选择 1 篇')).to_be_visible(timeout=15000)
+                        # Wait for the saved editor to reload, rather than accepting
+                        # the optimistic selection label while PUT is still pending.
+                        expect(page.locator('.status-note').first).to_contain_text('已保存授权 1 篇', timeout=15000)
+                        expect(page.locator('#save-selections')).to_be_enabled()
+                        expect(page.locator('[data-select-entry]').first).to_be_checked()
                         screenshot = Path(os.environ.get('WORKTWIN_UI_SCREENSHOT', str(state/'preview.png')))
                         screenshot.parent.mkdir(parents=True, exist_ok=True)
                         page.screenshot(path=str(screenshot), full_page=True)
