@@ -139,7 +139,7 @@ async function begin(envelope,sender){
 }
 
 function enqueueEvent(s,kind,label,currentUrl,documentId){
-  if(s.status!=="capturing")return;
+  if(s.status!=="capturing")return Promise.resolve({ok:false});
   const previous=eventQueues.get(s.id)||Promise.resolve();
   const next=previous.catch(()=>{}).then(async()=>{
     if(s.status!=="capturing")return;
@@ -159,6 +159,9 @@ function enqueueEvent(s,kind,label,currentUrl,documentId){
     }
   }).catch(()=>{s.status="transport_error";persist().catch(()=>{});if(s.tabId!==undefined)chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});chrome.action.setBadgeText({text:"!"})});
   eventQueues.set(s.id,next);
+  // A content script is acknowledged only after SQLite accepted the event.
+  // Do not report success for an event merely queued in a volatile worker.
+  return next.then(()=>({ok:s.status==="capturing"}));
 }
 chrome.runtime.onMessageExternal.addListener((message,sender,reply)=>{
   if(message?.type!=="worktwin:task"||!message.envelope)return;
@@ -188,8 +191,8 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
       x.status==="capturing" && x.tabId===sender.tab.id &&
       (!sender.documentId||x.documentId===sender.documentId));
     if(s && ["click","change","submit","feedback"].includes(message.kind)){
-      enqueueEvent(s,message.kind,message.label,s.page,s.documentId);
-      reply({ok:true});
+      enqueueEvent(s,message.kind,message.label,s.page,s.documentId)
+        .then(reply).catch(e=>reply({ok:false,error:String(e.message||e)}));
     }else reply({ok:false});
     });return true;
   }
