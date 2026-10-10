@@ -430,4 +430,4 @@ class BrowserCapture:
         with self.db.connect() as con:
             return [dict(x) for x in con.execute("""SELECT id,task_id,page_key,status,
                 event_count,created_at,ended_at FROM browser_capture_sessions
-                ORDER BY created_at DESC LIMIT ?""",(limit,))]
+                ORDER BY created_at DESC,rowid DESC LIMIT ?""",(limit,))]
