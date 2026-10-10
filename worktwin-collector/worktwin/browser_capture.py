@@ -88,6 +88,12 @@ class BrowserCapture:
                     kind TEXT NOT NULL, label TEXT NOT NULL, location TEXT NOT NULL,
                     PRIMARY KEY(session_id,seq));
                 CREATE INDEX IF NOT EXISTS ix_browser_events_session ON browser_capture_events(session_id,seq);
+                CREATE TABLE IF NOT EXISTS browser_capture_steps(
+                    session_id TEXT NOT NULL REFERENCES browser_capture_sessions(id) ON DELETE CASCADE,
+                    step INTEGER NOT NULL, start_seq INTEGER NOT NULL,end_seq INTEGER NOT NULL,
+                    action TEXT NOT NULL, status TEXT NOT NULL, label TEXT NOT NULL,
+                    PRIMARY KEY(session_id,step));
+                CREATE INDEX IF NOT EXISTS ix_browser_steps_session ON browser_capture_steps(session_id,step);
             """)
 
     def enabled(self, con) -> bool:
@@ -253,6 +259,7 @@ class BrowserCapture:
                 con.execute("""INSERT INTO browser_capture_events
                     (session_id,seq,at,kind,label,location) VALUES(?,?,?,?,?,?)""",
                     (session_id,seq,now,kind,"页面导航，停止观察" if kind=="navigation" else "标签页关闭，停止观察",key))
+                self._update_step(con,session_id,seq,kind,"")
                 con.execute("""UPDATE browser_capture_sessions SET
                     last_seq=?,event_count=event_count+1,status=?,ended_at=?
                     WHERE id=?""",(seq,"navigation_stopped" if kind=="navigation" else "tab_closed",now,session_id))
@@ -264,9 +271,34 @@ class BrowserCapture:
             con.execute("""INSERT INTO browser_capture_events
                 (session_id,seq,at,kind,label,location) VALUES(?,?,?,?,?,?)""",
                 (session_id,seq,now,kind,valid_label(label),key))
+            self._update_step(con,session_id,seq,kind,valid_label(label))
             con.execute("""UPDATE browser_capture_sessions SET
                 last_seq=?,event_count=event_count+1 WHERE id=?""",(seq,session_id))
         return {"ack":seq,"status":"capturing"}
+
+    @staticmethod
+    def _update_step(con, session_id: str, seq: int, kind: str, label: str):
+        """Bounded deterministic action grouping, not speculative AI semantics."""
+        row=con.execute("""SELECT * FROM browser_capture_steps WHERE session_id=?
+            ORDER BY step DESC LIMIT 1""",(session_id,)).fetchone()
+        if kind in ("click","submit") or not row or row["status"] in ("completed","stopped"):
+            number=(int(row["step"])+1) if row else 1
+            action="点击" if kind=="click" else "提交" if kind=="submit" else "页面事件"
+            status="ongoing" if kind not in ("navigation","tab_closed") else "stopped"
+            con.execute("""INSERT INTO browser_capture_steps
+                (session_id,step,start_seq,end_seq,action,status,label)
+                VALUES(?,?,?,?,?,?,?)""",(session_id,number,seq,seq,action,status,label))
+        else:
+            status=("stopped" if kind in ("navigation","tab_closed") else
+                    "completed" if kind=="feedback" else "ongoing")
+            con.execute("""UPDATE browser_capture_steps SET end_seq=?,status=?
+                WHERE session_id=? AND step=?""",(seq,status,session_id,row["step"]))
+
+    def steps(self, session_id: str, limit: int=100):
+        with self.db.connect() as con:
+            return [dict(x) for x in con.execute("""SELECT step,start_seq,end_seq,
+                action,status,label FROM browser_capture_steps
+                WHERE session_id=? ORDER BY step LIMIT ?""",(session_id,limit))]
 
     def recent(self, limit: int=30):
         with self.db.connect() as con:
