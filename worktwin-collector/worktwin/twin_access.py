@@ -41,6 +41,7 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
         if k['source_bound'] and not active_sources:
             continue
         project = ('project',k['project_key']) if k['scope']=='project' else None
+        deny_project=project
         # A provisional project identity never expands access.
         if project:
             membership=con.execute("""SELECT status FROM project_memberships
@@ -49,7 +50,7 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
                 project=None
         neg=grant['deny']
         if (('knowledge',kid) in neg or
-            (project is not None and project in neg) or
+            (deny_project is not None and deny_project in neg) or
             (k['scope']=='global' and ('global','*') in neg) or
             any(('source',source) in neg for source in active_sources)):
             continue
