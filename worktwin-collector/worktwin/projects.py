@@ -26,11 +26,30 @@ def source_anchors(content: str, title: str = '') -> dict:
 
 
 def catalog(con):
-    projects=[dict(p) for p in con.execute('SELECT * FROM project_entities ORDER BY created_at DESC LIMIT 300')]
+    # Only authorized, currently accessible sources may be sent to the
+    # optional remote identity judge. Retired or revoked project names are not
+    # candidates even if an old project entity remains in SQLite.
+    projects=[dict(p) for p in con.execute("""SELECT p.* FROM project_entities p
+        WHERE EXISTS (
+            SELECT 1 FROM knowledge k
+            JOIN knowledge_evidence e ON e.knowledge_id=k.id
+            JOIN documents d ON d.id=e.document_id
+            JOIN sources s ON s.id=d.source_id
+            WHERE k.project_key=p.project_key AND d.deleted=0
+              AND s.enabled=1 AND s.allow_ai=1 AND e.is_current=1
+              AND e.superseded=0
+        ) OR EXISTS (
+            SELECT 1 FROM documents d JOIN sources s ON s.id=d.source_id
+            WHERE d.project_key=p.project_key AND d.project_verified=1
+              AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1
+        )
+        ORDER BY p.created_at DESC LIMIT 300""")]
     known={p['project_key'] for p in projects}
-    for p in con.execute("""SELECT project_key,MIN(project) name FROM documents
-        WHERE project_verified=1 AND scope='project' AND project_key!=''
-        GROUP BY project_key LIMIT 300"""):
+    for p in con.execute("""SELECT d.project_key,MIN(d.project) name FROM documents d
+        JOIN sources s ON s.id=d.source_id
+        WHERE d.project_verified=1 AND d.scope='project' AND d.project_key!=''
+          AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1
+        GROUP BY d.project_key LIMIT 300"""):
         if p['project_key'] not in known:
             projects.append({'project_key':p['project_key'],'name':p['name'],
                              'anchor_type':'','anchor':'','origin':'manual'})

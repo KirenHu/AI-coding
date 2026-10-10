@@ -71,6 +71,23 @@ def test_two_sources_link_under_one_project_without_document_verification(tmp_pa
         assert con.execute('SELECT project_verified FROM documents WHERE id=?',(d2,)).fetchone()[0]==0
 
 
+def test_revoked_project_name_not_sent_to_identity_judge(tmp_path):
+    db=Database(tmp_path/'db.sqlite')
+    quote='WorkTwin 项目规则：项目资料必须能够撤销模型授权。'
+    with db.connect() as con:
+        sid,did=create_source(con,'revoked-catalog','entry.md',quote)
+        item=grounded_item(quote)
+        link=plan_work_units([item],con.execute(
+            'SELECT * FROM documents WHERE id=?',(did,)).fetchone(),[],Judge())[0]
+        item.update({field:link[field] for field in ('scope','project','project_key')})
+        store_candidates(con,did,[],[item],created_by='enterprise_ai')
+        apply_assignments(con,did,[item],[link])
+        project_key=link['project_key']
+        assert project_key in {p['project_key'] for p in catalog(con)}
+        con.execute('UPDATE sources SET allow_ai=0 WHERE id=?',(sid,))
+        assert project_key not in {p['project_key'] for p in catalog(con)}
+
+
 def test_mixed_document_assigns_separate_work_units(tmp_path):
     db=Database(tmp_path/'db.sqlite')
     a='WorkTwin 项目需要自动维护知识。'

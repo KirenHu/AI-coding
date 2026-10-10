@@ -44,6 +44,38 @@ def authorized_notes(con):
     return access,rows
 
 
+def full_log_scope_allowed(con, twin_id: int, document_id: int) -> bool:
+    """Do not expose another project's raw text through a cited mixed source.
+
+    An explicit full-source grant and separate log switch are both required
+    for a mixed work-unit document. Explicit exclusions still prevail.
+    """
+    units=con.execute("""SELECT DISTINCT project_key FROM work_units
+        WHERE document_id=?""",(document_id,)).fetchall()
+    keys={r[0] for r in units}
+    if len(keys)<=1:
+        return True
+    row=con.execute("SELECT source_id FROM documents WHERE id=?",(document_id,)).fetchone()
+    if not row:
+        return False
+    grants=[dict(r) for r in con.execute("""SELECT subject_type,subject_key,effect
+        FROM twin_grants WHERE twin_id=?""",(twin_id,))]
+    source=str(row['source_id'])
+    if not any(g['subject_type']=='source' and g['subject_key']==source
+               and g['effect']=='allow' for g in grants):
+        return False
+    denied={(g['subject_type'],g['subject_key']) for g in grants if g['effect']=='deny'}
+    if any(('project',key) in denied for key in keys):
+        return False
+    ids={str(r[0]) for r in con.execute("""SELECT DISTINCT knowledge_id FROM
+        knowledge_evidence WHERE document_id=?""",(document_id,))}
+    if any(('knowledge',key) in denied for key in ids):
+        return False
+    if ('source',source) in denied:
+        return False
+    return True
+
+
 def create_server(db):
     server=MCPServer('WorkTwin',instructions='按项目检索此数字分身被授权的当前有效知识。引用知识编号与来源。范围不明确时先澄清；完整日志需要独立授权。')
     annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,idempotentHint=True,openWorldHint=False)
@@ -105,6 +137,8 @@ def create_server(db):
                 AND d.deleted=0 AND s.allow_ai=1''',(document_id,))}
             if not allowed & ids:
                 raise ToolError('此资料未关联到分身当前可用的授权知识')
+            if not full_log_scope_allowed(con,access['twin_id'],document_id):
+                raise ToolError('资料包含多个项目：须明确授权完整来源，且不能包含已排除的项目或知识')
             d=con.execute('SELECT title,content FROM documents WHERE id=?',(document_id,)).fetchone()
             end=offset+limit
             return dict(document_id=document_id,title=d['title'],content=d['content'][offset:end],offset=offset,
