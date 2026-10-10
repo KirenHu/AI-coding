@@ -60,8 +60,10 @@ def activate_new(con, document_id, items, client):
     for item in items:
         if item.get('quality')!='useful' or item.get('attribution') not in ('user','document') or item.get('outcome')=='reported':
             continue
-        candidates=con.execute('''SELECT * FROM knowledge WHERE project_key=? AND scope=?
-            AND status!='archived' ''',(doc['project_key'],doc['scope'])).fetchall()
+        key=item.get('project_key') or doc['project_key']
+        scope=item.get('scope') or doc['scope']
+        candidates=con.execute("""SELECT * FROM knowledge WHERE project_key=? AND scope=?
+            AND status!='archived'""",(key,scope)).fetchall()
         matches=[k for k in candidates if topic_key(k['topic'])==topic_key(item.get('topic',''))]
         # Same-topic duplicates and uncertain relationships need review.
         if len(matches)!=1:
@@ -95,7 +97,8 @@ def apply_additions(con, document_id, client):
         # Enrichment must preserve the exact current body, not a model rewrite.
         if not p['body'].startswith(k['body'].rstrip()+'\n\n'):
             continue
-        resolve_proposal(con,p['id'],accept=True)
-        con.execute("UPDATE knowledge SET created_by='enterprise_ai' WHERE id=?",(k['id'],))
+        if k['created_by']=='human':
+            continue
+        resolve_proposal(con,p['id'],accept=True,actor='enterprise_ai')
         applied+=1
     return applied
