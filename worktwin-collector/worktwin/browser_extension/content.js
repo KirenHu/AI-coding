@@ -49,9 +49,14 @@
       .then(result=>{if(result?.ok===false)stop()})
       .catch(stop);
   }
-  const click=e=>emit("click",describe(e.target));
-  const change=e=>emit("change",describe(e.target));
-  const submit=e=>emit("submit",describe(e.target));
+  function safeAction(e,kind){
+    const node=e.target?.closest?.("button,a,input,select,textarea,[role=button],[role=checkbox],[role=radio]");
+    if(node && sensitive(node))return; // Even interaction metadata can be sensitive.
+    emit(kind,describe(e.target));
+  }
+  const click=e=>safeAction(e,"click");
+  const change=e=>safeAction(e,"change");
+  const submit=e=>safeAction(e,"submit");
   document.addEventListener("click",click,true);
   document.addEventListener("change",change,true);
   document.addEventListener("submit",submit,true);
