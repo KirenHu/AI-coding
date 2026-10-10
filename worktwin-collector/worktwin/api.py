@@ -33,6 +33,7 @@ from .credentials import DesktopSecrets
 from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRuntime
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
+from .twin_access import effective_notes, grant_options, replace_grants
 from .answers import answer_from_knowledge
 from .publishing import Publisher, PublishingClient
 from . import __version__
@@ -121,6 +122,17 @@ class TwinInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
     description: str = Field(default="", max_length=500)
     knowledge_ids: list[int] | None = Field(default=None,max_length=1500)
+
+
+class TwinGrantInput(BaseModel):
+    subject_type: Literal['project','source','global','knowledge']
+    subject_key: str = Field(min_length=1,max_length=1000)
+    effect: Literal['allow','deny'] = 'allow'
+
+
+class TwinPolicyInput(BaseModel):
+    mode: Literal['manual','dynamic'] = 'dynamic'
+    grants: list[TwinGrantInput] = Field(default_factory=list,max_length=300)
 
 
 class TwinKnowledgeInput(BaseModel):
@@ -868,7 +880,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
                 raise HTTPException(404,'分身不存在')
-            rows=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,))]
+            rows=effective_notes(con,twin_id)
+            excluded={r[0] for r in con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?',(twin_id,))}
+            # Also show disabled explicit pins for actionable reasons.
+            disabled=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,)) if r['id'] not in {k['id'] for k in rows}]
+            rows += disabled
             result=[{'id':r['id'],'title':r['title'],'local_reason':unavailable_reason(con,r),'share_reason':unavailable_reason(con,r,sharing=True)} for r in rows]
         return {'selected_count':len(rows),'usable_count':sum(not r['local_reason'] for r in result),
                 'publishable_count':sum(not r['share_reason'] for r in result),'knowledge':result}
@@ -911,16 +927,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/twins")
     def twins():
         with db.connect() as con:
-            rows = [dict(x) for x in con.execute("""SELECT t.*,
-                (SELECT count(*) FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-                  WHERE tk.twin_id=t.id AND """ + READY_SQL + """) knowledge_count
-                FROM twins t ORDER BY t.updated_at DESC,t.id DESC""")]
+            rows = [dict(x) for x in con.execute("SELECT * FROM twins ORDER BY updated_at DESC,id DESC")]
+            for row in rows:
+                row['knowledge_count']=len(effective_notes(con,row['id']))
             return rows
 
     @app.post("/api/twins", dependencies=[Depends(authorized)])
     def create_twin(payload: TwinInput):
         with db.connect() as con:
-            res = con.execute("INSERT INTO twins(name,description) VALUES(?,?)",
+            res = con.execute("INSERT INTO twins(name,description,knowledge_mode) VALUES(?,?,'dynamic')",
                               (payload.name.strip(),payload.description.strip()))
             return {"id":int(res.lastrowid)}
 
@@ -931,7 +946,39 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not row:
                 raise HTTPException(404,"数字分身不存在")
             selected = [r[0] for r in con.execute("SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?",(twin_id,))]
-            return {**dict(row),"knowledge_ids":selected}
+            grants=[dict(g) for g in con.execute("""SELECT subject_type,subject_key,effect
+                FROM twin_grants WHERE twin_id=? ORDER BY subject_type,subject_key""",(twin_id,))]
+            return {**dict(row),"knowledge_ids":selected,"grants":grants}
+
+    @app.get('/api/twins/grant-options')
+    def twin_grant_options():
+        with db.connect() as con:
+            return grant_options(con)
+
+    @app.put('/api/twins/{twin_id}/policy',dependencies=[Depends(authorized)])
+    def save_twin_policy(twin_id: int, payload: TwinPolicyInput):
+        with db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
+                raise HTTPException(404,'数字分身不存在')
+            entries=[g.model_dump() for g in payload.grants]
+            if len({(g['subject_type'],g['subject_key'],g['effect']) for g in entries})!=len(entries):
+                raise HTTPException(400,'授权规则不能重复')
+            options=grant_options(con)
+            known_projects={p['project_key'] for p in options['projects']}
+            known_sources={str(p['id']) for p in options['sources']}
+            for grant in entries:
+                kind,key=grant['subject_type'],grant['subject_key']
+                if ((kind=='project' and key not in known_projects) or
+                    (kind=='source' and key not in known_sources) or
+                    (kind=='global' and key!='*') or
+                    (kind=='knowledge' and (not key.isdecimal() or not con.execute(
+                        'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                    raise HTTPException(400,'授权范围无效或已不存在')
+            replace_grants(con,twin_id,entries)
+            con.execute("UPDATE twins SET knowledge_mode=?,updated_at=datetime('now') WHERE id=?",
+                        (payload.mode,twin_id))
+            return {'mode':payload.mode,'grants':entries,'knowledge_count':len(effective_notes(con,twin_id))}
 
     @app.get('/api/twins/{twin_id}/mcp')
     def mcp_status(twin_id:int,request:Request):
@@ -1063,9 +1110,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             twin = con.execute("SELECT name,description FROM twins WHERE id=?",(twin_id,)).fetchone()
             if not twin:
                 raise HTTPException(404,"数字分身不存在")
-            rows = [dict(x) for x in con.execute("""SELECT k.* FROM twin_knowledge tk
-                JOIN knowledge k ON k.id=tk.knowledge_id
-                WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))]
+            rows = effective_notes(con,twin_id)
             for r in rows:
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -1083,8 +1128,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(502,"模型请求失败，请检查设置、服务额度或稍后重试") from exc
         # Recheck authorization after a slow model call.
         with db.connect() as con:
-            current={(r[0],r[1]) for r in con.execute("""SELECT k.id,k.version FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-                WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))}
+            current={(r['id'],r['version']) for r in effective_notes(con,twin_id)}
         if not {(r['id'],r['version']) for r in rows}.issubset(current):
             raise HTTPException(409,'分身知识授权已更新，请重新提问')
         return result
