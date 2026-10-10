@@ -1,2 +1,2 @@
 """WorkTwin Collector — local knowledge and controlled sharing."""
-__version__ = "1.1.9"
+__version__ = "1.2.0"

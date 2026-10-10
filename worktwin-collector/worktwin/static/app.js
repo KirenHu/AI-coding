@@ -65,16 +65,44 @@ const typeLabel={folder:'本地文件夹',codex:'Codex',claude:'Claude Code'};
 function sourceName(s){const kind=sourceType(s);const legacy={folder:['工作文件','本地工作文件'],codex:['Codex 对话'],claude:['Claude Code 对话']};return legacy[kind]?.includes(s.name)?typeLabel[kind]:s.name}
 function sourceType(s){return s.adapter||s.kind}
 async function renderSources(){
-  const [sources,stats,jobs]=await Promise.all([api('sources'),api('stats'),api('ai/jobs')]);state.sources=sources;
+  const [sources,stats,jobs,capture]=await Promise.all([api('sources'),api('stats'),api('ai/jobs'),api('browser-capture')]);state.sources=sources;
   const count=k=>sources.filter(s=>sourceType(s)===k).length;
   const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark']];
   content.innerHTML=pageHeader('INFORMATION SOURCES','信息采集','只采集你允许的工作资料。随时暂停，也可以彻底撤销授权。',`<button class="btn secondary" id="scan">${icon('refresh')} 立即检查更新</button>`)+
     `<div class="source-overview">${types.map(([kind,name,desc,ico])=>`<div class="source-type"><div class="type-symbol">${icon(ico)}</div><b>${name}</b><small>${desc}</small><button class="btn secondary small" data-add-source="${kind}">${icon('plus')} ${count(kind)?'再添加':'授权采集'}</button></div>`).join('')}</div>`+
+    '<div class="group-heading"><h2>任务触发式浏览器行为采集</h2><span class="soft-caption">与其他信息源并列 · 默认关闭</span></div>'+
+    '<div class="card" style="padding:20px;margin-bottom:18px">'+
+      '<div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div><b>浏览器操作</b><p class="soft-caption">只有可信流程平台触发的指定任务页面才会被观察；页面发生跳转后停止采集。</p></div>'+
+      '<label class="permission-cell"><input class="toggle" id="browser-capture-enabled" type="checkbox" '+(capture.enabled?'checked':'')+'/> 手动启用</label></div>'+
+      '<div class="field-note">插件状态：'+(capture.extension_connected?'已连接':'未连接（无法据此区分未安装和未运行）')+
+      ' · 进行中任务：'+capture.active_tasks+' · 流程平台：'+(capture.flow_configured?'已配置':'尚未配置')+'</div>'+
+      '<label class="check-row" style="margin:12px 0"><input id="browser-capture-ai" type="checkbox" '+(capture.allow_ai?'checked':'')+' '+(capture.enabled?'':'disabled')+'/> <span>允许 AI 概括网页操作（独立授权）<small class="soft-caption">只发送脱敏操作事件到已配置模型；不提炼知识，不进入数字分身。</small></span></label>'+
+      '<button class="btn secondary small" id="browser-extension-guide">安装或连接浏览器插件</button> '+
+      '<button class="btn secondary small" id="browser-capture-history">查看操作摘要</button> '+
+      '<button class="btn secondary small" id="browser-capture-refresh">刷新连接状态</button></div>'+
     `<div class="group-heading"><h2>已授权的数据范围</h2><span class="soft-caption">${sources.length} 个数据源</span></div>`+
     `<div class="card">${sources.length?sources.map(sourceRow).join(''):emptyState('folder','还没有授权任何数据源','选择上方的信息类型，授权工作目录后即可自动、增量采集。')}</div>`+
     `<div class="scan-status"><span>系统会自动检测文件变化 · 最近扫描：${esc(stats.last_scan)}</span><span>${stats.documents} 份已索引资料 · ${stats.ai_jobs.queued} 项待整理 · ${stats.ai_jobs.running} 项处理中 · ${stats.ai_jobs.error} 项失败</span></div>`+
     `<div class="processing-panel"><h2>AI 整理状态</h2>${!state.modelReady?'<p>请先到设置完成模型配置。已授权的资料会保留在本机。</p><button class="btn secondary small" id="source-settings">去设置</button>':stats.ai_jobs.error?'<button class="btn secondary small" id="retry-ai">重试失败任务</button>':'<p class="soft-caption">后台自动处理，只需要关注失败或待核对的结果。</p>'}${jobs.filter(j=>j.state!=='done').slice(0,10).map(j=>`<div class="job-row"><span>${esc(j.title)}<small>${esc(j.source_name)}</small></span><span>${{queued:'等待整理',running:'正在整理',error:'整理失败'}[j.state]}${j.error?`<small>${esc(j.error)} · 可重试</small>`:''}</span></div>`).join('')}</div>`+
     `<div class="status-note" style="margin-top:23px">${icon('shield')}<div><b>采集权限与 AI 处理权限分开控制。</b> 本地采集不会自动上传原始文件；只有启用“允许 AI 整理”的数据源，才会在定时任务中把相关文本发送给当前模型服务。停止采集保留本地知识；彻底移除会删除该来源及其派生知识。</div></div>`;
+  el('browser-capture-enabled').onchange=async e=>{
+    const previous=!e.target.checked;
+    try{
+      const updated=await api('browser-capture',{method:'PUT',body:{enabled:e.target.checked}});
+      await go('sources',true);
+      if(updated.enabled&&!updated.extension_connected)await browserExtensionGuide();
+    }catch(error){e.target.checked=previous;notify(error.message)}
+  };
+  el('browser-extension-guide').onclick=browserExtensionGuide;
+  el('browser-capture-history').onclick=browserCaptureHistory;
+  el('browser-capture-ai').onchange=async e=>{
+    const old=!e.target.checked;
+    try{
+      await api('browser-capture/ai',{method:'PUT',body:{allow_ai:e.target.checked}});
+      notify(e.target.checked?'已允许 AI 概括脱敏操作':'已关闭浏览器操作的 AI 分析');
+    }catch(error){e.target.checked=old;notify(error.message)}
+  };
+  el('browser-capture-refresh').onclick=()=>go('sources',true);
   el('scan').onclick=()=>busy(el('scan'),async()=>{if(await perform(()=>api('scan',{method:'POST'}),'sources'))notify('已安排检查更新')});
   el('source-settings')?.addEventListener('click',()=>go('settings'));
   el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry',{method:'POST'}),'sources'))notify('失败任务已重新排队')}));
@@ -106,6 +134,55 @@ async function renderSources(){
     },3500);
   }
 }
+async function browserCaptureHistory(){
+  try{
+    const sessions=await api('browser-capture/sessions');
+    const reports=await Promise.all(sessions.slice(0,15).map(async session=>{
+      try{
+        return {...session,report:await api('browser-capture/sessions/'+encodeURIComponent(session.id)+'/summary')};
+      }catch(error){return {...session,report:{summary:'暂时无法读取操作摘要'}}}
+    }));
+    const body='<p class="soft-caption">这里只显示当前任务网页的操作摘要和证据序号，不会写入个人知识库，也不会自动共享给流程平台。</p>'+
+      (reports.length?reports.map(s=>'<section class="source-reference" style="margin:14px 0;padding:12px;border:1px solid #e9e9e6;border-radius:9px">'+
+        '<div><b>'+esc(s.task_id)+'</b> · '+esc(s.status)+' · '+s.event_count+' 个事件</div>'+
+        '<p>'+esc(s.report.summary||'正在积累操作事件，尚无摘要')+'</p>'+
+        '<small class="soft-caption">依据事件：'+esc((s.report.evidence_seq||[]).join('、')||'无')+
+        ' · '+esc(s.report.summary_source==='model'?'AI 概括':s.report.summary_source==='rule'?'本地概括':'待生成')+'</small>'+
+        '<div style="margin-top:8px"><button class="btn secondary small" data-browser-summarize="'+esc(s.id)+'">更新摘要</button></div></section>').join(''):
+        '<p class="field-note">尚未产生浏览器采集会话。</p>');
+    dialog('网页操作摘要',body,'',true);
+    el('overlay-root').querySelectorAll('[data-browser-summarize]').forEach(button=>{
+      button.onclick=()=>busy(button,async()=>{
+        try{
+          await api('browser-capture/sessions/'+encodeURIComponent(button.dataset.browserSummarize)+'/summarize',{method:'POST'});
+          await browserCaptureHistory();
+        }catch(error){notify(error.message)}
+      });
+    });
+  }catch(error){notify(error.message)}
+}
+
+async function browserExtensionGuide(){
+  const info=await api('browser-capture');
+  dialog('浏览器采集插件', '<p>请先下载 WorkTwin 浏览器插件，并在 Chrome 或 Edge 的扩展管理页启用「开发者模式」后加载解压目录。当前尚未发布浏览器商店版本。</p>'+
+    '<p>插件不是由桌面应用直接扫描浏览器安装目录识别的。只有插件成功与本机 WorkTwin 握手后，才显示「已连接」。</p>'+
+    '<p>首次采集新的网站时，浏览器可能要求单独授予网站权限；流程平台会自动指定任务范围，不需要维护长期网站白名单。</p>'+
+    '<button class="btn secondary" id="browser-extension-download">下载插件 ZIP</button> '+
+    '<button class="btn secondary" id="browser-extension-pair">生成配对码</button>'+
+    '<p id="browser-extension-code" class="field-note">请在插件弹窗中输入 WorkTwin 生成的配对码。</p>'+
+    '<p class="field-note">企业部署时还需设置可信流程平台域名与签名密钥，并在扩展 manifest 中声明该平台域名。</p>');
+  el('browser-extension-download').onclick=()=>downloadFile('browser-capture/extension','WorkTwin-Browser-Extension.zip');
+  el('browser-extension-pair').onclick=async()=>{
+    try{
+      if(!info.enabled){notify('请先启用任务触发式浏览器行为采集');return}
+      const r=await api('browser-capture/pairing',{method:'POST'});
+      const node=el('browser-extension-code');
+      node.textContent='配对码（5 分钟有效）：'+r.code;
+      node.style.userSelect='text';
+    }catch(e){notify(e.message)}
+  };
+}
+
 function sourceRow(s){const kind=sourceType(s),name=sourceName(s);return `<div class="source-item"><div class="source-summary"><div class="source-name">${esc(name)} <span class="state-label ${s.enabled?'':'grey'}">${s.enabled?'采集中':'已暂停'}</span></div><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div><div class="source-caption"><span class="soft-caption">${esc(typeLabel[kind]||'工作资料')} · ${s.document_count} 份资料</span>${s.last_error?`<span class="state-label danger">${esc(s.last_error)}</span>`:''}</div></div>
   <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}/> 允许采集</label>
   <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}/> 允许 AI 整理</label>

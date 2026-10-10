@@ -44,6 +44,9 @@ from .search import search
 from .reconcile import review_flags, resolve_proposal
 from .answer_policy import check_answer
 from .scope import document_scope, scope_description, snapshot_history
+from .browser_capture import BrowserCapture
+from .browser_capture_status import TaskStatusMonitor
+from .browser_capture_summary import BrowserSummaryService, BrowserSummaryWorker
 
 STATIC = Path(__file__).parent / "static"
 
@@ -165,6 +168,38 @@ class DocumentScopeInput(BaseModel):
     existing_project_key: str | None = Field(default=None,max_length=1000)
 
 
+class CaptureToggle(BaseModel):
+    enabled: bool
+
+class CaptureAiToggle(BaseModel):
+    allow_ai: bool
+
+class CapturePair(BaseModel):
+    code: str = Field(min_length=10,max_length=128)
+
+class CaptureCommand(BaseModel):
+    sender_origin: str = Field(max_length=250)
+    envelope: dict
+
+class CaptureSessionsStatus(BaseModel):
+    session_ids: list[str] = Field(default_factory=list,max_length=100)
+
+class CaptureBind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+
+class CaptureEvent(BaseModel):
+    session_id: str = Field(max_length=100)
+    seq: int
+    kind: str = Field(max_length=30)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+    label: str = Field(default="",max_length=500)
+
+
 class EditionInput(BaseModel):
     edition: Literal['personal','enterprise']
 
@@ -191,6 +226,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     decision_router=DecisionRouter(db,secure,model_client)
     knowledge_worker = KnowledgeWorker(db, client=model_client,
                                        decision_router=decision_router, interval=max(interval, 3))
+    browser_capture = BrowserCapture(db)
+    browser_status_monitor = TaskStatusMonitor(browser_capture)
+    browser_summary_service = BrowserSummaryService(db, model_client)
+    browser_summary_worker = BrowserSummaryWorker(browser_summary_service)
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -206,8 +245,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             collector.start()
             knowledge_worker.start()
             publisher.start()
+            browser_status_monitor.start()
+            browser_summary_worker.start()
         async with mcp_server.session_manager.run():
             yield
+        browser_summary_worker.stop()
+        browser_status_monitor.stop()
         publisher.stop()
         collector.stop()
         knowledge_worker.stop()
@@ -239,6 +282,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.db = db
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
+    app.state.browser_capture = browser_capture
+    app.state.browser_status_monitor = browser_status_monitor
+    app.state.browser_summary_service = browser_summary_service
+    app.state.browser_summary_worker = browser_summary_worker
     app.state.model = model_client
     app.state.decision_router = decision_router
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
@@ -268,6 +315,84 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def health():
         return {"ok": True, "app": "WorkTwin Collector", "cloud_sync": publisher.client.configured, "version": __version__,
                 "enterprise_model": model_client.configured}
+
+    def capture_credential(request: Request) -> str:
+        auth = request.headers.get("Authorization","")
+        if not auth.startswith("Bearer ") or len(auth)<40:
+            raise HTTPException(401,"浏览器插件凭据缺失")
+        extension_origin = request.headers.get("Origin","")
+        if extension_origin and not extension_origin.startswith("chrome-extension://"):
+            raise HTTPException(403,"只接受本地插件连接")
+        return auth[7:]
+
+    @app.get("/api/browser-capture",dependencies=[Depends(authorized)])
+    def browser_capture_settings():
+        return browser_capture.settings()
+
+    @app.put("/api/browser-capture",dependencies=[Depends(authorized)])
+    def browser_capture_toggle(body: CaptureToggle):
+        return browser_capture.toggle(body.enabled)
+
+    @app.put("/api/browser-capture/ai",dependencies=[Depends(authorized)])
+    def browser_capture_ai_toggle(body: CaptureAiToggle):
+        return browser_capture.toggle_ai(body.allow_ai)
+
+    @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
+    def browser_capture_extension_download():
+        extension_dir = Path(__file__).parent / "browser_extension"
+        names = ("manifest.json","service-worker.js","content.js","popup.html","popup.js")
+        result = io.BytesIO()
+        with zipfile.ZipFile(result,"w",compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in names:
+                archive.write(extension_dir/name,arcname=name)
+        return Response(content=result.getvalue(),media_type="application/zip",
+                        headers={"Content-Disposition":'attachment; filename="WorkTwin-Browser-Extension.zip"'})
+
+    @app.post("/api/browser-capture/pairing",dependencies=[Depends(authorized)])
+    def browser_capture_pairing():
+        return {"code":browser_capture.pairing_code(),"valid_seconds":300}
+
+    @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
+    def browser_capture_sessions():
+        return browser_capture.recent()
+
+    @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
+    def browser_capture_steps(session_id: str):
+        return browser_capture.steps(session_id)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/summary",dependencies=[Depends(authorized)])
+    def browser_capture_summary(session_id: str):
+        return browser_summary_service.get(session_id)
+
+    @app.post("/api/browser-capture/sessions/{session_id}/summarize",dependencies=[Depends(authorized)])
+    def browser_capture_summarize(session_id: str):
+        return browser_summary_service.generate(session_id,force=True)
+
+    @app.post("/capture/pair")
+    def capture_pair(body: CapturePair):
+        return {"token":browser_capture.pair(body.code)}
+
+    @app.post("/capture/heartbeat")
+    def capture_heartbeat(request: Request):
+        return browser_capture.heartbeat(capture_credential(request))
+
+    @app.post("/capture/sessions/status")
+    def capture_sessions_status(request: Request,body: CaptureSessionsStatus):
+        return browser_capture.extension_sessions(capture_credential(request),body.session_ids)
+
+    @app.post("/capture/command")
+    def capture_command(request: Request,body: CaptureCommand):
+        # An extension credential never authorizes a task on its own: the
+        # external workflow must also sign the complete, expiring command.
+        return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/bind")
+    def capture_bind(request: Request,body: CaptureBind):
+        return browser_capture.bind(capture_credential(request),**body.model_dump())
+
+    @app.post("/capture/event")
+    def capture_event(request: Request,body: CaptureEvent):
+        return browser_capture.event(capture_credential(request),**body.model_dump())
 
     @app.post('/api/shutdown', dependencies=[Depends(authorized)])
     def shutdown():
