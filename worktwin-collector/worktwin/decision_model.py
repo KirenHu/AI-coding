@@ -62,7 +62,7 @@ class DecisionRouter:
         self.enterprise_url,self.enterprise_token=enterprise_url,enterprise_token
 
     def config(self):
-        if self.main.mode=='enterprise':
+        if getattr(self.main,'mode','personal')=='enterprise':
             return {'provider':'enterprise','configured':bool(self.enterprise_url and self.enterprise_token)}
         provider=self.db.setting('decision_provider','main')
         return {'provider':provider,'configured':provider!='main',
@@ -123,7 +123,7 @@ class DecisionRouter:
         score=None
         source='main'
         try:
-            if self.main.mode=='enterprise':
+            if getattr(self.main,'mode','personal')=='enterprise':
                 data=self._enterprise(state,questions)
                 if data is not None:
                     score=self._score_jev(data);source='enterprise-specialized'
