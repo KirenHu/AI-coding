@@ -288,6 +288,17 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_toggle(body: CaptureToggle):
         return browser_capture.toggle(body.enabled)
 
+    @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
+    def browser_capture_extension_download():
+        extension_dir = Path(__file__).parent / "browser_extension"
+        names = ("manifest.json","service-worker.js","content.js","popup.html","popup.js")
+        result = io.BytesIO()
+        with zipfile.ZipFile(result,"w",compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in names:
+                archive.write(extension_dir/name,arcname=name)
+        return Response(content=result.getvalue(),media_type="application/zip",
+                        headers={"Content-Disposition":'attachment; filename="WorkTwin-Browser-Extension.zip"'})
+
     @app.post("/api/browser-capture/pairing",dependencies=[Depends(authorized)])
     def browser_capture_pairing():
         return {"code":browser_capture.pairing_code(),"valid_seconds":300}
