@@ -652,7 +652,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         from .automation import acceptance_status
         with db.connect() as con:
             automation=acceptance_status(con,model_client)
-        return {"enterprise_model_ready": model_client.configured,'knowledge_automation':automation,
+        return {"enterprise_model_ready": model_client.configured,'knowledge_automation':{"ready":bool(model_client.configured),"real_data_evaluated":automation["ready"],"reason":"在用户已授权的数据源内自动维护知识；跨来源项目识别不足时保持隔离"},
                 "edition":model_client.mode,"edition_selected":bool(db.setting('edition')),
                 "model_status":model_client.status,"model_error":model_client.error,
                 "model_name":getattr(model_client.client,'model','') or db.setting('enterprise_model_name'),
