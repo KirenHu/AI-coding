@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "WorkTwin · 任务触发式浏览器行为采集",
+  "description": "仅在本地 WorkTwin 已开启、收到可信流程平台的已签名任务信号后，观察指定标签页的首个页面。",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "tabs",
+    "webNavigation",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "WorkTwin 浏览器采集"
+  }
+}
