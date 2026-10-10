@@ -105,7 +105,7 @@ function enqueueEvent(s,kind,label,currentUrl,documentId){
       current_url:currentUrl,label:label||""
     });
     s.seq=answer.ack;
-    if(answer.status==="navigation_stopped"){
+    if(answer.status==="navigation_stopped"||answer.status==="tab_closed"){
       s.status="navigation_stopped";
       chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
       chrome.action.setBadgeText({text:""});
@@ -188,9 +188,15 @@ chrome.webNavigation.onCompleted.addListener(details=>{
     inject(s).catch(()=>{});
   }
 });
+chrome.webNavigation.onReferenceFragmentUpdated.addListener(details=>{
+  if(details.frameId!==0)return;
+  for(const s of sessions.values())if(s.status==="capturing"&&s.tabId===details.tabId){
+    enqueueEvent(s,"navigation","",details.url,s.documentId);
+  }
+});
 chrome.tabs.onRemoved.addListener(tabId=>{
   for(const s of sessions.values())if(s.status==="capturing"&&s.tabId===tabId){
-    enqueueEvent(s,"navigation","",s.page,s.documentId);
+    enqueueEvent(s,"tab_closed","",s.page,s.documentId);
   }
   recent.delete(tabId);
 });
