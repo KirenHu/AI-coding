@@ -18,10 +18,11 @@ def dashboard_token(client):
     return {"X-Worktwin-Token":match.group(1)}
 
 
-def sign(secret, action, task_id, target, sender, nonce, expires):
-    payload="\n".join([action,task_id,target,nonce,str(expires),sender])
+def sign(secret, action, task_id, target, sender, nonce, expires, status_path=None):
+    status_path=status_path or "/api/worktwin/tasks/"+task_id+"/status"
+    payload="\n".join([action,task_id,target,nonce,str(expires),sender,status_path])
     return dict(action=action,task_id=task_id,target_url=target,
-                nonce=nonce,expires_at=expires,
+                nonce=nonce,expires_at=expires,status_path=status_path,
                 signature=hmac.new(secret.encode(),payload.encode(),hashlib.sha256).hexdigest())
 
 
@@ -63,6 +64,11 @@ def test_signed_capture_stops_on_first_navigation_and_cannot_restart(monkeypatch
                   current_url="https://portal.example.com/approve?token=ignored")
         assert client.post("/capture/bind",headers=credential,json=bind).status_code==200
         assert client.post("/capture/bind",headers=credential,json=bind).status_code==409
+        scope=client.post("/capture/sessions/status",headers=credential,
+            json={"session_ids":[session,"does-not-exist"]})
+        assert scope.status_code==200
+        assert scope.json()["sessions"][session]=="capturing"
+        assert scope.json()["sessions"]["does-not-exist"]=="not_found"
         event=dict(session_id=session,seq=1,kind="click",tab_id=18,document_id="doc-1",
                    current_url="https://portal.example.com/approve?secret=not-persisted",
                    label="新增规则")
@@ -105,6 +111,9 @@ def test_signed_capture_stops_on_first_navigation_and_cannot_restart(monkeypatch
                          json={"sender_origin":sender,"envelope":complete})
         assert done.json()["status"]=="completed"
         assert len(done.json()["session_ids"])==2
+        scope=client.post("/capture/sessions/status",headers=credential,
+            json={"session_ids":done.json()["session_ids"]}).json()
+        assert all(s=="completed" for s in scope["sessions"].values())
         another=sign("x"*48,"start","task42",target,sender,
                      "random_nonce_value_c",int(time.time())+90)
         assert client.post("/capture/command",headers=credential,
