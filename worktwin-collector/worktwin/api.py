@@ -43,6 +43,7 @@ from .answer_policy import check_answer
 from .scope import document_scope, scope_description, snapshot_history
 from .browser_capture import BrowserCapture
 from .browser_capture_status import TaskStatusMonitor
+from .browser_capture_summary import BrowserSummaryService, BrowserSummaryWorker
 
 STATIC = Path(__file__).parent / "static"
 
@@ -147,6 +148,9 @@ class DocumentScopeInput(BaseModel):
 class CaptureToggle(BaseModel):
     enabled: bool
 
+class CaptureAiToggle(BaseModel):
+    allow_ai: bool
+
 class CapturePair(BaseModel):
     code: str = Field(min_length=10,max_length=128)
 
@@ -199,6 +203,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
     browser_capture = BrowserCapture(db)
     browser_status_monitor = TaskStatusMonitor(browser_capture)
+    browser_summary_service = BrowserSummaryService(db,model_client)
+    browser_summary_worker = BrowserSummaryWorker(browser_summary_service)
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -215,8 +221,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             knowledge_worker.start()
             publisher.start()
             browser_status_monitor.start()
+            browser_summary_worker.start()
         async with mcp_server.session_manager.run():
             yield
+        browser_summary_worker.stop()
         browser_status_monitor.stop()
         publisher.stop()
         collector.stop()
@@ -251,6 +259,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.knowledge_worker = knowledge_worker
     app.state.browser_capture = browser_capture
     app.state.browser_status_monitor = browser_status_monitor
+    app.state.browser_summary_service = browser_summary_service
+    app.state.browser_summary_worker = browser_summary_worker
     app.state.model = model_client
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
     app.mount('/mcp',mcp_app,name='twin-mcp')
@@ -297,6 +307,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_toggle(body: CaptureToggle):
         return browser_capture.toggle(body.enabled)
 
+    @app.put("/api/browser-capture/ai",dependencies=[Depends(authorized)])
+    def browser_capture_ai_toggle(body: CaptureAiToggle):
+        return browser_capture.toggle_ai(body.allow_ai)
+
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
     def browser_capture_extension_download():
         extension_dir = Path(__file__).parent / "browser_extension"
@@ -319,6 +333,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
         return browser_capture.steps(session_id)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/summary",dependencies=[Depends(authorized)])
+    def browser_capture_summary(session_id: str):
+        return browser_summary_service.get(session_id)
+
+    @app.post("/api/browser-capture/sessions/{session_id}/summarize",dependencies=[Depends(authorized)])
+    def browser_capture_summarize(session_id: str):
+        return browser_summary_service.generate(session_id,force=True)
 
     @app.post("/capture/pair")
     def capture_pair(body: CapturePair):
