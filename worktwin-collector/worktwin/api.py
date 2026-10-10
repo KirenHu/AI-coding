@@ -174,6 +174,16 @@ class CaptureToggle(BaseModel):
 class CaptureAiToggle(BaseModel):
     allow_ai: bool
 
+class ManualCaptureInput(BaseModel):
+    enabled: bool
+    url: str = Field(default='',max_length=2048)
+
+class ManualCaptureRebind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+
 class CapturePair(BaseModel):
     code: str = Field(min_length=10,max_length=128)
 
@@ -337,6 +347,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_ai_toggle(body: CaptureAiToggle):
         return browser_capture.toggle_ai(body.allow_ai)
 
+    @app.put("/api/browser-capture/manual",dependencies=[Depends(authorized)])
+    def configure_manual_capture(body: ManualCaptureInput):
+        return browser_capture.manual_config(enabled=body.enabled,url=body.url)
+
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
     def browser_capture_extension_download():
         extension_dir = Path(__file__).parent / "browser_extension"
@@ -353,8 +367,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return {"code":browser_capture.pairing_code(),"valid_seconds":300}
 
     @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
-    def browser_capture_sessions():
-        return browser_capture.recent()
+    def browser_capture_sessions(limit: int = Query(30,ge=1,le=100),
+                                 offset: int = Query(0,ge=0)):
+        return browser_capture.recent(limit=limit,offset=offset)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/events",dependencies=[Depends(authorized)])
+    def browser_capture_events(session_id: str,limit: int = Query(100,ge=1,le=200),
+                               offset: int = Query(0,ge=0)):
+        return browser_capture.events(session_id,limit=limit,offset=offset)
 
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
@@ -385,6 +405,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         # An extension credential never authorizes a task on its own: the
         # external workflow must also sign the complete, expiring command.
         return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/manual/current")
+    def capture_manual_current(request: Request):
+        return browser_capture.manual_current(capture_credential(request))
+
+    @app.post("/capture/manual/rebind")
+    def capture_manual_rebind(request: Request,body: ManualCaptureRebind):
+        return browser_capture.manual_rebind(capture_credential(request),**body.model_dump())
 
     @app.post("/capture/bind")
     def capture_bind(request: Request,body: CaptureBind):
