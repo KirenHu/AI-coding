@@ -39,3 +39,17 @@ def test_upgrade_changes_asset_urls_and_forbids_stale_cache(tmp_path, monkeypatc
         assert set(old_urls).isdisjoint(new_urls)
         for url in new_urls:
             assert new.get(url).status_code == 200
+
+
+def test_runtime_dashboard_and_package_versions_are_identical():
+    import tomllib
+    from pathlib import Path
+    from worktwin import __version__
+
+    root=Path(__file__).resolve().parents[1]
+    package=tomllib.loads((root/'pyproject.toml').read_text(encoding='utf-8'))
+    html=(root/'worktwin/static/index.html').read_text(encoding='utf-8')
+    assert __version__==package['project']['version']
+    assert f'window.__WORKTWIN_VERSION__="{__version__}"' in html
+    assert f'/assets/app.js?v={__version__}' in html
+    assert f'/assets/styles.css?v={__version__}' in html
