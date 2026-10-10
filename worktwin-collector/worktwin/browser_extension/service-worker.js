@@ -65,7 +65,18 @@ async function status(){
   return {connected,pendingOrigin:entry?.origin||""};
 }
 async function tryBind(session,details){
-  if(session.status!=="armed"||page(details.url)!==session.page)return;
+  if(session.status!=="armed")return;
+  // A navigation may finish before its signed command is verified. Read
+  // Chrome's current frame identity instead of assuming an early event
+  // carried documentId. This still binds only the clicked flow tab/child.
+  if(!details.documentId){
+    const frame=await chrome.webNavigation.getFrame({
+      tabId:details.tabId,frameId:0
+    }).catch(()=>null);
+    if(!frame?.documentId)return;
+    details={...details,url:frame.url,documentId:frame.documentId};
+  }
+  if(page(details.url)!==session.page)return;
   // Only the launcher tab or a new tab with the original launcher's
   // openerTabId is eligible. A different tab showing the same URL is not.
   const tab=await chrome.tabs.get(details.tabId).catch(()=>null);
