@@ -70,16 +70,23 @@ async function renderSources(){
   const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark']];
   content.innerHTML=pageHeader('INFORMATION SOURCES','信息采集','只采集你允许的工作资料。随时暂停，也可以彻底撤销授权。',`<button class="btn secondary" id="scan">${icon('refresh')} 立即检查更新</button>`)+
     `<div class="source-overview">${types.map(([kind,name,desc,ico])=>`<div class="source-type"><div class="type-symbol">${icon(ico)}</div><b>${name}</b><small>${desc}</small><button class="btn secondary small" data-add-source="${kind}">${icon('plus')} ${count(kind)?'再添加':'授权采集'}</button></div>`).join('')}</div>`+
-    '<div class="group-heading"><h2>任务触发式浏览器行为采集</h2><span class="soft-caption">与其他信息源并列 · 默认关闭</span></div>'+
+    '<div class="group-heading"><h2>浏览器行为采集</h2><span class="soft-caption">指定网站手动记录 / 企业任务触发</span></div>'+
     '<div class="card" style="padding:20px;margin-bottom:18px">'+
-      '<div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div><b>浏览器操作</b><p class="soft-caption">只有可信流程平台触发的指定任务页面才会被观察；页面发生跳转后停止采集。</p></div>'+
+      '<div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div><b>浏览器操作</b><p class="soft-caption">手动指定网站并开启记录，或由可信流程平台自动触发。两类记录彼此独立。</p></div>'+
       '<label class="permission-cell"><input class="toggle" id="browser-capture-enabled" type="checkbox" '+(capture.enabled?'checked':'')+'/> 手动启用</label></div>'+
       '<div class="field-note">插件状态：'+(capture.extension_connected?'已连接':'未连接（无法据此区分未安装和未运行）')+
       ' · 进行中任务：'+capture.active_tasks+' · 流程平台：'+(capture.flow_configured?'已配置':'尚未配置')+'</div>'+
+      `<div class="divider" style="margin:18px 0"></div><h3>手动记录指定网站</h3>
+      <p class="soft-caption">输入地址并开启，然后切换到对应的活动标签页。只记录这一标签页；同一网站内跳转继续记录，离开网站或手动结束立即停止。</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+        <input id="browser-manual-site" style="min-width:240px;flex:1" placeholder="https://github.com" value="${esc(capture.manual_site||'')}" ${capture.manual_enabled?'disabled':''}/>
+        <button class="btn ${capture.manual_enabled?'secondary':''}" id="browser-manual-toggle">${capture.manual_enabled?'结束记录':'开始记录'}</button>
+      </div><p class="field-note">${capture.manual_enabled?'已开启：'+esc(capture.manual_site)+'，切换至目标网页开始记录':'支持 HTTPS 网站；本地测试也可用 http://localhost。'}</p>`+
       '<label class="check-row" style="margin:12px 0"><input id="browser-capture-ai" type="checkbox" '+(capture.allow_ai?'checked':'')+' '+(capture.enabled?'':'disabled')+'/> <span>允许 AI 概括网页操作（独立授权）<small class="soft-caption">只发送脱敏操作事件到已配置模型；不提炼知识，不进入数字分身。</small></span></label>'+
       '<button class="btn secondary small" id="browser-extension-guide">安装或连接浏览器插件</button> '+
-      '<button class="btn secondary small" id="browser-capture-history">查看操作摘要</button> '+
+      '<button class="btn secondary small" id="browser-capture-history">查看操作记录</button> '+
       '<button class="btn secondary small" id="browser-capture-refresh">刷新连接状态</button></div>'+
+    '<div class="group-heading"><h2>网页操作记录</h2><span class="soft-caption">历史操作会话与完整事件时间线</span></div><div class="card" id="browser-records">正在加载记录…</div>'+
     `<div class="group-heading"><h2>已授权的数据范围</h2><span class="soft-caption">${sources.length} 个数据源</span></div>`+
     `<div class="card">${sources.length?sources.map(sourceRow).join(''):emptyState('folder','还没有授权任何数据源','选择上方的信息类型，授权工作目录后即可自动、增量采集。')}</div>`+
     `<div class="scan-status"><span>系统会自动检测文件变化 · 最近扫描：${esc(stats.last_scan)}</span><span>${stats.documents} 份已索引资料 · ${stats.ai_jobs.queued} 项待整理 · ${stats.ai_jobs.running} 项处理中 · ${stats.ai_jobs.error} 项失败</span></div>`+
@@ -93,6 +100,22 @@ async function renderSources(){
       if(updated.enabled&&!updated.extension_connected)await browserExtensionGuide();
     }catch(error){e.target.checked=previous;notify(error.message)}
   };
+  el('browser-manual-toggle').onclick=async()=>{
+    const button=el('browser-manual-toggle');
+    await busy(button,async()=>{
+      try{
+        if(!capture.manual_enabled&&!capture.enabled){
+          await api('browser-capture',{method:'PUT',body:{enabled:true}});
+        }
+        const result=await api('browser-capture/manual',{method:'PUT',body:{
+          enabled:!capture.manual_enabled,url:el('browser-manual-site').value.trim()
+        }});
+        await go('sources',true);
+        notify(result.manual_enabled?'已开启手动记录，请切换到目标网站':'已结束手动记录');
+        if(result.manual_enabled&&!result.extension_connected)await browserExtensionGuide();
+      }catch(error){notify(error.message)}
+    });
+  };
   el('browser-extension-guide').onclick=browserExtensionGuide;
   el('browser-capture-history').onclick=browserCaptureHistory;
   el('browser-capture-ai').onchange=async e=>{
@@ -103,6 +126,7 @@ async function renderSources(){
     }catch(error){e.target.checked=old;notify(error.message)}
   };
   el('browser-capture-refresh').onclick=()=>go('sources',true);
+  await renderBrowserRecords(0);
   el('scan').onclick=()=>busy(el('scan'),async()=>{if(await perform(()=>api('scan',{method:'POST'}),'sources'))notify('已安排检查更新')});
   el('source-settings')?.addEventListener('click',()=>go('settings'));
   el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry',{method:'POST'}),'sources'))notify('失败任务已重新排队')}));
@@ -170,11 +194,11 @@ async function browserExtensionGuide(){
     '<button class="btn secondary" id="browser-extension-download">下载插件 ZIP</button> '+
     '<button class="btn secondary" id="browser-extension-pair">生成配对码</button>'+
     '<p id="browser-extension-code" class="field-note">请在插件弹窗中输入 WorkTwin 生成的配对码。</p>'+
-    '<p class="field-note">企业部署时还需设置可信流程平台域名与签名密钥，并在扩展 manifest 中声明该平台域名。</p>');
+    '<p class="field-note">只有流程任务触发模式需要配置企业流程平台域名与签名密钥。手动网站采集无需流程平台。</p>');
   el('browser-extension-download').onclick=()=>downloadFile('browser-capture/extension','WorkTwin-Browser-Extension.zip');
   el('browser-extension-pair').onclick=async()=>{
     try{
-      if(!info.enabled){notify('请先启用任务触发式浏览器行为采集');return}
+      if(!info.enabled){notify('请先启用浏览器行为采集');return}
       const r=await api('browser-capture/pairing',{method:'POST'});
       const node=el('browser-extension-code');
       node.textContent='配对码（5 分钟有效）：'+r.code;
