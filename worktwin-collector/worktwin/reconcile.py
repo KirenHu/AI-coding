@@ -197,7 +197,7 @@ def store_proposals(con: sqlite3.Connection, document_id: int, sha: str,
     return created
 
 
-def resolve_proposal(con: sqlite3.Connection, proposal_id: int, *, accept: bool) -> str:
+def resolve_proposal(con: sqlite3.Connection, proposal_id: int, *, accept: bool, actor: str = 'human') -> str:
     proposal = con.execute("""SELECT p.*,d.sha256 current_sha,d.content
         FROM knowledge_proposals p JOIN documents d ON d.id=p.document_id
         WHERE p.id=?""", (proposal_id,)).fetchone()
@@ -241,8 +241,8 @@ def resolve_proposal(con: sqlite3.Connection, proposal_id: int, *, accept: bool)
                    is_current=1,superseded=0,chunk_id=excluded.chunk_id,occurred_at=excluded.occurred_at""",
                         (target['id'],proposal['document_id'],linked['id'] if linked else None,quote,proposal['occurred_at']))
         con.execute("""UPDATE knowledge SET title=?,body=?,version=version+1,
-            created_by='human',status='confirmed',source_bound=1,review_hold=0,updated_at=datetime('now') WHERE id=?""",
-                    (proposal["title"],proposal["body"],target["id"]))
+            created_by=?,status='confirmed',source_bound=1,review_hold=0,updated_at=datetime('now') WHERE id=?""",
+                    (proposal["title"],proposal["body"],actor,target["id"]))
         if metadata.get('topic'):
             con.execute('UPDATE knowledge SET topic=?,scope_detail=?,outcome=?,attribution=?,quality_reason=? WHERE id=?',
                 (metadata['topic'],metadata.get('scope_detail',target['scope_detail']),metadata.get('outcome',target['outcome']),
