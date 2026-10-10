@@ -109,7 +109,7 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             "已被替代的结论只保存在更新历史中，不能继续放在当前笔记正文里。"
             "不补齐无依据的章节，不把不同项目、主题或冲突结论直接混合。属于已有主题时沿用其topic，保持命名稳定。"
             "输出JSON对象 {\"items\":[{\"kind\":\"decision\",\"topic\":\"主题名称\",\"title\":\"...\",\"body\":\"...\","
-            "\"scope_detail\":\"具体适用对象/条件\",\"value_reason\":\"将来能用于回答什么工作问题\","
+            "\"scope_detail\":\"具体适用对象/条件\",\"project_hint\":\"来源明确提及的业务项目名称，不确定则为空\",\"value_reason\":\"将来能用于回答什么工作问题\","
             "\"attribution\":\"user|assistant|document\",\"outcome\":\"none|reported|accepted\",\"requires_review\":true|false,"
             "\"quote\":\"来源原文\",\"context_quote\":\"可选的前文原文\",\"confirmation_quote\":\"可选的用户确认原文\"}]}。"
             "最多5个主题，body是可单独阅读的中文Markdown，不要凭空扩展范围。"
@@ -130,6 +130,7 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             topic = str(item.get('topic') or '').strip()[:100]
             detail = str(item.get('scope_detail') or '').strip()[:500]
             reason = str(item.get('value_reason') or '').strip()[:500]
+            project_hint = str(item.get('project_hint') or '').strip()[:120]
             if kind not in KIND_LABELS or (not transcript and kind == "preference"):
                 continue
             if not (title and body and 8 <= len(quote) <= 1200 and quote in text):
@@ -192,5 +193,6 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
                            "occurred_at": occurred,'topic':topic,'scope_detail':detail,'value_reason':reason,
                            'attribution':attribution,'outcome':outcome,'confirmation_quote':confirmation,
                            'context_quote':context_quote,'quality':'useful','extraction_version':1,
-                           'requires_review':item.get('requires_review',True) is not False})
+                           'requires_review':item.get('requires_review',True) is not False,
+                           'project_hint':project_hint if project_hint and project_hint.lower() in text.lower() else ''})
     return result
