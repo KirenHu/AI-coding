@@ -21,7 +21,7 @@ from fastapi import HTTPException
 
 SESSION_TTL_SECONDS = 8 * 60 * 60
 PAIR_TTL_SECONDS = 5 * 60
-ALLOWED_ACTIONS = {"click", "change", "submit", "navigation", "feedback"}
+ALLOWED_ACTIONS = {"click", "change", "submit", "navigation", "feedback", "tab_closed"}
 SENSITIVE = re.compile(r"password|passcode|secret|token|api.?key|authorization|credit|card|phone|email|身份证|手机号|银行卡", re.I)
 
 
@@ -235,7 +235,7 @@ class BrowserCapture:
         if kind not in ALLOWED_ACTIONS or seq<1 or seq>1000000:
             raise HTTPException(400,"事件类型或序号无效")
         now=int(time.time())
-        key=(page_key(current_url) if kind!="navigation" else
+        key=(page_key(current_url) if kind not in ("navigation","tab_closed") else
              (page_key(current_url) if origin(current_url) else "[离开 HTTPS 网页]"))
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -247,16 +247,16 @@ class BrowserCapture:
                 raise HTTPException(403,"非本次任务绑定的浏览器文档")
             if kind!="navigation" and key!=r["page_key"]:
                 raise HTTPException(403,"页面已离开授权范围")
-            if kind=="navigation":
+            if kind in ("navigation","tab_closed"):
                 if seq!=r["last_seq"]+1:
                     raise HTTPException(409,"事件序号不连续")
                 con.execute("""INSERT INTO browser_capture_events
                     (session_id,seq,at,kind,label,location) VALUES(?,?,?,?,?,?)""",
-                    (session_id,seq,now,kind,"页面导航，停止观察",key))
+                    (session_id,seq,now,kind,"页面导航，停止观察" if kind=="navigation" else "标签页关闭，停止观察",key))
                 con.execute("""UPDATE browser_capture_sessions SET
-                    last_seq=?,event_count=event_count+1,status='navigation_stopped',ended_at=?
-                    WHERE id=?""",(seq,now,session_id))
-                return {"ack":seq,"status":"navigation_stopped"}
+                    last_seq=?,event_count=event_count+1,status=?,ended_at=?
+                    WHERE id=?""",(seq,"navigation_stopped" if kind=="navigation" else "tab_closed",now,session_id))
+                return {"ack":seq,"status":"navigation_stopped" if kind=="navigation" else "tab_closed"}
             if seq==r["last_seq"]:
                 return {"ack":seq,"status":"duplicate"}
             if seq!=r["last_seq"]+1:
