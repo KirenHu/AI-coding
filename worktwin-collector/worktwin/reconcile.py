@@ -18,12 +18,14 @@ from .scope import document_scope, permission_key, snapshot_history, topic_key, 
 ACTIONS = {"enrich", "replace", "conflict"}
 
 
-def existing_for_project(con: sqlite3.Connection, document_id: int, limit: int = 30) -> list[dict]:
+def existing_for_project(con: sqlite3.Connection, document_id: int, limit: int = 30, *, project_key: str | None = None, scope: str | None = None) -> list[dict]:
     """Only share knowledge whose every source permits enterprise AI processing."""
     row = con.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
     if row is None:
         return []
     metadata=document_scope(row)
+    if project_key and scope:
+        metadata={'project_key':project_key,'scope':scope}
     result = con.execute("""SELECT DISTINCT k.* FROM knowledge k
         JOIN knowledge_evidence e ON e.knowledge_id=k.id
         JOIN documents d ON d.id=e.document_id
@@ -40,6 +42,18 @@ def existing_for_project(con: sqlite3.Connection, document_id: int, limit: int =
     boundary=permission_key(con,document_id)
 
     def same_confirmed_project(note) -> bool:
+        membership = con.execute("""SELECT status FROM project_memberships
+            WHERE knowledge_id=? AND project_key=?""",(note['id'],metadata['project_key'])).fetchone()
+        if project_key and membership and membership['status']=='confirmed':
+            # Explicit AI grant on every contributing source is sufficient for
+            # comparison; project membership is proven at work-unit granularity.
+            records=con.execute("""SELECT e.is_current,e.superseded,d.deleted,s.enabled,s.allow_ai
+                FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
+                JOIN sources s ON s.id=d.source_id WHERE e.knowledge_id=?""",
+                (note['id'],)).fetchall()
+            return bool(records) and all(r['is_current']==1 and
+                r['superseded']==0 and r['deleted']==0 and r['enabled']==1 and
+                r['allow_ai']==1 for r in records)
         evidence = con.execute("""SELECT d.project_key,d.project_verified,d.deleted,
                   s.enabled,s.allow_ai,e.is_current,e.superseded
             FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -52,7 +66,7 @@ def existing_for_project(con: sqlite3.Connection, document_id: int, limit: int =
             for ev in evidence
         )
 
-    if row['project_verified'] and metadata['scope']=='project':
+    if (row['project_verified'] or project_key) and metadata['scope']=='project':
         # Explicitly linked project identity, not a shared folder name,
         # authorizes comparison across independently AI-approved sources.
         # Every contributing evidence document must belong to that project.
@@ -191,7 +205,8 @@ def store_proposals(con: sqlite3.Connection, document_id: int, sha: str,
         if target_version is None:
             continue
         # Revalidate the full project and grant boundary, even for direct calls.
-        permissible={r['id'] for r in existing_for_project(con,document_id)}
+        permissible={r['id'] for r in existing_for_project(con,document_id,
+            project_key=item.get('project_key'),scope=item.get('scope'))}
         if proposal['target_id'] not in permissible:
             continue
         target=con.execute('SELECT topic,scope_detail FROM knowledge WHERE id=?',(proposal['target_id'],)).fetchone()
@@ -217,7 +232,7 @@ def store_proposals(con: sqlite3.Connection, document_id: int, sha: str,
         if action=='enrich' and topic_key(item.get('scope_detail','')) != topic_key(target['scope_detail']):
             action='conflict'
             reason='适用对象或条件不同，请核对是否属于同一范围。'+reason
-        evidence={key:item.get(key,'') for key in ('quote','context_quote','confirmation_quote','attribution','outcome','topic','scope_detail','value_reason')}
+        evidence={key:item.get(key,'') for key in ('quote','context_quote','confirmation_quote','attribution','outcome','topic','scope_detail','value_reason','project_key','scope')}
         evidence['requires_review']=item.get('requires_review',True)
         evidence['changes_existing_conclusion']=proposal.get('changes_existing_conclusion',True)
         cursor = con.execute("""INSERT OR IGNORE INTO knowledge_proposals
@@ -251,7 +266,10 @@ def resolve_proposal(con: sqlite3.Connection, proposal_id: int, *, accept: bool,
         raise ValueError("原始资料已更新，不能应用过期提案")
     if target["version"] != proposal["target_version"]:
         raise ValueError("这篇知识已被其他操作修改，请重新提取更新提案")
-    if proposal['origin']!='curation' and target['id'] not in {r['id'] for r in existing_for_project(con,proposal['document_id'])}:
+    early_meta=json.loads(proposal['evidence_json'])
+    if proposal['origin']!='curation' and target['id'] not in {r['id'] for r in existing_for_project(
+            con,proposal['document_id'],project_key=early_meta.get('project_key'),
+            scope=early_meta.get('scope'))}:
         raise ValueError('项目、范围或来源权限已变更，请重新整理')
     if accept:
         chunk = con.execute("SELECT id FROM chunks WHERE document_id=? AND instr(text,?)>0 LIMIT 1",
