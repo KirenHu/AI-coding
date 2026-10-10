@@ -30,6 +30,11 @@ jobs:
       - run: PYTHONPATH=. python scripts/acceptance_benchmark.py
       - run: PYTHONPATH=. python scripts/http_acceptance.py
       - run: node --check worktwin/static/app.js
+      - name: Check browser extension syntax
+        run: |
+          node --check worktwin/browser_extension/service-worker.js
+          node --check worktwin/browser_extension/content.js
+          node --check worktwin/browser_extension/popup.js
       - run: python -m playwright install --with-deps chromium
       - name: Browser acceptance of collection, editing and authorization
         run: PYTHONPATH=. python scripts/ui_acceptance.py
