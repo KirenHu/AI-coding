@@ -55,7 +55,7 @@ def test_personal_data_is_not_sent_without_ai_permission(tmp_path):
 def test_history_restore_creates_new_version_and_preserves_scope(tmp_path):
     app=create_app(tmp_path/'db.sqlite',start_worker=False)
     with TestClient(app) as c:
-        token=re.search(r'window\\.__WORKTWIN_TOKEN__="(.*?)";',c.get('/').text).group(1)
+        token=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',c.get('/').text).group(1)
         h={'X-Worktwin-Token':token}
         created=c.post('/api/knowledge',headers=h,json={
             'title':'初始结论','body':'第一版结论','kind':'decision','status':'confirmed'

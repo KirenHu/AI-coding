@@ -447,7 +447,7 @@ class BrowserCapture(ManualCapture):
         """Bounded deterministic action grouping, not speculative AI semantics."""
         row=con.execute("""SELECT * FROM browser_capture_steps WHERE session_id=?
             ORDER BY step DESC LIMIT 1""",(session_id,)).fetchone()
-        if kind in ("click","submit","navigation") or not row or row["status"] in ("completed","stopped"):
+        if kind in ("click","submit") or (kind=="navigation" and label=="页面导航，继续观察") or not row or row["status"] in ("completed","stopped"):
             number=(int(row["step"])+1) if row else 1
             action=("点击" if kind=="click" else "提交" if kind=="submit"
                     else "导航" if kind=="navigation" else "页面事件")
