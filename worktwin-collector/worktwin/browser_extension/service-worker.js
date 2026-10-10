@@ -33,8 +33,31 @@ async function call(path,body){
   return data;
 }
 async function heartbeat(){
-  try{if(await token())await call("/capture/heartbeat");return true}
-  catch{return false}
+  try{
+    await ready;
+    if(!await token())return false;
+    await call("/capture/heartbeat");
+    const watched=[...sessions.values()].filter(s=>["armed","capturing"].includes(s.status));
+    if(watched.length){
+      const result=await call("/capture/sessions/status",
+        {session_ids:watched.map(s=>s.id)});
+      for(const s of watched){
+        const live=result.sessions?.[s.id];
+        if(live!=="armed"&&live!=="capturing"){
+          s.status=live||"not_found";
+          pendingSite.delete(s.id);
+          if(s.tabId!==undefined){
+            chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
+          }
+        }
+      }
+      await persist();
+      if(watched.some(s=>!["armed","capturing"].includes(s.status))){
+        chrome.action.setBadgeText({text:""});
+      }
+    }
+    return true;
+  }catch{return false}
 }
 async function status(){
   const connected=await heartbeat();
@@ -123,7 +146,7 @@ function enqueueEvent(s,kind,label,currentUrl,documentId){
       chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
       chrome.action.setBadgeText({text:""});
     }
-  }).catch(()=>{s.status="transport_error";persist().catch(()=>{});chrome.action.setBadgeText({text:"!"})});
+  }).catch(()=>{s.status="transport_error";persist().catch(()=>{});if(s.tabId!==undefined)chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});chrome.action.setBadgeText({text:"!"})});
   eventQueues.set(s.id,next);
 }
 chrome.runtime.onMessageExternal.addListener((message,sender,reply)=>{
@@ -240,7 +263,7 @@ chrome.tabs.onRemoved.addListener(tabId=>{
   recent.delete(tabId);
   });
 });
-chrome.alarms.create("capture-heartbeat",{periodInMinutes:1});
+chrome.alarms.create("capture-heartbeat",{periodInMinutes:0.5});
 chrome.alarms.onAlarm.addListener(alarm=>{
   if(alarm.name==="capture-heartbeat")heartbeat().catch(()=>{});
 });
