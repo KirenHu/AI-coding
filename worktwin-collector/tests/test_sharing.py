@@ -78,7 +78,7 @@ def test_source_share_consent_and_confirmed_only(tmp_path):
             app.state.collector.scan_all();app.state.knowledge_worker.process_next()
             k=c.get('/api/knowledge',headers=h).json()[0]
             tid=c.post('/api/twins',headers=h,json={'name':'助手'}).json()['id']
-            assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[k['id']]}).status_code==400
+            assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[k['id']]}).status_code==200  # Auto-active privately; sharing remains separately prohibited
             c.post(f'/api/twins/{tid}/publish',headers=h)
             assert app.state.publisher.snapshot()['assets']==[]
             c.put(f'/api/knowledge/{k["id"]}',headers=h,json={**{key:k[key] for key in ('kind','title','body')},'status':'confirmed'})
