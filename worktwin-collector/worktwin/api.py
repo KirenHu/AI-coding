@@ -349,7 +349,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
 
     @app.put("/api/browser-capture/manual",dependencies=[Depends(authorized)])
     def configure_manual_capture(body: ManualCaptureInput):
-        return browser_capture.manual_config(enabled=body.enabled,url=body.url)
+        before=browser_capture.settings()
+        result=browser_capture.manual_config(enabled=body.enabled,url=body.url)
+        # Finish and publish the just-closed recording immediately. Background
+        # processing also covers navigation-based or expired termination.
+        previous_id=before["manual_session_id"]
+        if (previous_id and before["manual_enabled"] and
+            previous_id!=result["manual_session_id"]):
+            browser_summary_service.generate(previous_id,force=True)
+        return result
 
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
     def browser_capture_extension_download():
