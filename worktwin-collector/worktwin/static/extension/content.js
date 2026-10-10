@@ -90,14 +90,17 @@
   const mutate = entries => {
     if (!monitoring || Date.now() - lastFeedback < 800) return;
     for (const entry of entries) {
-      const candidates = entry.addedNodes ? Array.from(entry.addedNodes) : [entry.target];
+      // A live region may already exist and receive only a new text node;
+      // include its parent without scanning or copying unrelated page DOM.
+      const candidates = [entry.target,...(entry.addedNodes ? Array.from(entry.addedNodes) : [])];
       for (const node of candidates.slice(0, 5)) {
         if (!(node instanceof HTMLElement)) continue;
         let live = null;
         if (node.matches("[role=status],[role=alert],[aria-live=polite],[aria-live=assertive]")) {
           live = node;
         } else {
-          live = node.querySelector("[role=status],[role=alert],[aria-live=polite],[aria-live=assertive]");
+          live = node.closest("[role=status],[role=alert],[aria-live=polite],[aria-live=assertive]") ||
+            node.querySelector("[role=status],[role=alert],[aria-live=polite],[aria-live=assertive]");
         }
         if (!live || live.matches("input,textarea") ||
             live.closest("[data-private],[data-sensitive],[contenteditable]") ||
