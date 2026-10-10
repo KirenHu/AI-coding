@@ -189,9 +189,9 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     ready.then(()=>{
     const s=[...sessions.values()].find(x=>
       x.status==="capturing" && x.tabId===sender.tab.id &&
-      (!sender.documentId||x.documentId===sender.documentId));
+      x.documentId===sender.documentId && page(sender.url||"")===x.page);
     if(s && ["click","change","submit","feedback"].includes(message.kind)){
-      enqueueEvent(s,message.kind,message.label,s.page,s.documentId)
+      enqueueEvent(s,message.kind,message.label,sender.url,sender.documentId)
         .then(reply).catch(e=>reply({ok:false,error:String(e.message||e)}));
     }else reply({ok:false});
     });return true;
