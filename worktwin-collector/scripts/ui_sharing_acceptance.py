@@ -90,7 +90,7 @@ def main():
                 page.get_by_role('button',name='创建并选择知识').click()
                 page.locator(f'[data-select-entry="{kid}"]').check()
                 page.get_by_role('button',name='保存授权').click()
-                expect(page.get_by_text('已选择 1 篇')).to_be_visible()
+                expect(page.locator('#selected-count')).to_have_text('已单独授权 1 篇')
                 page.get_by_role('button',name='启用分享').click()
                 page.get_by_role('button',name='创建访问链接').click()
                 page.locator('#share-recipient').fill('项目接任者')
