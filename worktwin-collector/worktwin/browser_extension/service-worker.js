@@ -82,7 +82,7 @@ async function begin(envelope,sender){
   const senderOrigin=new URL(sender.url).origin;
   const answer=await call("/capture/command",{sender_origin:senderOrigin,envelope});
   if(envelope.action==="complete"){
-    for(const s of sessions.values())if(s.id===answer.session_id){
+    for(const s of sessions.values())if((answer.session_ids||[]).includes(s.id)){
       s.status="completed";pendingSite.delete(s.id);
       if(s.tabId!==undefined)chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
     }
