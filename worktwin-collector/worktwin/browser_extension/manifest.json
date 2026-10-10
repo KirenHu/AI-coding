@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WorkTwin · 任务触发式浏览器行为采集",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "仅在 WorkTwin 已开启且可信流程平台签发任务时采集目标页面的结构化操作事件",
   "permissions": [
     "tabs",
@@ -26,5 +26,6 @@
   },
   "action": {
     "default_popup": "popup.html"
-  }
+  },
+  "minimum_chrome_version": "120"
 }
