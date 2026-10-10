@@ -85,7 +85,7 @@ def main():
                 expect(page.locator('#toast')).to_contain_text('分身信息和 1 篇知识授权已保存')
                 expect(page.locator('#twin-edit-name')).to_be_enabled()
                 expect(page.locator('#twin-edit-name')).to_have_value('更新后的助手')
-                expect(page.locator('#selected-count')).to_have_text('已选择 1 篇')
+                expect(page.locator('#selected-count')).to_have_text('已单独授权 1 篇')
                 # A rejected request must preserve input and show no success feedback.
                 page.route('**/api/twins/1',lambda route:route.fulfill(status=500,json={'detail':'模拟保存失败'}) if route.request.method=='PUT' else route.fallback())
                 page.locator('#twin-edit-name').fill('保存失败时保留这个名称');page.locator('#save-twin-info').click()
