@@ -235,7 +235,8 @@ class BrowserCapture:
         if kind not in ALLOWED_ACTIONS or seq<1 or seq>1000000:
             raise HTTPException(400,"事件类型或序号无效")
         now=int(time.time())
-        key=page_key(current_url)
+        key=(page_key(current_url) if kind!="navigation" else
+             (page_key(current_url) if origin(current_url) else "[离开 HTTPS 网页]"))
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             self._extension(con,token)
