@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -348,7 +348,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return browser_capture.toggle_ai(body.allow_ai)
 
     @app.put("/api/browser-capture/manual",dependencies=[Depends(authorized)])
-    def configure_manual_capture(body: ManualCaptureInput):
+    def configure_manual_capture(body: ManualCaptureInput, background_tasks: BackgroundTasks):
         before=browser_capture.settings()
         result=browser_capture.manual_config(enabled=body.enabled,url=body.url)
         # Finish and publish the just-closed recording immediately. Background
@@ -356,7 +356,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         previous_id=before["manual_session_id"]
         if (previous_id and before["manual_enabled"] and
             previous_id!=result["manual_session_id"]):
-            browser_summary_service.generate(previous_id,force=True)
+            # Do not delay the UI stop action while a paid summary model runs.
+            background_tasks.add_task(browser_summary_service.generate,previous_id,force=True)
         return result
 
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
