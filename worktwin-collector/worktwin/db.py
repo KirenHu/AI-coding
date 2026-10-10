@@ -255,6 +255,38 @@ class Database:
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)""", (doc_id,))
             conn.execute("INSERT INTO settings(key,value) VALUES('project_identity_v2','1')")
 
+        # v1.1.8: a previously quarantined note should not require owner review
+        # when ALL of its evidence still belongs to one authorized, unchanged
+        # document. Narrow it to this document's session instead of reviving the
+        # old unverified directory-level project identity.
+        if not conn.execute("SELECT 1 FROM settings WHERE key='autonomous_legacy_scoping_v1'").fetchone():
+            rows = conn.execute("""SELECT * FROM knowledge
+                WHERE review_hold=1 AND source_bound=1 AND project_key LIKE 'source:%'
+                  AND status!='archived'""").fetchall()
+            for note in rows:
+                evidence = conn.execute("""SELECT e.quote,e.is_current,e.superseded,
+                    d.id document_id,d.content,d.project,d.project_key,d.scope,d.project_verified,
+                    d.deleted,s.enabled,s.allow_ai
+                    FROM knowledge_evidence e
+                    JOIN documents d ON d.id=e.document_id
+                    JOIN sources s ON s.id=d.source_id
+                    WHERE e.knowledge_id=?""",(note['id'],)).fetchall()
+                if not evidence or len({e['document_id'] for e in evidence})!=1:
+                    continue
+                if not all(e['scope']=='session' and e['project_verified']==0
+                    and e['is_current']==1 and e['superseded']==0
+                    and e['deleted']==0 and e['enabled']==1 and e['allow_ai']==1
+                    and e['quote'] in e['content'] for e in evidence):
+                    continue
+                if conn.execute("""SELECT 1 FROM knowledge_proposals
+                    WHERE target_id=? AND status='pending'""",(note['id'],)).fetchone():
+                    continue
+                origin=evidence[0]
+                conn.execute("""UPDATE knowledge SET project_key=?,scope='session',
+                    project=?,review_hold=0,needs_review=0,updated_at=datetime('now')
+                    WHERE id=?""",(origin['project_key'],origin['project'],note['id']))
+            conn.execute("INSERT INTO settings(key,value) VALUES('autonomous_legacy_scoping_v1','1')")
+
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
