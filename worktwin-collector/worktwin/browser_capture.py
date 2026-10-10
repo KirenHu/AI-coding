@@ -19,6 +19,10 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
+from .browser_capture_status import (
+    MAX_STATUS_FAILURES, TASK_STATUS_TTL_SECONDS, validate_status_path,
+)
+
 SESSION_TTL_SECONDS = 8 * 60 * 60
 PAIR_TTL_SECONDS = 5 * 60
 ALLOWED_ACTIONS = {"click", "change", "submit", "navigation", "feedback", "tab_closed"}
@@ -80,6 +84,14 @@ class BrowserCapture:
                     expires_at INTEGER NOT NULL, ended_at INTEGER, last_seq INTEGER NOT NULL DEFAULT 0,
                     event_count INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS ix_browser_tasks ON browser_capture_sessions(task_id,launcher_origin);
+                CREATE TABLE IF NOT EXISTS browser_capture_tasks(
+                    task_id TEXT NOT NULL, launcher_origin TEXT NOT NULL,
+                    status_path TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active',
+                    created_at INTEGER NOT NULL, last_success_at INTEGER NOT NULL,
+                    last_check_at INTEGER NOT NULL DEFAULT 0,
+                    failures INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(task_id,launcher_origin));
+                CREATE INDEX IF NOT EXISTS ix_capture_task_state ON browser_capture_tasks(state,last_check_at);
                 CREATE TABLE IF NOT EXISTS browser_capture_nonces(
                     nonce_hash TEXT PRIMARY KEY, seen_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS browser_capture_events(
@@ -122,6 +134,7 @@ class BrowserCapture:
                 con.execute("DELETE FROM browser_extension_pairing")
                 # Existing extension may re-pair when the user next enables capture.
                 con.execute("DELETE FROM browser_extension_clients")
+                con.execute("UPDATE browser_capture_tasks SET state='disabled' WHERE state='active'")
         return self.settings()
 
     def pairing_code(self) -> str:
@@ -178,6 +191,7 @@ class BrowserCapture:
         nonce=envelope.get("nonce")
         expires=envelope.get("expires_at")
         signature=envelope.get("signature")
+        status_path=validate_status_path(envelope.get("status_path"))
         if (action not in ("start","complete") or not isinstance(task_id,str)
             or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}",task_id)
             or not isinstance(target,str) or len(target)>2048
@@ -187,7 +201,7 @@ class BrowserCapture:
         now=int(time.time())
         if expires<now or expires>now+120:
             raise HTTPException(403,"触发信号已过期")
-        signed="\n".join([action,task_id,target,nonce,str(expires),sender_origin])
+        signed="\n".join([action,task_id,target,nonce,str(expires),sender_origin,status_path])
         actual=hmac.new(secret.encode(),signed.encode(),hashlib.sha256).hexdigest()
         if not hmac.compare_digest(actual,signature):
             raise HTTPException(403,"流程平台签名无效")
@@ -197,26 +211,31 @@ class BrowserCapture:
             con.execute("INSERT INTO browser_capture_nonces(nonce_hash,seen_at) VALUES(?,?)",(nonce_hash,now))
         except Exception as exc:
             raise HTTPException(409,"已处理的触发信号不可重复使用") from exc
-        return action,task_id,page_key(target)
+        return action,task_id,page_key(target),status_path
 
     def command(self, token: str, sender_origin: str, envelope: dict):
         now=int(time.time())
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             self._extension(con,token)
-            action,task_id,target=self._command(con,envelope,sender_origin)
+            action,task_id,target,status_path=self._command(con,envelope,sender_origin)
+            task=con.execute("""SELECT * FROM browser_capture_tasks WHERE
+                task_id=? AND launcher_origin=?""",(task_id,sender_origin)).fetchone()
+            if task and task["status_path"]!=status_path:
+                raise HTTPException(409,"同一流程任务的状态接口不能变更")
             existing=con.execute("""SELECT id,status FROM browser_capture_sessions
                 WHERE task_id=? AND launcher_origin=?""",(task_id,sender_origin)).fetchall()
             if action=="complete":
                 if not existing:
                     return {"status":"not_found","session_ids":[]}
-                con.execute("""UPDATE browser_capture_sessions SET status='completed',ended_at=?
-                    WHERE task_id=? AND launcher_origin=?
-                    AND status NOT IN ('completed','disabled')""",
-                    (now,task_id,sender_origin))
+                self._close_task(con,task_id,sender_origin,"completed",now)
                 return {"status":"completed","session_ids":[r["id"] for r in existing]}
-            if any(x["status"]=="completed" for x in existing):
-                raise HTTPException(409,"流程任务已完成，不能再次启动采集")
+            if (task and task["state"]!="active") or any(x["status"]=="completed" for x in existing):
+                raise HTTPException(409,"流程任务已结束，不能再次启动采集")
+            if not task:
+                con.execute("""INSERT INTO browser_capture_tasks
+                    (task_id,launcher_origin,status_path,created_at,last_success_at)
+                    VALUES(?,?,?,?,?)""",(task_id,sender_origin,status_path,now,now))
             # Each *newly signed click* may authorize another first document
             # within the same task. Replaying an old signal remains forbidden.
             session_id=secrets.token_urlsafe(20)
@@ -225,6 +244,88 @@ class BrowserCapture:
                 VALUES(?,?,?,?,'armed',?,?)""",
                 (session_id,task_id,target,sender_origin,now,now+SESSION_TTL_SECONDS))
             return {"status":"armed","session_id":session_id,"target_page":target}
+
+    @staticmethod
+    def _close_task(con, task_id: str, launcher_origin: str, status: str, now: int):
+        """Single terminal transition for signed complete, polling, or failure."""
+        con.execute("""UPDATE browser_capture_tasks SET state=?,last_check_at=?
+            WHERE task_id=? AND launcher_origin=? AND state='active'""",
+            (status,now,task_id,launcher_origin))
+        con.execute("""UPDATE browser_capture_sessions SET status=?,ended_at=?
+            WHERE task_id=? AND launcher_origin=? AND
+              status IN ('armed','capturing','navigation_stopped')""",
+            (status,now,task_id,launcher_origin))
+
+    def poll_task_states(self, fetcher, *, now: int | None = None, max_tasks: int = 25):
+        """Check only the signed, same-origin endpoint for each active task.
+
+        Every failure counts toward a bounded fail-closed stop. Do not reset
+        failure counts on restart and do not assume silence means 'running'.
+        """
+        now = int(time.time()) if now is None else now
+        trusted=os.environ.get("WORKTWIN_CAPTURE_FLOW_ORIGIN","").rstrip("/")
+        secret=os.environ.get("WORKTWIN_CAPTURE_FLOW_SECRET","")
+        with self.db.connect() as con:
+            if not self.enabled(con):
+                return {"checked":0,"closed":0}
+            tasks=[dict(x) for x in con.execute("""SELECT * FROM browser_capture_tasks
+                WHERE state='active' AND (last_check_at=0 OR last_check_at<=?)
+                ORDER BY last_check_at,created_at LIMIT ?""",(now-8,max_tasks))]
+        closed=0
+        for task in tasks:
+            if task["created_at"]+TASK_STATUS_TTL_SECONDS<=now:
+                state="expired"
+            else:
+                try:
+                    state=fetcher(trusted,task["task_id"],task["status_path"],secret)
+                    if state not in ("running","completed","cancelled"):
+                        raise ValueError("invalid remote state")
+                except Exception:
+                    state="failed"
+            with self.db.connect() as con:
+                con.execute("BEGIN IMMEDIATE")
+                current=con.execute("""SELECT * FROM browser_capture_tasks
+                    WHERE task_id=? AND launcher_origin=? AND state='active'""",
+                    (task["task_id"],task["launcher_origin"])).fetchone()
+                if not current or not self.enabled(con):
+                    continue
+                if state in ("completed","cancelled","expired"):
+                    self._close_task(con,task["task_id"],task["launcher_origin"],state,now)
+                    closed+=1
+                elif state=="running":
+                    con.execute("""UPDATE browser_capture_tasks SET
+                        last_success_at=?,last_check_at=?,failures=0
+                        WHERE task_id=? AND launcher_origin=?""",
+                        (now,now,task["task_id"],task["launcher_origin"]))
+                else:
+                    failures=current["failures"]+1
+                    if failures>=MAX_STATUS_FAILURES:
+                        self._close_task(con,task["task_id"],task["launcher_origin"],"status_unavailable",now)
+                        closed+=1
+                    else:
+                        con.execute("""UPDATE browser_capture_tasks SET
+                            failures=?,last_check_at=? WHERE task_id=? AND launcher_origin=?""",
+                            (failures,now,task["task_id"],task["launcher_origin"]))
+        return {"checked":len(tasks),"closed":closed}
+
+    def extension_sessions(self, token: str, session_ids: list[str]):
+        """Provide a stop signal even if the flow page is closed or navigated."""
+        if len(session_ids)>100:
+            raise HTTPException(400,"一次最多查询100个采集会话")
+        with self.db.connect() as con:
+            self._extension(con,token)
+            out={}
+            for sid in session_ids:
+                if not isinstance(sid,str) or len(sid)>100:
+                    continue
+                record=con.execute("SELECT status,expires_at FROM browser_capture_sessions WHERE id=?",(sid,)).fetchone()
+                if record is None:
+                    out[sid]="not_found"
+                elif record["status"] in ("armed","capturing") and record["expires_at"]<=time.time():
+                    out[sid]="expired"
+                else:
+                    out[sid]=record["status"]
+        return {"sessions":out}
 
     def bind(self, token: str, session_id: str, tab_id: int, document_id: str, current_url: str):
         if tab_id<0 or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}",document_id):
