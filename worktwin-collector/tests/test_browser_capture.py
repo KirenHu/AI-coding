@@ -117,6 +117,15 @@ def test_browser_opt_in_signed_trigger_bound_tab_and_navigation(tmp_path, monkey
         complete = sign(private,"capture.complete",nonce="uniquenonce_0003")
         assert call(complete).json()["closed_sessions"] == [capture_id]
         assert c.get("/api/capture/status",headers=h).json()["sessions"][0]["task_state"]=="completed"
+        exported=c.get("/api/capture/sessions/"+capture_id+"/export.md",headers=h)
+        assert exported.status_code==200
+        assert "保存设置" in exported.text and "新页面不在本次采集范围内" in exported.text
+        assert "never-save" not in exported.text
+        assert c.delete("/api/capture/sessions/"+capture_id,headers=h).json()["deleted"]
+        assert c.get("/api/capture/sessions/"+capture_id,headers=h).status_code==404
+        with app.state.db.connect() as con:
+            assert con.execute("SELECT count(*) FROM browser_capture_events").fetchone()[0]==0
+            assert con.execute("SELECT count(*) FROM browser_capture_steps").fetchone()[0]==0
 
 
 def test_disable_revokes_sessions_and_pairing_rotation(tmp_path, monkeypatch):
