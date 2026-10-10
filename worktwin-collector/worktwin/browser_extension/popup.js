@@ -6,7 +6,7 @@ async function refresh(){
   status.textContent=state.connected?"已连接本地 WorkTwin":"未连接 WorkTwin";
   pairing.hidden=!!state.connected;
   permission.hidden=!state.pendingOrigin;
-  if(state.pendingOrigin)document.getElementById("site").textContent="请仅为当前任务授权："+state.pendingOrigin;
+  if(state.pendingOrigin)document.getElementById("site").textContent="请仅为指定网站授权："+state.pendingOrigin;
 }
 document.getElementById("pair").onclick=async()=>{
   const code=document.getElementById("pair-code").value.trim();

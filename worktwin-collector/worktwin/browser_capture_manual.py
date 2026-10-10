@@ -74,13 +74,16 @@ class ManualCapture:
         with self.db.connect() as con:
             self._extension(con,token)
             row=con.execute("""SELECT b.manual_enabled,b.manual_site,b.manual_session_id,
-                s.status,s.expires_at FROM browser_capture_settings b
+                s.status,s.expires_at,s.tab_id,s.document_id,s.last_seq
+                FROM browser_capture_settings b
                 LEFT JOIN browser_capture_sessions s ON s.id=b.manual_session_id
                 WHERE b.id=1""").fetchone()
             if not row['manual_enabled'] or row['status'] not in ('armed','capturing') or row['expires_at']<=time.time():
                 return {'enabled':False}
             return {'enabled':True,'session_id':row['manual_session_id'],
-                    'site':row['manual_site'],'status':row['status']}
+                    'site':row['manual_site'],'status':row['status'],
+                    'tab_id':row['tab_id'],'document_id':row['document_id'],
+                    'last_seq':row['last_seq']}
 
     def manual_rebind(self, token: str, session_id: str, tab_id: int,
                       document_id: str, current_url: str) -> dict:
