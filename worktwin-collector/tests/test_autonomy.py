@@ -58,3 +58,25 @@ def test_revoked_ai_source_cannot_auto_update(tmp_path):
         con.execute('UPDATE sources SET allow_ai=0')
         assert apply_safe_replacements(con,did)==0
         assert con.execute('SELECT created_by FROM knowledge WHERE id=?',(kid,)).fetchone()[0]=='enterprise_ai'
+
+
+def test_updated_file_revises_original_note_without_reconfirmation(tmp_path):
+    db,did,item=setup(tmp_path)
+    with db.connect() as con:
+        assert activate_new(con,did,[item],Model())==1
+        target=con.execute('SELECT id FROM knowledge').fetchone()[0]
+        quote='修改后的资料明确提出知识仅保留最新结论。'
+        con.execute("UPDATE documents SET content=?,sha256=? WHERE id=?",(quote,'edited-file-sha',did))
+        con.execute("UPDATE knowledge_evidence SET is_current=0 WHERE knowledge_id=?",(target,))
+        plan={0:{'target_id':target,'action':'replace','title':item['title'],
+            'body':'知识只保留最新结论，旧正文仅出现在版本历史。',
+            'reason':'来自原文件修改后的新版本','changes_existing_conclusion':True}}
+        item2=dict(item,quote=quote,occurred_at='',body=plan[0]['body'])
+        from worktwin.reconcile import existing_for_project
+        assert target in {k['id'] for k in existing_for_project(con,did)}
+        assert store_proposals(con,did,'edited-file-sha',[item2],plan)==1
+        assert con.execute("SELECT action FROM knowledge_proposals ORDER BY id DESC LIMIT 1").fetchone()[0]=='replace'
+        assert apply_safe_replacements(con,did)==1
+        note=con.execute('SELECT * FROM knowledge WHERE id=?',(target,)).fetchone()
+        assert note['body']==plan[0]['body'] and note['needs_review']==0
+        assert con.execute('SELECT count(*) FROM knowledge').fetchone()[0]==1
