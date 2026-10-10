@@ -42,3 +42,8 @@ ARM64 Runner 使用 `macos-15`，Intel 使用 `macos-15-intel`。GitHub 已公�
 若 Apple 处理超过 CI 等待上限，失败任务会保留 `pending-notarization` artifact 七天，其中只有签名包和 `.notary.json` 回执，不包含私钥、证书或密码；未通过验收的包不会进入正式 Release。App 阶段超时时下载原始 ZIP 与回执，解压保留原 App，再使用 `desktop/notarize-macos.py <原始ZIP> <App路径> --resume` 继续等待并 staple。DMG 阶段可对原始 DMG 与其回执使用相同续跑方式。续跑校验包的 SHA-256，避免重复上传或对错误包附加票据。续跑仍需通过完整 Gatekeeper 验收，不能将 Apple 尚未完成的提交视作拒绝。
 
 手动验收可通过 `macos_architecture` 选择 `all`、`arm64` 或 `x86_64`，用于独立跟进两个架构。主分支发布仍固定构建两个架构，不能靠单架构手动验收绕过发布条件。
+
+
+## 1.2.0 集成后发布触发条件
+
+日常 PR 和 main 的自动验收始终使用 unsigned 的测试 DMG，不触发 Apple 公证，也不自动新建 Release。正式签名需在 main 的 GitHub Actions 上手动运行 WorkTwin 工作流，选择 macos_architecture=all 且 signed_release=true。只有这次受控执行才会导入受保护证书、执行两个架构公证并启动正式发布 Job。单架构手动构建仅用于验收，不生成正式 Release。公证与实际安装验收尚未开始，须满足证书条件后再启用。

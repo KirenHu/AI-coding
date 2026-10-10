@@ -82,3 +82,8 @@ python -m build
 ## 版本集成验收
 
 当前集成分支汇总自动生效的知识、跨会话项目匹配、可选轻量判断模型、数字分身按授权策略继承后续知识及任务触发浏览器操作摘要。主干正式发布还需要完整 CI、实际资料项目误合并评估、签名/公证和 Finder 首次启动验收；PR 的 unsigned 安装包不是正式签名包。
+
+
+### 正式发布与日常 CI 解耦
+
+PR / main push 只执行功能验收和未公证包的构建，不自动触发 Apple 公证或 GitHub 正式 Release。完成 Apple 证书与实际验收后，需在 `main` 手动运行 `WorkTwin 1.2.0 acceptance and signed release`，选择 `macos_architecture=all` 并勾选 `signed_release`，才会执行双架构 Developer ID 签名、公证、Gatekeeper 校验和正式发布；任何未公证 DMG 不允许出现在正式发布资产中。

@@ -8,6 +8,10 @@ on:
         type: choice
         default: all
         options: [all, arm64, x86_64]
+      signed_release:
+        description: 'Explicitly sign, notarize and publish a formal release (main and both architectures only)'
+        type: boolean
+        default: false
   pull_request:
     paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
   push:
@@ -15,8 +19,8 @@ on:
     paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
 
 concurrency:
-  group: worktwin-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: worktwin-${{ github.event_name == 'workflow_dispatch' && inputs.signed_release && 'signed-release' || (github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.signed_release) }}
 permissions:
   contents: read
 defaults:
@@ -85,7 +89,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     env:
-      WORKTWIN_REQUIRE_NOTARIZATION: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '1' || '0' }}
+      WORKTWIN_REQUIRE_NOTARIZATION: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.signed_release && inputs.macos_architecture == 'all' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -150,7 +154,7 @@ jobs:
           if-no-files-found: error
   release:
     needs: [python-test, macos, windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.signed_release && inputs.macos_architecture == 'all'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -160,7 +164,7 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-      - name: Create checksums and publish the verified 1.1 release
+      - name: Create checksums and publish the trusted 1.2.0 release
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
