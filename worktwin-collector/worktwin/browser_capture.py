@@ -78,8 +78,8 @@ class BrowserCapture:
                     launcher_origin TEXT NOT NULL, tab_id INTEGER, document_id TEXT,
                     status TEXT NOT NULL, created_at INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL, ended_at INTEGER, last_seq INTEGER NOT NULL DEFAULT 0,
-                    event_count INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(task_id, launcher_origin));
+                    event_count INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS ix_browser_tasks ON browser_capture_sessions(task_id,launcher_origin);
                 CREATE TABLE IF NOT EXISTS browser_capture_nonces(
                     nonce_hash TEXT PRIMARY KEY, seen_at INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS browser_capture_events(
@@ -103,8 +103,10 @@ class BrowserCapture:
         now = int(time.time())
         with self.db.connect() as con:
             client = con.execute("SELECT last_seen FROM browser_extension_clients WHERE id=1").fetchone()
-            sessions = con.execute("""SELECT count(*) FROM browser_capture_sessions
-                WHERE status IN ('armed','capturing','navigation_stopped') AND expires_at>?""", (now,)).fetchone()[0]
+            sessions = con.execute("""SELECT count(*) FROM
+                (SELECT task_id,launcher_origin FROM browser_capture_sessions
+                WHERE status IN ('armed','capturing','navigation_stopped') AND expires_at>?
+                GROUP BY task_id,launcher_origin)""", (now,)).fetchone()[0]
             return {"enabled":self.enabled(con),
                     "extension_connected":bool(client and now-int(client["last_seen"])<=90),
                     "active_tasks":sessions,
@@ -203,18 +205,18 @@ class BrowserCapture:
             con.execute("BEGIN IMMEDIATE")
             self._extension(con,token)
             action,task_id,target=self._command(con,envelope,sender_origin)
-            existing=con.execute("""SELECT * FROM browser_capture_sessions
-                WHERE task_id=? AND launcher_origin=?""",(task_id,sender_origin)).fetchone()
+            existing=con.execute("""SELECT id FROM browser_capture_sessions
+                WHERE task_id=? AND launcher_origin=?""",(task_id,sender_origin)).fetchall()
             if action=="complete":
                 if not existing:
-                    return {"status":"not_found"}
-                if existing["page_key"]!=target:
-                    raise HTTPException(409,"任务目标不匹配")
+                    return {"status":"not_found","session_ids":[]}
                 con.execute("""UPDATE browser_capture_sessions SET status='completed',ended_at=?
-                    WHERE id=? AND status NOT IN ('completed','disabled')""",(now,existing["id"]))
-                return {"status":"completed","session_id":existing["id"]}
-            if existing:
-                raise HTTPException(409,"同一任务不得再次扩展监控范围或重新激活")
+                    WHERE task_id=? AND launcher_origin=?
+                    AND status NOT IN ('completed','disabled')""",
+                    (now,task_id,sender_origin))
+                return {"status":"completed","session_ids":[r["id"] for r in existing]}
+            # Each *newly signed click* may authorize another first document
+            # within the same task. Replaying an old signal remains forbidden.
             session_id=secrets.token_urlsafe(20)
             con.execute("""INSERT INTO browser_capture_sessions
                 (id,task_id,page_key,launcher_origin,status,created_at,expires_at)
