@@ -305,7 +305,9 @@ async function renderTwinEditor(id){
   const allowProjects=new Set(originalRules.filter(g=>g.subject_type==='project'&&g.effect==='allow').map(g=>g.subject_key));
   const allowSources=new Set(originalRules.filter(g=>g.subject_type==='source'&&g.effect==='allow').map(g=>g.subject_key));
   let allowGlobal=originalRules.some(g=>g.subject_type==='global'&&g.effect==='allow');
-  const preservedRules=originalRules.filter(g=>g.effect==='deny'||g.subject_type==='knowledge');
+  const excludedNotes=new Set(originalRules.filter(g=>g.effect==='deny'&&g.subject_type==='knowledge').map(g=>g.subject_key));
+  const preservedRules=originalRules.filter(g=>(g.effect==='deny'&&g.subject_type!=='knowledge')||
+    (g.effect==='allow'&&g.subject_type==='knowledge'));
   const preview=await api(`twins/${id}/preview`);
   const effective=new Set(preview.knowledge.filter(k=>!k.local_reason).map(k=>k.id));
   const groups=[...new Set(eligible.map(entryProject))];
@@ -327,9 +329,15 @@ async function renderTwinEditor(id){
       const list=eligible.filter(k=>entryProject(k)===project &&(k.title+' '+k.body).toLowerCase().includes(q))
         .filter(k=>twinFilter==='all'?true:twinFilter==='selected'?selected.has(k.id):!selected.has(k.id));
       if(!list.length)return '';
-      return `<div class="selection-group"><span>${esc(project)} · ${list.length} 篇</span><div class="selection-group-actions"><button type="button" data-select-all="${esc(project)}">全选本组</button><button type="button" data-deselect-all="${esc(project)}">取消</button></div></div>${list.map(k=>`<label class="selection-row"><input type="checkbox" data-select-entry="${k.id}" ${selected.has(k.id)?'checked':''} ${availableToTwin(k)?'':'disabled'}/><span>${esc(k.title)}${!availableToTwin(k)?`<small class="field-note">${esc(k.unavailable_reason)}</small>`:k.share_unavailable_reason?`<small class="field-note">仅本地使用：${esc(k.share_unavailable_reason)}</small>`:''}</span></label>`).join('')}`;
+      return `<div class="selection-group"><span>${esc(project)} · ${list.length} 篇</span><div class="selection-group-actions"><button type="button" data-select-all="${esc(project)}">全选本组</button><button type="button" data-deselect-all="${esc(project)}">取消</button></div></div>${list.map(k=>`<label class="selection-row"><input type="checkbox" data-select-entry="${k.id}" ${selected.has(k.id)?'checked':''} ${availableToTwin(k)?'':'disabled'}/><span>${esc(k.title)}${!availableToTwin(k)?`<small class="field-note">${esc(k.unavailable_reason)}</small>`:k.share_unavailable_reason?`<small class="field-note">仅本地使用：${esc(k.share_unavailable_reason)}</small>`:''}<button class="info-link" type="button" data-exclude-note="${k.id}">${excludedNotes.has(String(k.id))?'取消排除':'排除此知识'}</button></span></label>`).join('')}`;
     }).join(''):emptyState('book','暂无可分配知识','请先在知识库生成或创建知识。');
     el('selection-list').querySelectorAll('[data-select-entry]').forEach(b=>b.onchange=()=>{const v=Number(b.dataset.selectEntry);if(b.checked)selected.add(v);else selected.delete(v);state.dirty=true;updateCounts()});
+    el('selection-list').querySelectorAll('[data-exclude-note]').forEach(b=>b.onclick=e=>{
+      e.preventDefault();e.stopPropagation();
+      const id=b.dataset.excludeNote;
+      if(excludedNotes.has(id))excludedNotes.delete(id);else excludedNotes.add(id);
+      state.dirty=true;renderSelection();
+    });
     el('selection-list').querySelectorAll('[data-select-all]').forEach(b=>b.onclick=e=>{
       e.preventDefault();
       const p=b.dataset.selectAll;
@@ -369,6 +377,7 @@ async function renderTwinEditor(id){
     const name=el('twin-edit-name').value.trim();if(!name){notify('名称不能为空');return}
     const valid=[...selected].filter(v=>availableToTwin(eligible.find(k=>k.id===v)||{}));
     const grants=[...preservedRules,
+      ...[...excludedNotes].map(key=>({subject_type:'knowledge',subject_key:key,effect:'deny'})),
       ...[...allowProjects].map(key=>({subject_type:'project',subject_key:key,effect:'allow'})),
       ...[...allowSources].map(key=>({subject_type:'source',subject_key:key,effect:'allow'})),
       ...(allowGlobal?[{subject_type:'global',subject_key:'*',effect:'allow'}]:[])];
