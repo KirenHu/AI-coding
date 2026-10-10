@@ -8,6 +8,8 @@ No employee data or enterprise credentials are involved.
 from __future__ import annotations
 
 import json
+import io
+import zipfile
 import os
 import re
 import subprocess
@@ -105,6 +107,19 @@ def main() -> int:
                     with opener.open(Request('http://127.0.0.1:8765/api/settings', headers=headers), timeout=5) as response:
                         settings = json.load(response)
                     assert settings['edition'] == 'personal', settings
+                    # The extension must be delivered inside the real packaged
+                    # application, not only available in the source checkout.
+                    with opener.open(Request('http://127.0.0.1:8765/api/capture/status',
+                                             headers=headers),timeout=5) as response:
+                        capture_settings=json.load(response)
+                    assert capture_settings['enabled'] is False, capture_settings
+                    with opener.open(Request('http://127.0.0.1:8765/api/capture/extension.zip',
+                                             headers=headers),timeout=5) as response:
+                        bundled=response.read()
+                    with zipfile.ZipFile(io.BytesIO(bundled)) as zipped:
+                        assert all(name in zipped.namelist() for name in
+                                   ('manifest.json','background.js','content.js','popup.js','popup.html'))
+                    print('PASS: native app includes the disabled-by-default browser extension ZIP')
                     assert not settings['storage_error'] and not settings['model_error'], settings
                     if sys.platform in ('darwin', 'win32'):
                         expected_storage = '系统钥匙串' if sys.platform == 'darwin' else 'Windows 凭据管理器'
