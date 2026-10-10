@@ -24,6 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
 from .collector import Collector
+from .browser_capture import BrowserCapture, CaptureRejected
 from .config import database_path, codex_sessions_path, claude_projects_path
 from .db import Database
 from .knowledge import KIND_LABELS
@@ -146,10 +147,52 @@ class EditionInput(BaseModel):
     edition: Literal['personal','enterprise']
 
 
+class BrowserCaptureSettingsInput(BaseModel):
+    enabled: bool
+    allow_ai: bool = False
+
+
+class BrowserHeartbeatInput(BaseModel):
+    browser: str = Field(default="Chromium",max_length=50)
+    version: str = Field(default="",max_length=40)
+
+
+class BrowserSignalInput(BaseModel):
+    ticket: str = Field(min_length=30,max_length=4500)
+    source_origin: str = Field(min_length=8,max_length=200)
+
+
+class BrowserBindInput(BaseModel):
+    session_id: str = Field(min_length=16,max_length=80)
+    tab_id: int = Field(ge=0)
+    document_id: str = Field(min_length=1,max_length=128)
+    page_url: str = Field(min_length=8,max_length=2048)
+
+
+class BrowserEventInput(BrowserBindInput):
+    events: list[dict] = Field(min_length=1,max_length=40)
+
+
+class BrowserNavigationInput(BaseModel):
+    session_id: str = Field(min_length=16,max_length=80)
+    tab_id: int = Field(ge=0)
+    document_id: str = Field(min_length=1,max_length=128)
+    to_url: str = Field(default="",max_length=2048)
+    reason: str = Field(default="navigation",max_length=80)
+
+
+class BrowserStopInput(BaseModel):
+    session_id: str = Field(min_length=16,max_length=80)
+    tab_id: int = Field(ge=0)
+    document_id: str = Field(min_length=1,max_length=128)
+    reason: str = Field(default="manual",max_length=80)
+
+
 def create_app(path: Path | None = None, *, start_worker: bool = True, interval: int = 20,
                inference_client: GatewayClient | None = None, publishing_client=None, secret_store=None) -> FastAPI:
     db = Database(path or database_path())
     collector = Collector(db, interval=interval)
+    browser_capture = BrowserCapture(db)
     saved_url = db.setting("enterprise_url") or os.getenv('WORKTWIN_SERVER_URL', '')
     secure = secret_store or DesktopSecrets(db.path)
     storage_error = ''
@@ -194,12 +237,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
 
     @app.middleware("http")
     async def local_api_guard(request: Request, call_next):
-        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+        if (request.url.path.startswith("/api/") and request.url.path != "/api/health"
+                and not request.url.path.startswith("/api/capture/ext/")):
             token = request.headers.get("X-Worktwin-Token", "")
             if not secrets.compare_digest(token, local_token):
                 return JSONResponse({"detail": "缺少本地授权令牌"}, status_code=403)
         response = await call_next(request)
-        if request.method in ("POST", "PUT", "DELETE") and request.url.path.startswith("/api/") and response.status_code < 400 and publisher.client.configured:
+        if (request.method in ("POST", "PUT", "DELETE") and request.url.path.startswith("/api/")
+                and not request.url.path.startswith("/api/capture/")
+                and response.status_code < 400 and publisher.client.configured):
             from starlette.concurrency import run_in_threadpool
             await run_in_threadpool(publisher.sync)
         # The dashboard contains a session token. Do not allow it to be framed
@@ -212,6 +258,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
 
     app.state.publisher = publisher
     app.state.db = db
+    app.state.browser_capture = browser_capture
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
     app.state.model = model_client
@@ -242,6 +289,85 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def health():
         return {"ok": True, "app": "WorkTwin Collector", "cloud_sync": publisher.client.configured, "version": __version__,
                 "enterprise_model": model_client.configured}
+
+    # Browser capture: dashboard routes require the existing local UI token.
+    # Plugin routes deliberately use a *different*, explicitly paired secret.
+    # No workflow-supplied URL/command is sufficient to start observation.
+    def capture_result(fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except CaptureRejected as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    def capture_extension_token(x_worktwin_capture_key: str = Header(default="")):
+        capture_result(browser_capture.extension, x_worktwin_capture_key)
+        return x_worktwin_capture_key
+
+    @app.get("/api/capture/status",dependencies=[Depends(authorized)])
+    def browser_capture_status():
+        return browser_capture.settings()
+
+    @app.put("/api/capture/settings",dependencies=[Depends(authorized)])
+    def browser_capture_settings(payload:BrowserCaptureSettingsInput):
+        return browser_capture.configure(payload.enabled,payload.allow_ai)
+
+    @app.post("/api/capture/pair",dependencies=[Depends(authorized)])
+    def browser_capture_pair():
+        return {"pairing_token": capture_result(browser_capture.pair),
+                "base_url":"http://127.0.0.1:8765",
+                "note":"一次性显示；请仅填写在 WorkTwin 插件弹窗中"}
+
+    @app.get("/api/capture/extension.zip",dependencies=[Depends(authorized)])
+    def browser_capture_extension_zip():
+        folder = STATIC / "extension"
+        if not folder.is_dir():
+            raise HTTPException(503,"当前安装包未包含浏览器插件")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED) as archive:
+            for file in sorted(folder.glob("*")):
+                if file.is_file():
+                    archive.write(file,file.name)
+        return Response(buf.getvalue(),media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="WorkTwin-Browser-Extension.zip"',
+                     "Cache-Control":"no-store"})
+
+    @app.get("/api/capture/sessions/{capture_id}",dependencies=[Depends(authorized)])
+    def browser_capture_trace(capture_id:str):
+        return capture_result(browser_capture.trace,capture_id)
+
+    @app.post("/api/capture/ext/heartbeat")
+    def browser_capture_heartbeat(payload:BrowserHeartbeatInput,
+                                  token:str=Depends(capture_extension_token)):
+        return capture_result(browser_capture.heartbeat,token,payload.browser,payload.version)
+
+    @app.post("/api/capture/ext/signal")
+    def browser_capture_signal(payload:BrowserSignalInput,
+                               token:str=Depends(capture_extension_token)):
+        return capture_result(browser_capture.signal,token,payload.ticket,payload.source_origin)
+
+    @app.post("/api/capture/ext/bind")
+    def browser_capture_bind(payload:BrowserBindInput,
+                             token:str=Depends(capture_extension_token)):
+        return capture_result(browser_capture.bind,token,payload.session_id,
+                              payload.tab_id,payload.document_id,payload.page_url)
+
+    @app.post("/api/capture/ext/events")
+    def browser_capture_events(payload:BrowserEventInput,
+                               token:str=Depends(capture_extension_token)):
+        return capture_result(browser_capture.events,token,payload.session_id,
+                              payload.tab_id,payload.document_id,payload.page_url,payload.events)
+
+    @app.post("/api/capture/ext/navigation")
+    def browser_capture_navigation(payload:BrowserNavigationInput,
+                                   token:str=Depends(capture_extension_token)):
+        return capture_result(browser_capture.navigation,token,payload.session_id,
+                              payload.tab_id,payload.document_id,payload.to_url,payload.reason)
+
+    @app.post("/api/capture/ext/stop")
+    def browser_capture_stop(payload:BrowserStopInput,
+                             token:str=Depends(capture_extension_token)):
+        return capture_result(browser_capture.end_observation,token,payload.session_id,
+                              payload.tab_id,payload.document_id,payload.reason)
 
     @app.post('/api/shutdown', dependencies=[Depends(authorized)])
     def shutdown():
