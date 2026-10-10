@@ -161,17 +161,29 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   }
 });
 chrome.webNavigation.onCreatedNavigationTarget.addListener(details=>{
-  // Browser-provided sourceTabId is stronger than tab.openerTabId, which may
-  // be absent for links opened with noopener.
-  recent.set(details.tabId,{
-    tabId:details.tabId,sourceTabId:details.sourceTabId,
-    openerTabId:details.sourceTabId,url:details.url,at:Date.now()
-  });
+  // Only retain a short-lived navigation candidate from a trusted workflow
+  // page. This is not a collection session and no DOM event is transmitted.
+  chrome.tabs.get(details.sourceTabId).then(source=>{
+    const siteOrigin=site(source.url||"");
+    const trusted=(chrome.runtime.getManifest().externally_connectable?.matches||[])
+      .some(pattern=>pattern.startsWith(siteOrigin+"/") && siteOrigin);
+    if(trusted)recent.set(details.tabId,{
+      tabId:details.tabId,sourceTabId:details.sourceTabId,
+      openerTabId:details.sourceTabId,url:details.url,at:Date.now()
+    });
+  }).catch(()=>{});
 });
 chrome.tabs.onCreated.addListener(tab=>{
-  if(tab.openerTabId!==undefined)recent.set(tab.id,{
-    tabId:tab.id,openerTabId:tab.openerTabId,url:tab.pendingUrl||"",at:Date.now()
-  });
+  if(tab.openerTabId===undefined)return;
+  // Keep ephemeral navigation metadata only when the opener is the
+  // explicitly connected workflow site, not for unrelated browsing.
+  chrome.tabs.get(tab.openerTabId).then(parent=>{
+    const trusted=(chrome.runtime.getManifest().externally_connectable?.matches||[])
+      .some(pattern=>pattern.startsWith(new URL(parent.url||"about:blank").origin+"/"));
+    if(trusted)recent.set(tab.id,{
+      tabId:tab.id,openerTabId:tab.openerTabId,url:tab.pendingUrl||"",at:Date.now()
+    });
+  }).catch(()=>{});
 });
 chrome.webNavigation.onCommitted.addListener(details=>{
   if(details.frameId!==0)return;
@@ -179,7 +191,10 @@ chrome.webNavigation.onCommitted.addListener(details=>{
   const previous=recent.get(details.tabId);
   const info={...details,at:Date.now(),
     openerTabId:previous?.openerTabId,sourceTabId:previous?.sourceTabId};
-  recent.set(details.tabId,info);
+  if(previous||[...sessions.values()].some(x=>x.status==="armed" &&
+      (x.flowTab===details.tabId || x.page===page(details.url)))){
+    recent.set(details.tabId,info);
+  }
   for(const s of sessions.values()){
     if(s.status==="capturing" && s.tabId===details.tabId){
       // Even same URL reload creates a new document: stop at first committed
