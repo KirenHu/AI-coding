@@ -9,6 +9,14 @@ const content=el('page-content');
 let toastTimer;
 function notify(message){const t=el('toast');t.textContent=message;t.className='show';clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.className='',3500)}
 function formatTime(value){return value?String(value).replace('T',' ').slice(0,16):'—'}
+function localUpdateTime(value){
+  if(!value)return '—';
+  const utc=String(value).replace(' ','T');
+  const parsed=new Date(utc.endsWith('Z')||/[+-]\d\d:\d\d$/.test(utc)?utc:utc+'Z');
+  return Number.isNaN(parsed.getTime())?formatTime(value):
+    parsed.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',
+      hour:'2-digit',minute:'2-digit',hour12:false});
+}
 function short(value,length=90){const s=String(value||'').replace(/\s+/g,' ').trim();return esc(s.length>length?s.slice(0,length)+'…':s)}
 function pageHeader(eyebrow,title,description,action=''){return `<div class="page-title-row"><div><div class="eyebrow">${esc(eyebrow)}</div><h1 class="page-title">${esc(title)}</h1><p class="page-caption">${esc(description)}</p></div>${action}</div>`}
 function emptyState(ico,title,description,action=''){return `<div class="empty-state"><div class="empty-graphic">${icon(ico)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`}
@@ -353,7 +361,7 @@ async function openKnowledge(id){
   if(!closeOverlay())return;
   let k=id?state.knowledge.find(x=>x.id===id):null;
   if(id&&!k){try{k=await api(`knowledge-item/${id}`)}catch(e){notify(e.message);return}}
-  el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="知识详情"><div class="drawer-top"><small>我的知识库 / ${esc(k?entryProject(k):'新知识')}</small><div class="drawer-actions"><button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></div><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
+  el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="知识详情"><div class="drawer-top"><small>我的知识库 / ${esc(k?entryProject(k):'新知识')}</small><div class="drawer-actions">${k&&k.version>1?`<button class="btn secondary small" id="drawer-history-jump">变更日志</button><span class="soft-caption" style="white-space:nowrap">更新于 ${esc(localUpdateTime(k.updated_at))}</span>`:''}<button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></div><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
   el('drawer-mask').onclick=e=>{if(e.target.id==='drawer-mask')closeDrawer()};el('drawer-close').onclick=closeDrawer;
   document.addEventListener('keydown',onEscape);
   const details=el('drawer-inner'),footer=el('drawer-bottom');
@@ -362,7 +370,7 @@ async function openKnowledge(id){
   const relations=k?await api(`knowledge/${k.id}/relations`):null;
   const versions=k?await api(`knowledge/${k.id}/history`):[];
   function linkedSection(){if(!relations)return '';const groups=[['文中链接',relations.outgoing],['提到这篇的知识',relations.backlinks],['同一份资料的其他知识',relations.same_source]];return `<section class="source-reference"><h3>关联知识</h3>${groups.filter(([_,rows])=>rows.length).map(([name,rows])=>`<p class="soft-caption">${name}</p>${rows.map(r=>`<button class="info-link relation-link" data-open-knowledge="${r.id}">${esc(r.title)} ${icon('arrow')}</button>`).join('')}`).join('')||'<p class="soft-caption">暂无已确认的关联。编辑时可用 [[K编号|显示名称]] 添加链接。</p>'}${relations.unresolved_ids.length?'<p class="field-note">部分链接已失效或知识需要复核。</p>':''}</section>`}
-  function historySection(){return versions.length?`<section class="source-reference"><h3>变更历史</h3><p class="field-note">选择历史版本，将其内容复制为新的当前版本。原版本历史仍会保留，当前项目归属和来源权限不变。</p>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${formatTime(v.changed_at)} · ${esc(v.title)}</summary><div class="proposal-body">${esc(v.body)}</div><button class="btn secondary small" data-restore-version="${v.version}">回退至 v${v.version}</button></details>`).join('')}</section>`:''}
+  function historySection(){return versions.length?`<section class="source-reference" id="knowledge-history"><h3>变更历史</h3><p class="field-note">选择历史版本，将其内容复制为新的当前版本。原版本历史仍会保留，当前项目归属和来源权限不变。</p>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${formatTime(v.changed_at)} · ${esc(v.title)}</summary><div class="proposal-body">${esc(v.body)}</div><button class="btn secondary small" data-restore-version="${v.version}">回退至 v${v.version}</button></details>`).join('')}</section>`:''}
   function referenceRows(){return sources.length?`<section class="source-reference"><h3>来源依据 <span class="soft-caption">${sources.length} 条</span></h3>${sources.map((e,i)=>`<div class="reference-row"><div class="ref-title">${icon('file')} ${esc(e.document_title)}</div><div class="ref-quote">${short(e.quote,550)}</div>${!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':e.superseded?'<span class="state-label grey">旧版历史引用</span>':`<button data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`}</div>`).join('')}</section>`:''}
   function view(){details.innerHTML=`<div class="drawer-category"><span class="page-icon">${icon('book')}</span> ${esc(kindNames[k?.kind]||'个人知识')}</div><h1 class="drawer-title">${esc(k?.title||'新知识')}</h1><div class="drawer-meta">${k?.needs_review?'<span class="state-label warn">原始依据待核实</span>':k?.status==='confirmed'?(k?.created_by==='enterprise_ai'?'<span class="state-label">AI 自动生效</span>':'<span class="state-label">已人工确认</span>'):k?.status==='archived'?'<span class="state-label grey">已归档</span>':'<span class="state-label grey">待确认</span>'}<span>${esc(entryProject(k||{evidence:[]}))}</span><span>${k?'版本 '+k.version:''}</span></div><section class="knowledge-scope"><b>适用范围</b><p>${esc(scopeNames[k?.scope]||'范围待核对')} · ${esc(k?.scope_detail||'请核对该要求适用于哪个项目、对象或条件')}</p><b>主题</b><p>${esc(k?.topic||'待核对')}</p>${k?.quality_reason?`<p class="field-note">${esc(k.quality_reason)}</p>`:''}${k?.outcome!=='none'&&outcomeNames[k?.outcome]?`<span class="state-label warn">${esc(outcomeNames[k.outcome])}</span>`:''}</section><div class="drawer-body markdown-body">${k?.rendered_body||esc(k?.body||'')}</div>${referenceRows()}${linkedSection()}${historySection()}`;
     footer.innerHTML=`${k?.status==='archived'?'<button class="btn secondary" id="restore-entry">恢复为待确认</button>':k?'<button class="btn secondary" id="archive-entry">归档知识</button>':''}${k&&(k.kind==='preference'||k.status==='archived')?'<button class="btn danger" id="delete-entry">彻底删除</button>':''}${k&&k.status==='draft'&&k.scope!=='unknown'&&k.quality==='useful'?'<button class="btn secondary" id="confirm-entry">确认内容</button>':''}${k&&k.quality!=='noise'?'<button class="btn secondary" id="disable-entry">停用知识</button>':''}<button class="btn" id="edit-entry">${icon('file')} 编辑内容</button>`;
@@ -400,6 +408,10 @@ async function openKnowledge(id){
     details.querySelectorAll('[data-read-source]').forEach(x=>x.onclick=()=>showDocument(Number(x.dataset.readSource)));
   }
   if(k)view();else edit();
+  el('drawer-history-jump')?.addEventListener('click',()=>{
+    if(!el('knowledge-history'))view();
+    el('knowledge-history')?.scrollIntoView({behavior:'smooth',block:'start'});
+  });
 }
 async function showDocument(id){
   try{
