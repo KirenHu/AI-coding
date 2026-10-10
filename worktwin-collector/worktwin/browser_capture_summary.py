@@ -22,6 +22,10 @@ def actions_from_events(rows):
         if r["kind"] not in ("click","change","submit","feedback","navigation","tab_closed"):
             continue
         kind,label=r["kind"],str(r["label"] or "")[:90]
+        for prefix in ("按钮：","字段：","链接：","控件："):
+            if label.startswith(prefix):
+                label=label[len(prefix):]
+                break
         if label=="[隐藏]":
             label=""
         if kind=="feedback":
