@@ -881,7 +881,6 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
                 raise HTTPException(404,'分身不存在')
             rows=effective_notes(con,twin_id)
-            excluded={r[0] for r in con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?',(twin_id,))}
             # Also show disabled explicit pins for actionable reasons.
             disabled=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,)) if r['id'] not in {k['id'] for k in rows}]
             rows += disabled
@@ -950,7 +949,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 FROM twin_grants WHERE twin_id=? ORDER BY subject_type,subject_key""",(twin_id,))]
             return {**dict(row),"knowledge_ids":selected,"grants":grants}
 
-    @app.get('/api/twins/grant-options')
+    @app.get('/api/twin-grant-options')
     def twin_grant_options():
         with db.connect() as con:
             return grant_options(con)
