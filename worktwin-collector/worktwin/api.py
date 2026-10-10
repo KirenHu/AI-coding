@@ -34,6 +34,8 @@ from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRunt
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
 from .twin_access import effective_notes, grant_options, replace_grants
+from .decision_model import DecisionRouter, JevDecisionModel
+from .model_settings import validate_url
 from .answers import answer_from_knowledge
 from .publishing import Publisher, PublishingClient
 from . import __version__
@@ -124,6 +126,13 @@ class TwinInput(BaseModel):
     knowledge_ids: list[int] | None = Field(default=None,max_length=1500)
 
 
+class DecisionModelInput(BaseModel):
+    provider: Literal['main','jev','chat'] = 'main'
+    base_url: str = Field(default='',max_length=300)
+    model: str = Field(default='',max_length=150)
+    api_key: str = Field(default='',max_length=2000)
+
+
 class TwinGrantInput(BaseModel):
     subject_type: Literal['project','source','global','knowledge']
     subject_key: str = Field(min_length=1,max_length=1000)
@@ -177,7 +186,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     enterprise = GatewayClient(url=saved_url,token=saved_token) if saved_url and share_active else GatewayClient(url='',token='')
     model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
-    knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
+    decision_router=DecisionRouter(db,secure,model_client)
+    knowledge_worker = KnowledgeWorker(db, client=model_client,
+                                       decision_router=decision_router, interval=max(interval, 3))
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -227,6 +238,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
     app.state.model = model_client
+    app.state.decision_router = decision_router
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
     app.mount('/mcp',mcp_app,name='twin-mcp')
 
@@ -664,7 +676,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         from .automation import acceptance_status
         with db.connect() as con:
             automation=acceptance_status(con,model_client)
-        return {"enterprise_model_ready": model_client.configured,'knowledge_automation':{"ready":bool(model_client.configured),"real_data_evaluated":automation["ready"],"reason":"在用户已授权的数据源内自动维护知识；跨来源项目识别不足时保持隔离"},
+        return {"decision_model":decision_router.config(),
+                "enterprise_model_ready": model_client.configured,'knowledge_automation':{"ready":bool(model_client.configured),"real_data_evaluated":automation["ready"],"reason":"在用户已授权的数据源内自动维护知识；跨来源项目识别不足时保持隔离"},
                 "edition":model_client.mode,"edition_selected":bool(db.setting('edition')),
                 "model_status":model_client.status,"model_error":model_client.error,
                 "model_name":getattr(model_client.client,'model','') or db.setting('enterprise_model_name'),
@@ -741,6 +754,42 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         except Exception as exc:
             message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '无法读取模型密钥，请解锁系统安全存储或重新填写 API Key'
             raise HTTPException(400,message+'；也可手动填写模型名称') from None
+
+    @app.put('/api/model/decision',dependencies=[Depends(authorized)])
+    def save_personal_decision(payload: DecisionModelInput):
+        if model_client.mode!='personal':
+            raise HTTPException(403,'企业判断模型只能由企业管理员统一设置')
+        previous=decision_router.config()
+        if payload.provider=='main':
+            secure.set('decision_model_key','')
+            for field in ('decision_base_url','decision_model'):
+                db.set_setting(field,'')
+            db.set_setting('decision_provider','main')
+            return {'provider':'main','configured':False}
+        try:
+            url=validate_url(payload.base_url)
+            if not payload.api_key and (payload.provider!=previous['provider'] or url!=previous.get('base_url')):
+                raise ValueError('切换模型类型或服务地址时需要填写 API Key')
+            key=payload.api_key or secure.get('decision_model_key')
+            if not key or not payload.model:
+                raise ValueError('判断模型及密钥不能为空')
+            if payload.provider=='jev':
+                candidate=JevDecisionModel(url,key,payload.model)
+                candidate.test()
+            else:
+                candidate=PersonalModel(url,key,payload.model)
+                candidate.chat([{'role':'user','content':'请只回复 OK'}],max_tokens=MODEL_TEST_TOKENS)
+        except Exception as exc:
+            message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '判断模型连接失败'
+            raise HTTPException(400,message+'；保持原配置') from None
+        try:
+            secure.set('decision_model_key',key)
+        except Exception:
+            raise HTTPException(400,'判断模型调用成功，但无法安全保存密钥；配置未更改') from None
+        db.set_setting('decision_base_url',url)
+        db.set_setting('decision_model',payload.model)
+        db.set_setting('decision_provider',payload.provider)
+        return {'provider':payload.provider,'configured':True,'model':payload.model}
 
     @app.post('/api/model/test',dependencies=[Depends(authorized)])
     def test_current_model():
@@ -825,6 +874,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         db.set_setting('enterprise_model_name',result.get('model',''))
         model_client.status,model_client.error='connected',''
         return result
+
+    @app.put('/api/admin/decision-model',dependencies=[Depends(authorized)])
+    def admin_decision_model(payload: DecisionModelInput):
+        return admin_request('PUT','decision-model',payload.model_dump())
 
     @app.post('/api/admin/models',dependencies=[Depends(authorized)])
     def admin_models(payload: ModelListInput):
