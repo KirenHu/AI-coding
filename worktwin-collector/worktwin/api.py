@@ -746,6 +746,37 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,'知识不存在')
             return result
 
+    @app.post("/api/knowledge/{knowledge_id}/versions/{version}/restore", dependencies=[Depends(authorized)])
+    def restore_knowledge_version(knowledge_id: int, version: int):
+        """Copy a saved revision into a NEW current version; never rewrite history.
+
+        Project identity and source permissions belong to the current evidence
+        graph, so rolling back the text must not silently widen twin access.
+        """
+        with db.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            current=con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
+            if not current:
+                raise HTTPException(404,"知识不存在")
+            previous=con.execute("""SELECT * FROM knowledge_history
+                WHERE knowledge_id=? AND version=?""",(knowledge_id,version)).fetchone()
+            if not previous or version>=current['version']:
+                raise HTTPException(404,"历史版本不存在")
+            snapshot_history(con,current)
+            con.execute("""UPDATE knowledge SET title=?,body=?,kind=?,status=?,topic=?,
+                scope_detail=?,quality=?,outcome=?,created_by='human',attribution='human',
+                review_hold=0,needs_review=0,version=version+1,updated_at=datetime('now')
+                WHERE id=?""",
+                (previous['title'],previous['body'],previous['kind'],previous['status'],
+                 previous['topic'],previous['scope_detail'],previous['quality'],
+                 previous['outcome'],knowledge_id))
+            # The restored article keeps the latest project assignment and its
+            # unchanged source grants; downstream twin/MCP resolvers read them.
+            review_flags(con,[knowledge_id])
+            new_version=current['version']+1
+        db.event("knowledge_version_restored",f"知识 {knowledge_id} 从 v{version} 回退至 v{new_version}")
+        return {"restored":True,"from_version":version,"version":new_version}
+
     @app.get("/api/knowledge/{knowledge_id}/history")
     def history(knowledge_id: int):
         with db.connect() as con:
