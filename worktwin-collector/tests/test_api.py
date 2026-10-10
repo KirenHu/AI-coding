@@ -88,7 +88,7 @@ def test_history_restore_creates_new_version_and_preserves_scope(tmp_path):
 def test_restoring_version_clears_stale_ai_proposal_instead_of_requiring_review(tmp_path):
     app=create_app(tmp_path/'rollback-proposal.sqlite',start_worker=False)
     with TestClient(app) as c:
-        token=re.search(r'window\\.__WORKTWIN_TOKEN__="(.*?)";',c.get('/').text).group(1)
+        token=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',c.get('/').text).group(1)
         h={'X-Worktwin-Token':token}
         kid=c.post('/api/knowledge',headers=h,json={
             'title':'旧结论','body':'旧版本的明确结论','kind':'decision',
