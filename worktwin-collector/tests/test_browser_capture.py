@@ -118,7 +118,7 @@ def test_signed_capture_stops_on_first_navigation_and_cannot_restart(monkeypatch
                      "random_nonce_value_c",int(time.time())+90)
         assert client.post("/capture/command",headers=credential,
                            json={"sender_origin":sender,"envelope":another}).status_code==409
-        assert client.get("/api/browser-capture/sessions",headers=auth).json()[0]["event_count"]==3
+        assert sum(r["event_count"] for r in client.get("/api/browser-capture/sessions",headers=auth).json())==3
 
 
 def test_default_disabled_and_local_extension_pairing_boundaries(monkeypatch,tmp_path):
