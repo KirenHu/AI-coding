@@ -111,8 +111,21 @@ async function inject(s){
   chrome.action.setBadgeText({text:"记录"});
   chrome.action.setBadgeBackgroundColor({color:"#196b59"});
 }
+async function launcherTabId(sender){
+  if(!sender?.url)throw Error("无法确认发起操作的流程网页");
+  if(Number.isInteger(sender.tab?.id))return sender.tab.id;
+  // Chrome may omit sender.tab on external messages from ordinary web pages.
+  // A uniquely matching existing tab is acceptable; never guess between tabs.
+  const candidates=(await chrome.tabs.query({})).filter(t=>
+    Number.isInteger(t.id) && t.url===sender.url);
+  if(candidates.length!==1){
+    throw Error("无法唯一识别流程平台标签页；请关闭重复的流程标签页后重试");
+  }
+  return candidates[0].id;
+}
 async function begin(envelope,sender){
-  if(!sender?.url||!sender?.tab?.id)throw Error("只能由可信流程网页的实际标签页触发");
+  if(!sender?.url)throw Error("只能由可信流程网页触发");
+  const flowTabId=await launcherTabId(sender);
   const senderOrigin=new URL(sender.url).origin;
   const answer=await call("/capture/command",{sender_origin:senderOrigin,envelope});
   if(envelope.action==="complete"){
@@ -124,7 +137,7 @@ async function begin(envelope,sender){
     await persist();
     return answer;
   }
-  const s={id:answer.session_id,page:answer.target_page,flowTab:sender.tab.id,
+  const s={id:answer.session_id,page:answer.target_page,flowTab:flowTabId,
     status:"armed",seq:0};
   sessions.set(s.id,s);
   await persist();
