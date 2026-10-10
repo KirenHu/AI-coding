@@ -281,7 +281,7 @@ async function renderTwins(){
   state.twins=await api('twins');
   if(state.twinId && !state.twins.some(t=>t.id===state.twinId))state.twinId=null;
   if(state.twinId){await renderTwinEditor(state.twinId);return}
-  content.innerHTML=pageHeader('DIGITAL TWINS','我的数字分身','为不同协作者创建分身，只选择你愿意交给它使用的知识。',`<button class="btn" id="add-twin">${icon('plus')} 创建数字分身</button>`)+
+  content.innerHTML=pageHeader('DIGITAL TWINS','我的数字分身','为不同协作者创建分身，按项目或来源授权一次，后续新知识自动继承。',`<button class="btn" id="add-twin">${icon('plus')} 创建数字分身</button>`)+
     (state.twins.length?`<div class="twin-cards">${state.twins.map((t,i)=>`<button class="twin-card" data-twin="${t.id}"><div class="twin-icon">${icon('user')}</div><div class="twin-title">${esc(t.name)}</div><div class="twin-description">${esc(t.description||'只基于你指定的知识提供回答。')}</div><div class="twin-bottom"><span>${t.knowledge_count} 篇可使用知识</span><span>配置分身 ${icon('arrow')}</span></div></button>`).join('')}</div>`:
     emptyState('users','还没有创建数字分身','创建第一个分身，并从你的知识库勾选它能够使用的内容。',`<button class="btn" id="empty-add-twin">创建第一个分身</button>`));
   el('add-twin')?.addEventListener('click',createTwin);
@@ -289,7 +289,7 @@ async function renderTwins(){
   content.querySelectorAll('[data-twin]').forEach(x=>x.onclick=()=>{state.twinId=Number(x.dataset.twin);go('twins',true)});
 }
 function createTwin(){
-  dialog('创建数字分身',`<div class="field"><label for="twin-name">分身名称</label><input id="twin-name" placeholder="例如：项目交接助手" maxlength="90" autofocus/></div><div class="field"><label for="twin-desc">给它一个用途（可选）</label><textarea id="twin-desc" rows="3" maxlength="500" placeholder="例如：回答关于项目方案、历史决策和操作方法的问题"></textarea></div><div class="permission-note">创建后，通过勾选知识决定分身能知道什么。未勾选的内容不会用于回答。</div>`,
+  dialog('创建数字分身',`<div class="field"><label for="twin-name">分身名称</label><input id="twin-name" placeholder="例如：项目交接助手" maxlength="90" autofocus/></div><div class="field"><label for="twin-desc">给它一个用途（可选）</label><textarea id="twin-desc" rows="3" maxlength="500" placeholder="例如：回答关于项目方案、历史决策和操作方法的问题"></textarea></div><div class="permission-note">创建后可选择项目或来源进行长期授权；新知识也会自动继承。仍支持逐条选择和排除。</div>`,
     `<button class="btn secondary" data-close>取消</button><button class="btn" id="submit-twin">创建并选择知识</button>`);
   el('submit-twin').onclick=async()=>{
     const name=el('twin-name').value.trim();if(!name){notify('请输入分身名称');return}
@@ -297,18 +297,24 @@ function createTwin(){
   };
 }
 async function renderTwinEditor(id){
-  const [t,knowledge]=await Promise.all([api(`twins/${id}`),loadKnowledge()]);
+  const [t,knowledge,grantOptions]=await Promise.all([api(`twins/${id}`),loadKnowledge(),api('twin-grant-options')]);
   state.knowledge=knowledge;
   const eligible=state.knowledge.filter(k=>k.status!=='archived').sort((a,b)=>entryProject(a).localeCompare(entryProject(b),'zh-CN'));
   const selected=new Set(t.knowledge_ids);
+  const originalRules=t.grants||[];
+  const allowProjects=new Set(originalRules.filter(g=>g.subject_type==='project'&&g.effect==='allow').map(g=>g.subject_key));
+  const allowSources=new Set(originalRules.filter(g=>g.subject_type==='source'&&g.effect==='allow').map(g=>g.subject_key));
+  let allowGlobal=originalRules.some(g=>g.subject_type==='global'&&g.effect==='allow');
+  const preservedRules=originalRules.filter(g=>g.effect==='deny'||g.subject_type==='knowledge');
   const preview=await api(`twins/${id}/preview`);
+  const effective=new Set(preview.knowledge.filter(k=>!k.local_reason).map(k=>k.id));
   const groups=[...new Set(eligible.map(entryProject))];
   content.innerHTML=`<div class="back-row"><button id="twins-back">← 返回数字分身</button><span>/</span><strong>${esc(t.name)}</strong></div>`+
     pageHeader('DIGITAL TWIN','配置 '+t.name,'只使用已生效、来源有效且由你授权的知识。')+
     `<div class="status-note">已保存授权 ${preview.selected_count} 篇 · 可用于本地问答 ${preview.usable_count} 篇 · 可发布 ${preview.publishable_count} 篇${preview.knowledge.some(k=>k.share_reason)?`<details><summary>查看不能发布的原因</summary>${preview.knowledge.filter(k=>k.share_reason).map(k=>`<p>${esc(k.title)}：${esc(k.share_reason)}</p>`).join('')}</details>`:''}</div>`+
     `<div class="twin-editor"><div class="twin-settings"><h2>基本信息</h2><div class="field"><label for="twin-edit-name">名称</label><input id="twin-edit-name" value="${esc(t.name)}" maxlength="90"/></div><div class="field"><label for="twin-edit-desc">使用场景</label><textarea id="twin-edit-desc" maxlength="500" rows="4">${esc(t.description)}</textarea></div><button class="btn secondary small" id="save-twin-info">保存分身配置</button>
-    <div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><label class="field-note" for="ask-scope">试问范围</label><select id="ask-scope"><option value="local">本地已保存授权</option><option value="published" ${state.shareReady?'':'disabled'}>服务端已发布版本</option></select><div class="field" style="margin-top:12px"><label for="ask-project">所属项目 / 讨论范围</label><select id="ask-project"><option value="">自动识别；范围不明时只用通用知识</option>${[...new Map(eligible.filter(k=>selected.has(k.id)&&k.project_key&&k.scope!=='global').map(k=>[k.project_key,k])).values()].map(k=>`<option value="${esc(k.project_key)}">${esc(entryProject(k))} · ${esc(scopeNames[k.scope])}</option>`).join('')}</select></div><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">模型尚未配置，请前往设置完成连接。</p>'}<div id="twin-answer"></div><div class="divider"></div><h2>分享给协作者</h2><div id="sharing-panel">正在读取分享状态…</div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
-    <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已选择 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div><div class="selection-filter-bar"><button type="button" class="selection-filter-btn active" data-twin-filter="all">全部</button><button type="button" class="selection-filter-btn" data-twin-filter="selected">仅已选 (${selected.size})</button><button type="button" class="selection-filter-btn" data-twin-filter="unselected">仅未选</button></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">名称、用途和知识授权一起保存</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
+    <div class="divider"></div><h2>知识自动继承</h2><label class="check-row"><input id="twin-auto" type="checkbox" ${t.knowledge_mode==='dynamic'?'checked':''}/> <span>自动继承已授权项目与来源的新知识</span></label><p class="field-note">授权范围只在当前数字分身内生效；原始资料授权和远程分享权限仍单独检查。</p><div id="twin-rule-editor"><p class="soft-caption">授权项目</p><div class="selection-rule-list">${grantOptions.projects.map(p=>`<label class="check-row"><input type="checkbox" data-grant-project="${esc(p.project_key)}" ${allowProjects.has(p.project_key)?'checked':''}/><span>${esc(p.name)} · ${p.knowledge_count} 篇</span></label>`).join('')||'<p class="field-note">暂无可选项目，可先授权来源。</p>'}</div><p class="soft-caption">授权来源</p><div class="selection-rule-list">${grantOptions.sources.filter(src=>src.enabled&&src.allow_ai).map(src=>`<label class="check-row"><input type="checkbox" data-grant-source="${src.id}" ${allowSources.has(String(src.id))?'checked':''}/><span>${esc(src.name)}</span></label>`).join('')||'<p class="field-note">暂无允许 AI 整理的来源。</p>'}</div><label class="check-row"><input type="checkbox" id="twin-allow-global" ${allowGlobal?'checked':''}/> <span>包含跨项目通用知识</span></label></div><div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><label class="field-note" for="ask-scope">试问范围</label><select id="ask-scope"><option value="local">本地已保存授权</option><option value="published" ${state.shareReady?'':'disabled'}>服务端已发布版本</option></select><div class="field" style="margin-top:12px"><label for="ask-project">所属项目 / 讨论范围</label><select id="ask-project"><option value="">自动识别；范围不明时只用通用知识</option>${[...new Map(eligible.filter(k=>effective.has(k.id)&&k.project_key&&k.scope!=='global').map(k=>[k.project_key,k])).values()].map(k=>`<option value="${esc(k.project_key)}">${esc(entryProject(k))} · ${esc(scopeNames[k.scope])}</option>`).join('')}</select></div><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">模型尚未配置，请前往设置完成连接。</p>'}<div id="twin-answer"></div><div class="divider"></div><h2>分享给协作者</h2><div id="sharing-panel">正在读取分享状态…</div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
+    <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已单独授权 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div><div class="selection-filter-bar"><button type="button" class="selection-filter-btn active" data-twin-filter="all">全部</button><button type="button" class="selection-filter-btn" data-twin-filter="selected">仅已选 (${selected.size})</button><button type="button" class="selection-filter-btn" data-twin-filter="unselected">仅未选</button></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">名称、用途和知识授权一起保存</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
   el('twins-back').onclick=()=>{if(!confirmDiscard())return;state.dirty=false;state.twinId=null;go('twins',true)};
   let twinFilter='all';
   function updateCounts(){
@@ -343,16 +349,32 @@ async function renderTwinEditor(id){
     renderSelection();
   });
   el('twin-search').oninput=renderSelection;renderSelection();
+  content.querySelectorAll('[data-grant-project]').forEach(box=>box.onchange=()=>{
+    if(box.checked)allowProjects.add(box.dataset.grantProject);else allowProjects.delete(box.dataset.grantProject);
+    state.dirty=true;
+  });
+  content.querySelectorAll('[data-grant-source]').forEach(box=>box.onchange=()=>{
+    if(box.checked)allowSources.add(box.dataset.grantSource);else allowSources.delete(box.dataset.grantSource);
+    state.dirty=true;
+  });
+  el('twin-allow-global').onchange=()=>{allowGlobal=el('twin-allow-global').checked;state.dirty=true};
+  el('twin-auto').onchange=()=>{state.dirty=true};
   async function saveTwin(button){
     if(button.disabled)return;
     const form=content.querySelector('.twin-editor');
-    const controls=[...form.querySelectorAll('#twin-edit-name,#twin-edit-desc,#twin-search,[data-select-entry],[data-select-all],[data-deselect-all],[data-twin-filter],#save-twin-info,#save-selections')];
+    const controls=[...form.querySelectorAll('#twin-edit-name,#twin-edit-desc,#twin-search,[data-select-entry],[data-select-all],[data-deselect-all],[data-twin-filter],[data-grant-project],[data-grant-source],#twin-auto,#twin-allow-global,#save-twin-info,#save-selections')];
     const disabled=controls.map(control=>control.disabled);
     controls.forEach(control=>control.disabled=true);
     try{
     const name=el('twin-edit-name').value.trim();if(!name){notify('名称不能为空');return}
     const valid=[...selected].filter(v=>availableToTwin(eligible.find(k=>k.id===v)||{}));
-    if(await perform(()=>api(`twins/${id}`,{method:'PUT',body:{name,description:el('twin-edit-desc').value,knowledge_ids:valid}}),null)){
+    const grants=[...preservedRules,
+      ...[...allowProjects].map(key=>({subject_type:'project',subject_key:key,effect:'allow'})),
+      ...[...allowSources].map(key=>({subject_type:'source',subject_key:key,effect:'allow'})),
+      ...(allowGlobal?[{subject_type:'global',subject_key:'*',effect:'allow'}]:[])];
+    if(await perform(()=>api(`twins/${id}`,{method:'PUT',body:{name,
+        description:el('twin-edit-desc').value,knowledge_ids:valid,
+        knowledge_mode:el('twin-auto').checked?'dynamic':'manual',grants}}),null)){
       if(!form.isConnected)return;
       state.dirty=false;notify(`分身信息和 ${valid.length} 篇知识授权已保存${valid.length<selected.size?'；不可用知识已移出授权':''}`);await go('twins',true)
     }
