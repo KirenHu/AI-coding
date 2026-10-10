@@ -241,6 +241,8 @@ def main():
                               'kind':'process','status':'confirmed'})
                         assert updated.status_code==200,updated.text
                         dashboard_page.locator('#drawer-close').click()
+                        dashboard_page.locator('[data-page="sources"]').click()
+                        eventually(lambda:dashboard_page.locator('#browser-manual-site').count()>0)
                         dashboard_page.locator('[data-page="knowledge"]').click()
                         dashboard_page.locator(f'[data-entry="{guide["id"]}"]').click()
                         eventually(lambda:dashboard_page.locator(
