@@ -198,7 +198,25 @@ async function showCaptureTrace(id){
       '<div class="capture-trace">'+(data.steps.length?data.steps.map(step=>
       '<div class="capture-trace-step"><b>'+step.step_index+'.</b> '+esc(step.summary)+'</div>').join('')
       :'<p class="soft-caption">尚未记录到可观察操作。</p>')+'</div>',
-      '<button class="btn secondary" data-close>关闭',true);
+      '<button class="btn secondary" id="capture-export">导出 Markdown</button>'+      '<button class="btn secondary" id="capture-remove">删除记录</button>'+      '<button class="btn secondary" data-close>关闭</button>',true);
+    el('capture-export').onclick=async()=>{
+      try{
+        const response=await fetch('/api/capture/sessions/'+encodeURIComponent(id)+'/export.md',{
+          headers:{'X-Worktwin-Token':window.__WORKTWIN_TOKEN__}
+        });
+        if(!response.ok)throw new Error('导出失败');
+        const blob=await response.blob(),url=URL.createObjectURL(blob);
+        const link=document.createElement('a');link.href=url;
+        link.download='WorkTwin-Capture-'+id+'.md';document.body.appendChild(link);link.click();
+        link.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);
+      }catch(e){notify(e.message)}
+    };
+    el('capture-remove').onclick=async()=>{
+      if(!confirm('彻底删除这个任务的本地操作事件与步骤？此操作无法恢复。'))return;
+      if(await perform(()=>api('capture/sessions/'+encodeURIComponent(id),{method:'DELETE'}),null)){
+        closeOverlay();notify('浏览器任务记录已删除');await go('sources',true)
+      }
+    };
   }catch(e){notify(e.message)}
 }
 
