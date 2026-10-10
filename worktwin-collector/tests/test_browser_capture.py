@@ -84,6 +84,11 @@ def test_signed_capture_stops_on_first_navigation_and_cannot_restart(monkeypatch
             assert rows[1]["label"]=="[隐藏]"
             assert rows[2]["location"]=="https://other.example.com/new"
             assert all("secret=" not in row["location"] for row in rows)
+        steps=client.get(f"/api/browser-capture/sessions/{session}/steps",headers=auth)
+        assert steps.status_code==200
+        assert steps.json()[0]["start_seq"]==1
+        assert steps.json()[0]["end_seq"]==3
+        assert steps.json()[0]["status"]=="stopped"
         complete=sign("x"*48,"complete","task42",target,sender,
                       "random_nonce_value_b",int(time.time())+90)
         done=client.post("/capture/command",headers=credential,
