@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS browser_capture_sessions (
   workflow_project_id TEXT NOT NULL DEFAULT '',
   goal TEXT NOT NULL DEFAULT '',
   target_path TEXT NOT NULL,
+  target_url_hash TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   task_state TEXT NOT NULL DEFAULT 'open',
