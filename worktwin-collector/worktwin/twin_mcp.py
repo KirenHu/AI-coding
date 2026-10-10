@@ -16,7 +16,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.responses import JSONResponse
 
-from .knowledge_policy import READY_SQL
+from .twin_access import effective_notes
 
 credential = ContextVar('worktwin_mcp_credential',default='')
 
@@ -40,9 +40,8 @@ def authorized_notes(con):
     access=grant(con,credential.get())
     if not access:
         raise ToolError('MCP 连接已关闭或凭据已失效')
-    rows=con.execute('''SELECT k.* FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-        WHERE tk.twin_id=? AND '''+READY_SQL+' ORDER BY k.updated_at DESC,k.id DESC',(access['twin_id'],)).fetchall()
-    return access,[dict(r) for r in rows]
+    rows=sorted(effective_notes(con,access['twin_id']),key=lambda k:(k['updated_at'],k['id']),reverse=True)
+    return access,rows
 
 
 def create_server(db):
