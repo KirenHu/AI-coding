@@ -124,6 +124,8 @@ class TwinInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
     description: str = Field(default="", max_length=500)
     knowledge_ids: list[int] | None = Field(default=None,max_length=1500)
+    knowledge_mode: Literal['manual','dynamic'] | None = None
+    grants: list[dict] | None = Field(default=None,max_length=300)
 
 
 class DecisionModelInput(BaseModel):
@@ -1122,6 +1124,25 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if payload.knowledge_ids is not None:
                 con.execute('DELETE FROM twin_knowledge WHERE twin_id=?',(twin_id,))
                 con.executemany('INSERT INTO twin_knowledge VALUES(?,?)',[(twin_id,k) for k in sorted(set(payload.knowledge_ids))])
+            if payload.grants is not None:
+                try:
+                    entries=[TwinGrantInput.model_validate(g).model_dump() for g in payload.grants]
+                except Exception:
+                    raise HTTPException(400,'分身授权规则格式错误') from None
+                opts=grant_options(con)
+                known_projects={p['project_key'] for p in opts['projects']}
+                known_sources={str(p['id']) for p in opts['sources']}
+                for grant in entries:
+                    kind,key=grant['subject_type'],grant['subject_key']
+                    if ((kind=='project' and key not in known_projects) or
+                        (kind=='source' and key not in known_sources) or
+                        (kind=='global' and key!='*') or
+                        (kind=='knowledge' and (not key.isdecimal() or not con.execute(
+                            'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                        raise HTTPException(400,'项目或来源授权范围无效')
+                replace_grants(con,twin_id,entries)
+            if payload.knowledge_mode is not None:
+                con.execute("UPDATE twins SET knowledge_mode=? WHERE id=?",(payload.knowledge_mode,twin_id))
         return {"updated":True}
 
     @app.delete("/api/twins/{twin_id}", dependencies=[Depends(authorized)])
