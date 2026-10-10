@@ -4,6 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+formal="${WORKTWIN_REQUIRE_NOTARIZATION:-0}"
+if [[ "$formal" == 1 ]]; then
+  : "${WORKTWIN_CODESIGN_IDENTITY:?Developer ID required}"
+  : "${WORKTWIN_NOTARY_KEY_PATH:?Notarization key required}"
+  : "${APPLE_NOTARY_KEY_ID:?Notarization key ID required}"
+  : "${APPLE_NOTARY_ISSUER_ID:?Notarization issuer required}"
+fi
+
 python3 -m venv .build-venv
 source .build-venv/bin/activate
 python -m pip install --upgrade pip
@@ -43,17 +51,26 @@ test -s "$app/Contents/Resources/third_party/rowboat/LICENSE"
 test -s "$app/Contents/Resources/third_party/rowboat/NOTICE.md"
 codesign --verify --deep --strict --all-architectures --verbose=2 "$app"
 
+if [[ "$formal" == 1 ]]; then
+  ditto -c -k --keepParent "$app" dist/WorkTwin-notary.zip
+  python desktop/notarize-macos.py dist/WorkTwin-notary.zip "$app"
+  rm -f dist/WorkTwin-notary.zip dist/WorkTwin-notary.zip.notary.json
+fi
+
 mkdir -p release
 suffix="-unsigned"
-if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
+if [[ "$formal" == 1 ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.1.9-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.2.0-macOS-$(uname -m)${suffix}.dmg"
 hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg"
 hdiutil verify "$dmg"
 
-if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
-  echo "Created signed macOS DMG: $dmg (Apple notarization is still required)."
+if [[ "$formal" == 1 ]]; then
+  codesign --force --sign "$WORKTWIN_CODESIGN_IDENTITY" --timestamp "$dmg"
+  python desktop/notarize-macos.py "$dmg" "$dmg"
+  codesign --verify --strict --verbose=2 "$dmg"
+  echo "Created Developer ID signed and notarized macOS DMG: $dmg"
 else
   echo "::warning::Created ad-hoc signed DMG: $dmg"
   echo "::warning::Chrome-downloaded apps remain blocked by macOS Gatekeeper without a trusted Developer ID and Apple notarization."

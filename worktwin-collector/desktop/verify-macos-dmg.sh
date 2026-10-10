@@ -3,13 +3,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-images=(release/WorkTwin-Collector-1.1.9-macOS-$(uname -m)*.dmg)
+images=(release/WorkTwin-Collector-1.2.0-macOS-$(uname -m)*.dmg)
 if (( ${#images[@]} != 1 )); then
   echo "Expected one macOS DMG for $(uname -m), got ${#images[@]}" >&2
   exit 1
 fi
 dmg="${images[1]}"
 hdiutil verify "$dmg"
+if [[ "${WORKTWIN_REQUIRE_NOTARIZATION:-0}" == 1 ]]; then
+  if [[ "$(spctl --status)" != "assessments enabled" ]]; then
+    echo "::error::Gatekeeper is disabled; refusing to claim trusted distribution"
+    exit 1
+  fi
+  [[ "$dmg" != *-unsigned.dmg ]]
+  codesign --verify --strict --verbose=2 "$dmg"
+  xcrun stapler validate "$dmg"
+  spctl --assess --type open --context context:primary-signature --verbose=3 "$dmg"
+fi
 
 temp="$(mktemp -d "${TMPDIR:-/tmp/}worktwin-dmg-XXXXXX")"
 mount="$temp/mount"
@@ -37,7 +47,13 @@ mkdir -p "$temp/Applications"
 ditto "$app" "$temp/Applications/WorkTwin.app"
 staged="$temp/Applications/WorkTwin.app"
 codesign --verify --deep --strict --all-architectures --verbose=2 "$staged"
-python scripts/smoke_desktop.py "$staged/Contents/MacOS/WorkTwin"
+if [[ "${WORKTWIN_REQUIRE_NOTARIZATION:-0}" == 1 ]]; then
+  xcrun stapler validate "$staged"
+  signature="$(codesign -dv --verbose=4 "$staged" 2>&1)"
+  [[ "$signature" == *"Authority=Developer ID Application:"* ]]
+  [[ "$signature" == *"(runtime)"* ]]
+  [[ "$signature" == *"Timestamp="* ]]
+fi
 
 # Simulate a browser-downloaded app. Ad-hoc signing verifies binary integrity
 # but does not confer Developer ID trust; be explicit rather than claiming that
@@ -46,12 +62,14 @@ xattr -w com.apple.quarantine "0081;00000000;WorkTwin-CI;" "$staged"
 if spctl --assess --type execute --verbose=3 "$staged"; then
   echo "Gatekeeper assessment: accepted"
 else
-  if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
+  if [[ "${WORKTWIN_REQUIRE_NOTARIZATION:-0}" == 1 ]]; then
     echo "::error::Developer ID build failed Gatekeeper assessment"
     exit 1
   fi
   echo "::warning::Gatekeeper assessment: rejected (expected for unsigned, ad-hoc signed build)."
   echo "::warning::Requires Developer ID signing and Apple notarization for ordinary browser-downloaded installation."
 fi
+
+python scripts/smoke_desktop.py "$staged/Contents/MacOS/WorkTwin"
 
 echo "PASS: DMG checksum/container, mounted app, signature, copied app and native runtime"
