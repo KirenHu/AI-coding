@@ -384,6 +384,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                                offset: int = Query(0,ge=0)):
         return browser_capture.events(session_id,limit=limit,offset=offset)
 
+    @app.get("/api/browser-capture/sessions/{session_id}/site-manual",dependencies=[Depends(authorized)])
+    def browser_capture_site_manual(session_id: str):
+        with db.connect() as con:
+            manual=con.execute("""SELECT m.site,m.knowledge_id
+                FROM browser_capture_sessions s
+                JOIN browser_site_manuals m ON m.site=s.page_key
+                WHERE s.id=? AND s.mode='manual'""",(session_id,)).fetchone()
+            return dict(manual) if manual else {"knowledge_id":None}
+
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
         return browser_capture.steps(session_id)

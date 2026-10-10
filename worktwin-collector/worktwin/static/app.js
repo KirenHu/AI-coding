@@ -85,7 +85,7 @@ async function renderSources(){
       '<div class="field-note">插件状态：'+(capture.extension_connected?'已连接':'未连接（无法据此区分未安装和未运行）')+
       ' · 进行中任务：'+capture.active_tasks+' · 流程平台：'+(capture.flow_configured?'已配置':'尚未配置')+'</div>'+
       `<div class="divider" style="margin:18px 0"></div><h3>手动记录指定网站</h3>
-      <p class="soft-caption">输入地址并开启，然后切换到对应的活动标签页。只记录这一标签页；同一网站内跳转继续记录，离开网站或手动结束立即停止。</p>
+      <p class="soft-caption">输入地址并开启，然后切换到对应的活动标签页。只记录这一标签页；同一网站内跳转继续记录，离开网站或手动结束立即停止。结束后按网站自动维护一篇个人操作手册，原始记录仍可单独查看。</p>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
         <input id="browser-manual-site" style="min-width:240px;flex:1" placeholder="https://github.com" value="${esc(capture.manual_site||'')}" ${capture.manual_enabled?'disabled':''}/>
         <button class="btn ${capture.manual_enabled?'secondary':''}" id="browser-manual-toggle">${capture.manual_enabled?'结束记录':'开始记录'}</button>
@@ -205,9 +205,10 @@ async function browserCaptureHistory(){
   el('browser-records')?.scrollIntoView({behavior:'smooth',block:'start'});
 }
 async function browserSessionDetails(sessionId,offset=0){
-  const [summary,events]=await Promise.all([
+  const [summary,events,siteManual]=await Promise.all([
     api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/summary'),
-    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/events?limit=100&offset='+offset)
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/events?limit=100&offset='+offset),
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/site-manual')
   ]);
   const kindNames={click:'点击',change:'修改',submit:'尝试提交',feedback:'页面提示',
     navigation:'页面导航',tab_closed:'关闭标签页'};
@@ -217,7 +218,8 @@ async function browserSessionDetails(sessionId,offset=0){
       <p>${esc(summary.summary||'尚未生成操作摘要')}</p>
       <small class="soft-caption">依据事件：${esc((summary.evidence_seq||[]).join('、')||'暂无')} ·
       ${summary.summary_source==='model'?'AI 概括':'本地规则概括'}</small>
-      <div style="margin-top:10px"><button class="btn secondary small" id="capture-resummarize">刷新摘要</button></div>
+      <div style="margin-top:10px"><button class="btn secondary small" id="capture-resummarize">刷新摘要</button>
+      ${siteManual.knowledge_id?`<button class="btn secondary small" id="capture-open-guide">查看网站操作手册</button>`:''}</div>
     </section>
     <section class="source-reference"><h3>完整操作时间线</h3>
       ${events.length?events.map(e=>`<div style="padding:10px 0;border-bottom:1px solid #eee">
@@ -231,6 +233,11 @@ async function browserSessionDetails(sessionId,offset=0){
       </div>
     </section><p class="field-note">仅保留脱敏动作、控件标签及页面反馈；不采集输入值、完整 DOM 或视频。</p>`;
   dialog('网页操作详情',body,'',true);
+  el('capture-open-guide')?.addEventListener('click',async()=>{
+    closeOverlay(true);
+    await go('knowledge',true);
+    await openKnowledge(siteManual.knowledge_id);
+  });
   el('capture-resummarize')?.addEventListener('click',async()=>{
     await api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/summarize',{method:'POST'});
     await browserSessionDetails(sessionId,offset);
