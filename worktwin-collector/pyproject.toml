@@ -31,7 +31,7 @@ package = ["pyinstaller>=6"]
 worktwin = "worktwin.__main__:main"
 
 [tool.setuptools.package-data]
-worktwin = ["static/*"]
+worktwin = ["static/*", "static/extension/*"]
 
 [tool.setuptools.data-files]
 "share/worktwin/third_party/rowboat" = ["third_party/rowboat/LICENSE", "third_party/rowboat/NOTICE.md"]
