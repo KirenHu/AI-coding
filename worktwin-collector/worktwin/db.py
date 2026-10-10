@@ -173,6 +173,59 @@ CREATE TABLE IF NOT EXISTS knowledge_acceptance (
   report_json TEXT NOT NULL,
   accepted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Browser sessions are intentionally separate from file/AI coding documents.
+-- No raw DOM, typed values, cookies, URLs with query strings, or screenshots.
+CREATE TABLE IF NOT EXISTS browser_capture_signals (
+  issuer TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY(issuer,nonce)
+);
+CREATE TABLE IF NOT EXISTS browser_capture_sessions (
+  id TEXT PRIMARY KEY,
+  issuer TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  workflow_project_id TEXT NOT NULL DEFAULT '',
+  goal TEXT NOT NULL DEFAULT '',
+  target_path TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  task_state TEXT NOT NULL DEFAULT 'open',
+  capture_state TEXT NOT NULL DEFAULT 'pending',
+  bound_tab_id INTEGER,
+  bound_document_id TEXT,
+  started_at INTEGER,
+  stopped_at INTEGER,
+  navigation_to TEXT,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  event_gaps INTEGER NOT NULL DEFAULT 0,
+  analysis_seq INTEGER NOT NULL DEFAULT 0,
+  analysis_text TEXT NOT NULL DEFAULT '',
+  analysis_status TEXT NOT NULL DEFAULT 'none',
+  analysis_attempted_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_browser_sessions_task
+ ON browser_capture_sessions(issuer,task_id,subject,task_state);
+CREATE TABLE IF NOT EXISTS browser_capture_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES browser_capture_sessions(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  UNIQUE(session_id,seq)
+);
+CREATE TABLE IF NOT EXISTS browser_capture_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES browser_capture_sessions(id) ON DELETE CASCADE,
+  event_id INTEGER NOT NULL REFERENCES browser_capture_events(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  evidence_kind TEXT NOT NULL DEFAULT 'observed',
+  UNIQUE(session_id,step_index)
+);
 """
 
 
