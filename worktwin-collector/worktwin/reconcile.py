@@ -63,6 +63,29 @@ def existing_for_project(con: sqlite3.Connection, document_id: int, limit: int =
             permission_key(con,e[0])==boundary for e in con.execute(
                 'SELECT DISTINCT document_id FROM knowledge_evidence WHERE knowledge_id=?',(r['id'],))
         )][:limit]
+    # A re-edited document may invalidate its old quote while still being
+    # the same source. Let the model compare the old note with the new content
+    # so it can replace (not duplicate) the topic without project confirmation.
+    if con.execute("""SELECT 1 FROM documents d JOIN sources s ON s.id=d.source_id
+        WHERE d.id=? AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1""",
+        (document_id,)).fetchone():
+        local = con.execute("""SELECT DISTINCT k.* FROM knowledge k
+            JOIN knowledge_evidence e ON e.knowledge_id=k.id
+            WHERE e.document_id=? AND k.project_key=? AND k.scope=?
+              AND k.status!='archived' AND k.review_hold=0
+              AND k.source_bound=1 AND k.quality='useful'
+              AND EXISTS (SELECT 1 FROM knowledge_evidence old
+                  WHERE old.knowledge_id=k.id AND old.is_current=0
+                    AND old.superseded=0)
+              AND NOT EXISTS (SELECT 1 FROM knowledge_evidence other
+                  WHERE other.knowledge_id=k.id AND other.document_id!=?)
+            ORDER BY k.updated_at DESC LIMIT ?""",
+            (document_id,metadata['project_key'],metadata['scope'],document_id,limit)).fetchall()
+        present={k['id'] for k in eligible}
+        for item in local:
+            if item['id'] not in present and len(eligible)<limit:
+                eligible.append(dict(item))
+                present.add(item['id'])
     for article in eligible:
         article['evidence']=[dict(e) for e in con.execute('''SELECT quote,occurred_at FROM knowledge_evidence
             WHERE knowledge_id=? AND is_current=1 AND superseded=0 ORDER BY id DESC LIMIT 6''',(article['id'],))]
