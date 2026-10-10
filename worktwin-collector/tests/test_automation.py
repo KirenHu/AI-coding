@@ -48,18 +48,20 @@ def test_acceptance_gate_requires_all_real_data_checks_and_same_model(tmp_path):
         assert not acceptance_status(con,changed)['ready']
 
 
-def test_new_notes_activate_only_after_acceptance_and_project_verification(tmp_path):
+def test_session_scoped_notes_activate_without_each_project_confirmation(tmp_path):
     db,did,item=setup(tmp_path)
     with db.connect() as con:
-        assert activate_new(con,did,[item],Model())==0
-        record_acceptance(con,Model(),receipt())
-        con.execute('UPDATE documents SET project_verified=0 WHERE id=?',(did,))
-        assert activate_new(con,did,[item],Model())==0
-        con.execute('UPDATE documents SET project_verified=1 WHERE id=?',(did,))
-        assert activate_new(con,did,[item|{'requires_review':True}],Model())==0
-        assert activate_new(con,did,[item],Model())==1
+        # The user has authorized the source, but has not named a business
+        # project. The resulting note is private to this source/session.
+        key = f'session:{did}'
+        con.execute('UPDATE documents SET project_verified=0,scope=?,project_key=? WHERE id=?',
+                    ('session',key,did))
+        con.execute('UPDATE knowledge SET scope=?,project_key=?',('session',key))
+        assert not acceptance_status(con,Model())['ready']
+        assert activate_new(con,did,[item | {'requires_review':True}],Model()) == 1
         assert len(con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL).fetchall())==1
-
+        # Reprocessing the same source is idempotent.
+        assert activate_new(con,did,[item],Model()) == 0
 
 def test_only_exact_additions_activate_and_replacements_stay_pending(tmp_path):
     db,did,item=setup(tmp_path)
