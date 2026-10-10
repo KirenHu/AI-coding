@@ -18,7 +18,6 @@ def apply_safe_replacements(con, document_id: int) -> int:
         (document_id,)).fetchone()
     if not doc or doc['scope'] not in ('session','project','global'):
         return 0
-    permitted = {r['id'] for r in existing_for_project(con, document_id)}
     applied = 0
     pending = con.execute("""SELECT * FROM knowledge_proposals
         WHERE document_id=? AND status='pending' AND origin='consolidation'
@@ -26,13 +25,20 @@ def apply_safe_replacements(con, document_id: int) -> int:
     for proposal in pending:
         note = con.execute("SELECT * FROM knowledge WHERE id=?",
                            (proposal['target_id'],)).fetchone()
-        if not note or proposal['target_id'] not in permitted:
+        if not note:
+            continue
+        metadata = json.loads(proposal['evidence_json'])
+        key=metadata.get('project_key') or doc['project_key']
+        scope=metadata.get('scope') or doc['scope']
+        permissible={r['id'] for r in existing_for_project(con,document_id,
+            project_key=key,scope=scope)}
+        if proposal['target_id'] not in permissible:
             continue
         # Manual corrections and ambiguous boundaries remain owner-controlled.
         if (note['status'] != 'confirmed' or note['review_hold']
             or note['created_by'] != 'enterprise_ai' or note['source_bound'] != 1
-            or note['quality'] != 'useful' or note['project_key'] != doc['project_key']
-            or note['scope'] != doc['scope'] or note['version'] != proposal['target_version']):
+            or note['quality'] != 'useful' or note['project_key'] != key
+            or note['scope'] != scope or note['version'] != proposal['target_version']):
             continue
         if con.execute("""SELECT COUNT(*) FROM knowledge_proposals
             WHERE target_id=? AND status='pending'""",(note['id'],)).fetchone()[0] != 1:
