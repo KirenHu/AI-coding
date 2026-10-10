@@ -123,6 +123,9 @@ def main():
                         page.locator('#save-source').click()
                         expect(page.locator('[data-source-category="codex"] .source-item')).to_have_count(1)
 
+                        (ROOT/'release').mkdir(exist_ok=True)
+                        page.screenshot(path=str(ROOT/'release'/'WorkTwin-sources-1.3.1.png'),full_page=True)
+
                         original={'title':'会变化的知识','body':'最初正文','kind':'process','status':'confirmed'}
                         kid=client.post('/api/knowledge',headers=headers,json=original).json()['id']
                         page.locator('[data-page=knowledge]').click()

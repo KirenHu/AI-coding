@@ -37,7 +37,7 @@ async function api(path,options={}){
     opts.headers={...opts.headers,'Content-Type':'application/json'};
   }
   const response=await fetch('/api/'+path,opts);
-  if([404,409].includes(response.status)&&!['GET'].includes(opts.method))offerRefresh('内容已变化或不存在，请刷新后重试；未保存的输入仍保留。');
+  if((response.status===404||response.status===409&&path.startsWith('knowledge/'))&&opts.method!=='GET')offerRefresh('内容已变化或不存在，请刷新后重试；未保存的输入仍保留。');
   if(!response.ok){let reason=`请求失败 (${response.status})`;try{const data=await response.json();reason=typeof data.detail==='string'?data.detail:JSON.stringify(data.detail)}catch{}throw new Error(reason)}
   return response.json();
 }

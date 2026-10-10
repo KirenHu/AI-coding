@@ -52,7 +52,7 @@ async function heartbeat(){
           s.status=live||"not_found";
           pendingSite.delete(s.id);
           if(s.tabId!==undefined){
-            chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
+            await chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
           }
         }
       }
@@ -72,9 +72,11 @@ async function syncManual(){
     const remote=await call("/capture/manual/current");
     for(const old of sessions.values()){
       if(!old.manual||old.id===remote.session_id)continue;
+      // An already stopped session must not stop a later recording in this tab.
+      if(!["armed","capturing"].includes(old.status))continue;
       old.status="completed";
       pendingSite.delete(old.id);
-      if(old.tabId!==undefined)chrome.tabs.sendMessage(old.tabId,{type:"capture:stop"}).catch(()=>{});
+      if(old.tabId!==undefined)await chrome.tabs.sendMessage(old.tabId,{type:"capture:stop"}).catch(()=>{});
     }
     if(!remote.enabled){await persist();return;}
     let s=sessions.get(remote.session_id);
