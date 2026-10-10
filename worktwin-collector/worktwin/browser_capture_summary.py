@@ -32,7 +32,8 @@ def actions_from_events(rows):
             label={"feedback_success":"页面提示成功","feedback_failure":"页面提示失败"}.get(
                 label,"页面出现提示（结果未核实）")
         if kind=="navigation":
-            label="页面跳转后停止观察"
+            label=("站内跳转，继续记录" if "继续观察" in str(r["label"] or "")
+                   else "页面跳转后停止观察")
         if kind=="tab_closed":
             label="关闭页面"
         action={"seq":int(r["seq"]),"kind":kind,"label":label}
@@ -62,7 +63,7 @@ def rule_summary(actions):
         elif kind=="feedback":
             text=label
         elif kind=="navigation":
-            text="页面发生跳转，后续操作未被记录"
+            text=label
         elif kind=="tab_closed":
             text="关闭页面"
         else:
