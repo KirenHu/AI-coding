@@ -238,6 +238,7 @@ def test_new_project_evidence_recovers_isolated_work_and_updates_twin_grants(tmp
         assert note in {k['id'] for k in effective_notes(con,twin_id)}
         assert con.execute("SELECT count(*) FROM knowledge_history WHERE knowledge_id=?",
                            (note,)).fetchone()[0]==1
+    assert rechecker.process_next()['updated']==0
     assert rechecker.process_next()['state']=='idle'
 
 
