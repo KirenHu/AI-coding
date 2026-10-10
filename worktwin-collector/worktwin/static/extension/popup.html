@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WorkTwin · 浏览器采集</title>
+  <style>
+    body{font:13px system-ui,-apple-system,sans-serif;min-width:300px;margin:0;padding:18px;color:#252b34;background:#fff}
+    h1{font-size:16px;margin:0 0 7px}p{line-height:1.5;color:#56616d}label{font-size:12px;display:block;margin:14px 0 6px}
+    input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #b6c0ca;border-radius:7px}
+    button{background:#202d3e;color:white;border:0;border-radius:7px;padding:9px 12px;cursor:pointer;margin-top:9px}
+    button.secondary{background:#edf0f3;color:#222}.status{padding:10px;background:#f3f5f8;border-radius:8px}
+    small{color:#667085;display:block;line-height:1.5;margin-top:9px}
+    .actions{display:flex;gap:9px}
+  </style>
+</head>
+<body>
+  <h1>WorkTwin · 浏览器采集</h1>
+  <div id="state" class="status">正在检查本地 WorkTwin…</div>
+  <p>只会在本地功能开启且流程平台发出有效任务信号后，观察被指定的首个网页。</p>
+  <label for="pair">首次连接：在 WorkTwin「信息采集」中获取配对码</label>
+  <input id="pair" autocomplete="off" type="password" placeholder="粘贴一次性配对码">
+  <div class="actions">
+    <button id="connect">连接 WorkTwin</button>
+    <button id="stop" class="secondary">停止当前采集</button>
+  </div>
+  <small id="message">插件不上传完整 DOM、表单输入值、浏览器历史或屏幕录像。</small>
+  <script src="popup.js"></script>
+</body>
+</html>
