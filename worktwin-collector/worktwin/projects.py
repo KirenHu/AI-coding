@@ -35,6 +35,24 @@ def catalog(con):
             projects.append({'project_key':p['project_key'],'name':p['name'],
                              'anchor_type':'','anchor':'','origin':'manual'})
             known.add(p['project_key'])
+    # Provide one or two authorized existing conclusions so identity decisions
+    # compare actual work rather than bare names. Do not send private sources.
+    for project in projects:
+        rows=con.execute("""SELECT k.topic,k.body FROM knowledge k
+            WHERE k.project_key=? AND k.status='confirmed' AND k.quality='useful'
+              AND (k.source_bound=0 OR EXISTS (
+                SELECT 1 FROM knowledge_evidence e
+                  JOIN documents d ON d.id=e.document_id
+                  JOIN sources s ON s.id=d.source_id
+                WHERE e.knowledge_id=k.id AND e.is_current=1
+                  AND e.superseded=0 AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1))
+              AND NOT EXISTS (
+                SELECT 1 FROM knowledge_evidence e
+                JOIN documents d ON d.id=e.document_id
+                JOIN sources s ON s.id=d.source_id
+                WHERE e.knowledge_id=k.id AND (s.allow_ai=0 OR s.enabled=0 OR d.deleted=1))
+            ORDER BY k.updated_at DESC LIMIT 2""",(project['project_key'],)).fetchall()
+        project['summary']=' / '.join((r['topic']+': '+r['body'][:240]) for r in rows)[:550]
     return projects
 
 
@@ -71,13 +89,15 @@ def plan_work_units(items, document, projects, decision_router):
         if key_hint in memo:
             planned.append(dict(memo[key_hint]))
             continue
-        candidates=[p for p in available if normalized_name(p['name'])==key_hint]
+        candidates=[p for p in available if normalized_name(p['name'])==key_hint or
+            bool(anchors['repositories']) and p.get('anchor_type')=='repo' and
+            p.get('anchor') in anchors['repositories']]
         accepted=[]
         for candidate in candidates[:6]:
             if candidate.get('anchor_type')=='repo' and candidate.get('anchor') and candidate['anchor'] not in anchors['repositories']:
                 # A concrete contradictory repo is an identity conflict.
                 continue
-            strong=bool(candidate.get('anchor_type')=='repo' and candidate['anchor'] in anchors['repositories'])
+            strong=bool(normalized_name(candidate['name'])==key_hint and candidate.get('anchor_type')=='repo' and candidate['anchor'] in anchors['repositories'])
             if strong:
                 match={'same':1.0,'conflict':0.0,'engine':'repo-anchor'}
             else:
@@ -86,7 +106,8 @@ def plan_work_units(items, document, projects, decision_router):
                     'repositories':anchors['repositories'],
                     'pull_requests':anchors['pull_requests']}
                 target={'name':candidate['name'],'project_key':candidate['project_key'],
-                    'anchor_type':candidate.get('anchor_type',''),'anchor':candidate.get('anchor','')}
+                    'anchor_type':candidate.get('anchor_type',''),'anchor':candidate.get('anchor',''),
+                    'existing_work':candidate.get('summary','')}
                 match=decision_router.compare(summary,target)
             if match['same']>=0.92 and match['conflict']<=0.08:
                 accepted.append((candidate,match))
