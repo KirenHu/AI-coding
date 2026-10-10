@@ -45,11 +45,14 @@ def plan_work_units(items, document, projects, decision_router):
     requested for unmatched or undecidable units.
     """
     doc=dict(document)
-    anchors=source_anchors(doc.get('content',''),doc.get('title',''))
+    # Anchors must be extracted from each work unit, not the whole file.
+    # A weekly report or long coding session may span unrelated projects.
     planned=[]
     available=list(projects)
     memo={}
     for item in items:
+        anchors=source_anchors(' '.join(str(item.get(k) or '') for k in
+            ('quote','context_quote','confirmation_quote')),doc.get('title',''))
         hint=str(item.get('project_hint') or '').strip()[:120]
         # A name inferred from a directory is not a source-grounded identity.
         # An explicit verified project assigned by the owner always wins.
