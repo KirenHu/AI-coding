@@ -1,4 +1,4 @@
-name: WorkTwin 1.1.7 acceptance and release
+name: WorkTwin 1.1.8 acceptance and release
 
 on:
   workflow_dispatch:
@@ -60,8 +60,8 @@ jobs:
         run: |
           python -m build
           mkdir -p release
-          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.1.7-source.zip"
-          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.1.7-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
+          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.1.8-source.zip"
+          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.1.8-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
           cp dist/*.whl dist/*.tar.gz release/
       - uses: actions/upload-artifact@v4
         with:
@@ -102,7 +102,7 @@ jobs:
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release
-          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.1.7-Windows-x64.zip
+          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.1.8-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: WorkTwin-Windows-unsigned
@@ -128,8 +128,8 @@ jobs:
           cd release-assets
           sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
           cd ..
-          if gh release view worktwin-v1.1.7 >/dev/null 2>&1; then
-            gh release upload worktwin-v1.1.7 release-assets/* --clobber
+          if gh release view worktwin-v1.1.8 >/dev/null 2>&1; then
+            gh release upload worktwin-v1.1.8 release-assets/* --clobber
           else
-            gh release create worktwin-v1.1.7 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.1.7 (verified project identity)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
+            gh release create worktwin-v1.1.8 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.1.8 (browser capture preview)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
           fi
