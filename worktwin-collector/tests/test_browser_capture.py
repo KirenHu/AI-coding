@@ -62,7 +62,8 @@ def test_browser_opt_in_signed_trigger_bound_tab_and_navigation(tmp_path, monkey
         call = lambda ticket, source_origin=ISSUER: c.post("/api/capture/ext/signal",
             headers=extension,json={"ticket":ticket,"source_origin":source_origin})
         assert call(trigger, "https://evil.example.test").status_code == 403
-        assert call("invalid.signature").status_code == 400
+        assert call("invalid.signature").status_code == 422  # schema rejects too-short tickets
+        assert call("a"*40+"."+"b"*70).status_code == 400  # malformed signed JSON
         assert call(trigger).status_code == 200
         start = call(trigger)
         assert start.status_code == 409  # nonce replay
