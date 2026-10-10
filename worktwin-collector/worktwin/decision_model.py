@@ -63,7 +63,7 @@ class DecisionRouter:
 
     def config(self):
         if getattr(self.main,'mode','personal')=='enterprise':
-            return {'provider':'enterprise','configured':bool(self.enterprise_url and self.enterprise_token)}
+            return {'provider':'enterprise','configured':bool(getattr(self.main,'url','') and getattr(self.main,'token',''))}
         provider=self.db.setting('decision_provider','main')
         return {'provider':provider,'configured':provider!='main',
                 'base_url':self.db.setting('decision_base_url'),
