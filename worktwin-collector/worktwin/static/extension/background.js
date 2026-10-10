@@ -142,7 +142,10 @@ async function attach(tabId,documentId,url) {
     await store();
     await sendEnable(tabId,record);
   } catch (error) {
-    delete pending[id];
+    // Another navigation in the same tab may match the sanitized path
+    // but not the signed full-URL fingerprint. Keep the pending grant
+    // until its short expiry; never bind to the wrong page.
+    if (error.status === 401 || error.status === 409) delete pending[id];
     await store();
   } finally {
     binding.delete(tabId);
