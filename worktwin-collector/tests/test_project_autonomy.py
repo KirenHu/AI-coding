@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from worktwin.api import create_app
 from worktwin.db import Database
 from worktwin.projects import catalog, plan_work_units, apply_assignments
+from worktwin.project_recheck import ProjectRechecker
 from worktwin.knowledge import store_candidates
 from worktwin.reconcile import existing_for_project
 from worktwin.twin_access import effective_notes
@@ -192,3 +193,79 @@ def test_document_title_never_supplies_identity_to_unrelated_work_unit(tmp_path)
             'anchor':'alpha-team/atlas-one','summary':'another work unit'}],Judge())
     assert plan[0]['scope']=='session'
     assert plan[0]['project_key']!= 'auto:other'
+
+
+def test_new_project_evidence_recovers_isolated_work_and_updates_twin_grants(tmp_path):
+    db=Database(tmp_path/'db.sqlite')
+    quote='WorkTwin 项目当前使用独立的知识维护流程。'
+    other='WorkTwin 项目之后明确采用了同一知识维护方案。'
+    with db.connect() as con:
+        old_source,old_doc=create_source(con,'earlier','one.md',quote)
+        con.execute("INSERT INTO twins(name,knowledge_mode) VALUES('交接分身','dynamic')")
+        twin_id=con.execute('SELECT id FROM twins').fetchone()[0]
+        note=con.execute("""INSERT INTO knowledge(kind,title,body,status,created_by,
+            source_bound,scope,project_key,project,topic,quality)
+            VALUES('decision','归属待定',?,'confirmed','enterprise_ai',1,'session',?,
+                   'WorkTwin','工作流程','useful')""",(quote,'session:'+str(old_doc))).lastrowid
+        con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
+                    (note,old_doc,quote))
+        import hashlib,json
+        con.execute("""INSERT INTO work_units(document_id,quote_hash,topic,project_hint,
+            project_key,status,evidence_json) VALUES(?,?,?,?,?,'isolated',?)""",
+            (old_doc,hashlib.sha256(quote.encode()).hexdigest(),'工作流程',
+             'WorkTwin','session:'+str(old_doc),json.dumps({'quote':quote})))
+        _,new_doc=create_source(con,'later','two.md',other)
+        key='auto:known-worktwin'
+        con.execute("INSERT INTO project_entities(project_key,name) VALUES(?,'WorkTwin')",(key,))
+        con.execute("""INSERT INTO knowledge(kind,title,body,status,source_bound,
+            created_by,scope,project_key,project,topic,quality)
+            VALUES('decision','后续工作',?,'confirmed',1,'enterprise_ai',
+                   'project',?,'WorkTwin','工作流程','useful')""",(other,key))
+        fresh=con.execute('SELECT MAX(id) FROM knowledge').fetchone()[0]
+        con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
+                    (fresh,new_doc,other))
+        con.execute("""INSERT INTO twin_grants(twin_id,subject_type,subject_key)
+            VALUES(?,'project',?)""",(twin_id,key))
+        assert note not in {k['id'] for k in effective_notes(con,twin_id)}
+    judge=Judge()
+    rechecker=ProjectRechecker(db,judge)
+    result=rechecker.process_next()
+    assert result['updated']==1 and judge.calls>=1
+    with db.connect() as con:
+        revised=con.execute('SELECT * FROM knowledge WHERE id=?',(note,)).fetchone()
+        assert revised['project_key']==key and revised['scope']=='project'
+        assert revised['version']==2
+        assert note in {k['id'] for k in effective_notes(con,twin_id)}
+        assert con.execute("SELECT count(*) FROM knowledge_history WHERE knowledge_id=?",
+                           (note,)).fetchone()[0]==1
+    assert rechecker.process_next()['state']=='idle'
+
+
+def test_project_recheck_does_not_reassign_owner_notes_or_revoked_sources(tmp_path):
+    db=Database(tmp_path/'db.sqlite')
+    quote='WorkTwin 项目讨论已明确，但人工写的结论不应自动迁移。'
+    with db.connect() as con:
+        source,doc=create_source(con,'older','one.md',quote)
+        import hashlib,json
+        con.execute("""INSERT INTO work_units(document_id,quote_hash,topic,project_hint,
+            project_key,status,evidence_json) VALUES(?,?,?,?,?,'isolated',?)""",
+            (doc,hashlib.sha256(quote.encode()).hexdigest(),'规则',
+             'WorkTwin','session:'+str(doc),json.dumps({'quote':quote})))
+        note=con.execute("""INSERT INTO knowledge(kind,title,body,status,created_by,
+            source_bound,scope,project_key,quality)
+            VALUES('decision','人工维护',?,'confirmed','human',1,'session',?,'useful')""",
+            (quote,'session:'+str(doc))).lastrowid
+        con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
+                    (note,doc,quote))
+        _,did2=create_source(con,'next','two.md','WorkTwin 项目的后续证据。')
+        con.execute("INSERT INTO project_entities(project_key,name) VALUES('auto:known','WorkTwin')")
+        other=con.execute("""INSERT INTO knowledge(kind,title,body,status,created_by,source_bound,
+            scope,project,project_key,quality) VALUES('fact','新证据','新证据','confirmed',
+            'enterprise_ai',1,'project','WorkTwin','auto:known','useful')""").lastrowid
+        con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
+                    (other,did2,'WorkTwin 项目的后续证据。'))
+    assert ProjectRechecker(db,Judge()).process_next()['updated']==0
+    with db.connect() as con:
+        assert con.execute("SELECT project_key FROM knowledge WHERE id=?",(note,)).fetchone()[0]=='session:'+str(doc)
+        con.execute("UPDATE sources SET allow_ai=0 WHERE id=?",(source,))
+    assert ProjectRechecker(db,Judge()).process_next()['updated']==0
