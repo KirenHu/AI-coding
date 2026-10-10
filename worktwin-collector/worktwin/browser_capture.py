@@ -205,7 +205,7 @@ class BrowserCapture:
             con.execute("BEGIN IMMEDIATE")
             self._extension(con,token)
             action,task_id,target=self._command(con,envelope,sender_origin)
-            existing=con.execute("""SELECT id FROM browser_capture_sessions
+            existing=con.execute("""SELECT id,status FROM browser_capture_sessions
                 WHERE task_id=? AND launcher_origin=?""",(task_id,sender_origin)).fetchall()
             if action=="complete":
                 if not existing:
@@ -215,6 +215,8 @@ class BrowserCapture:
                     AND status NOT IN ('completed','disabled')""",
                     (now,task_id,sender_origin))
                 return {"status":"completed","session_ids":[r["id"] for r in existing]}
+            if any(x["status"]=="completed" for x in existing):
+                raise HTTPException(409,"流程任务已完成，不能再次启动采集")
             # Each *newly signed click* may authorize another first document
             # within the same task. Replaying an old signal remains forbidden.
             session_id=secrets.token_urlsafe(20)
