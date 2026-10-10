@@ -41,6 +41,7 @@ from .search import search
 from .reconcile import review_flags, resolve_proposal
 from .answer_policy import check_answer
 from .scope import document_scope, scope_description, snapshot_history
+from .browser_capture import BrowserCapture
 
 STATIC = Path(__file__).parent / "static"
 
@@ -166,6 +167,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
+    browser_capture = BrowserCapture(db)
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -214,6 +216,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.db = db
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
+    app.state.browser_capture = browser_capture
     app.state.model = model_client
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
     app.mount('/mcp',mcp_app,name='twin-mcp')
@@ -242,6 +245,78 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def health():
         return {"ok": True, "app": "WorkTwin Collector", "cloud_sync": publisher.client.configured, "version": __version__,
                 "enterprise_model": model_client.configured}
+
+    class CaptureToggle(BaseModel):
+        enabled: bool
+
+    class CapturePair(BaseModel):
+        code: str = Field(min_length=10,max_length=128)
+
+    class CaptureCommand(BaseModel):
+        sender_origin: str = Field(max_length=250)
+        envelope: dict
+
+    class CaptureBind(BaseModel):
+        session_id: str = Field(max_length=100)
+        tab_id: int
+        document_id: str = Field(max_length=100)
+        current_url: str = Field(max_length=2048)
+
+    class CaptureEvent(BaseModel):
+        session_id: str = Field(max_length=100)
+        seq: int
+        kind: str = Field(max_length=30)
+        tab_id: int
+        document_id: str = Field(max_length=100)
+        current_url: str = Field(max_length=2048)
+        label: str = Field(default="",max_length=500)
+
+    def capture_credential(request: Request) -> str:
+        auth = request.headers.get("Authorization","")
+        if not auth.startswith("Bearer ") or len(auth)<40:
+            raise HTTPException(401,"浏览器插件凭据缺失")
+        extension_origin = request.headers.get("Origin","")
+        if extension_origin and not extension_origin.startswith("chrome-extension://"):
+            raise HTTPException(403,"只接受本地插件连接")
+        return auth[7:]
+
+    @app.get("/api/browser-capture",dependencies=[Depends(authorized)])
+    def browser_capture_settings():
+        return browser_capture.settings()
+
+    @app.put("/api/browser-capture",dependencies=[Depends(authorized)])
+    def browser_capture_toggle(body: CaptureToggle):
+        return browser_capture.toggle(body.enabled)
+
+    @app.post("/api/browser-capture/pairing",dependencies=[Depends(authorized)])
+    def browser_capture_pairing():
+        return {"code":browser_capture.pairing_code(),"valid_seconds":300}
+
+    @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
+    def browser_capture_sessions():
+        return browser_capture.recent()
+
+    @app.post("/capture/pair")
+    def capture_pair(body: CapturePair):
+        return {"token":browser_capture.pair(body.code)}
+
+    @app.post("/capture/heartbeat")
+    def capture_heartbeat(request: Request):
+        return browser_capture.heartbeat(capture_credential(request))
+
+    @app.post("/capture/command")
+    def capture_command(request: Request,body: CaptureCommand):
+        # An extension credential never authorizes a task on its own: the
+        # external workflow must also sign the complete, expiring command.
+        return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/bind")
+    def capture_bind(request: Request,body: CaptureBind):
+        return browser_capture.bind(capture_credential(request),**body.model_dump())
+
+    @app.post("/capture/event")
+    def capture_event(request: Request,body: CaptureEvent):
+        return browser_capture.event(capture_credential(request),**body.model_dump())
 
     @app.post('/api/shutdown', dependencies=[Depends(authorized)])
     def shutdown():
