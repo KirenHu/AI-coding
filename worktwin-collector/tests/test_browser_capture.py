@@ -89,11 +89,22 @@ def test_signed_capture_stops_on_first_navigation_and_cannot_restart(monkeypatch
         assert steps.json()[0]["start_seq"]==1
         assert steps.json()[0]["end_seq"]==3
         assert steps.json()[0]["status"]=="stopped"
+        # A second legitimate button click may open a second target page
+        # within the same task. It must never reactivate the first document.
+        other_target="https://partner-two.example.com/search"
+        second=sign("x"*48,"start","task42",other_target,sender,
+                    "second_link_nonce_v1",int(time.time())+90)
+        second_result=client.post("/capture/command",headers=credential,
+            json={"sender_origin":sender,"envelope":second})
+        assert second_result.status_code==200,second_result.text
+        assert second_result.json()["session_id"]!=session
+        assert client.get("/api/browser-capture",headers=auth).json()["active_tasks"]==1
         complete=sign("x"*48,"complete","task42",target,sender,
                       "random_nonce_value_b",int(time.time())+90)
         done=client.post("/capture/command",headers=credential,
                          json={"sender_origin":sender,"envelope":complete})
         assert done.json()["status"]=="completed"
+        assert len(done.json()["session_ids"])==2
         another=sign("x"*48,"start","task42",target,sender,
                      "random_nonce_value_c",int(time.time())+90)
         assert client.post("/capture/command",headers=credential,
