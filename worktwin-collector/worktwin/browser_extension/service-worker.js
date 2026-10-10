@@ -38,7 +38,7 @@ async function tryBind(session,details){
   // Only the launcher tab or a new tab with the original launcher's
   // openerTabId is eligible. A different tab showing the same URL is not.
   const tab=await chrome.tabs.get(details.tabId).catch(()=>null);
-  if(!tab || (details.tabId!==session.flowTab && tab.openerTabId!==session.flowTab))return;
+  if(!tab || (details.tabId!==session.flowTab && tab.openerTabId!==session.flowTab && details.sourceTabId!==session.flowTab))return;
   const origin=site(details.url);
   if(!origin)return;
   const granted=await chrome.permissions.contains({origins:[origin+"/*"]});
@@ -145,6 +145,14 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     }else reply({ok:false});
   }
 });
+chrome.webNavigation.onCreatedNavigationTarget.addListener(details=>{
+  // Browser-provided sourceTabId is stronger than tab.openerTabId, which may
+  // be absent for links opened with noopener.
+  recent.set(details.tabId,{
+    tabId:details.tabId,sourceTabId:details.sourceTabId,
+    openerTabId:details.sourceTabId,url:details.url,at:Date.now()
+  });
+});
 chrome.tabs.onCreated.addListener(tab=>{
   if(tab.openerTabId!==undefined)recent.set(tab.id,{
     tabId:tab.id,openerTabId:tab.openerTabId,url:tab.pendingUrl||"",at:Date.now()
@@ -154,7 +162,7 @@ chrome.webNavigation.onCommitted.addListener(details=>{
   if(details.frameId!==0)return;
   const previous=recent.get(details.tabId);
   const info={...details,at:Date.now(),
-    openerTabId:previous?.openerTabId};
+    openerTabId:previous?.openerTabId,sourceTabId:previous?.sourceTabId};
   recent.set(details.tabId,info);
   for(const s of sessions.values()){
     if(s.status==="capturing" && s.tabId===details.tabId){
