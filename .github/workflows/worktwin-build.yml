@@ -50,6 +50,8 @@ jobs:
         run: PYTHONPATH=. python scripts/ui_layout_acceptance.py
       - name: Browser acceptance of twin MCP and separate log authorization
         run: PYTHONPATH=. python scripts/ui_mcp_acceptance.py
+      - name: Actual Chromium extension: signed workflow click, DOM capture and navigation stop
+        run: PYTHONPATH=. python scripts/ui_browser_extension_acceptance.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
