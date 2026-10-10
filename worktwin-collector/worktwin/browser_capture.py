@@ -430,3 +430,34 @@ class BrowserCapture:
                 ("id","task_id","goal","target_path","task_state","capture_state",
                  "event_gaps","analysis_text","analysis_status")},
                     "steps": steps}
+
+
+    def export_markdown(self, session_id: str) -> str:
+        """Portable, non-authoritative work trace; never a confirmed K entry."""
+        info=self.trace(session_id)
+        session=info["session"]
+        title=mask(session["goal"] or session["task_id"],140)
+        lines=[
+            "# 浏览器任务操作记录："+title,
+            "",
+            "状态：采集 "+session["capture_state"]+"；任务 "+session["task_state"],
+            "初始页面："+session["target_path"],
+            "来源：WorkTwin 任务触发式浏览器行为采集",
+            "注意：操作记录与页面反馈不等于业务结果已验收。跳转后的页面未被观察。",
+            "",
+            "## 操作步骤（可追溯至 WorkTwin 本地会话 "+session_id+"）",
+            "",
+        ]
+        lines.extend(str(step["step_index"])+". "+step["summary"] for step in info["steps"])
+        if session["analysis_text"]:
+            lines.extend(["","## AI 阶段分析（未经核对）","",
+                          session["analysis_text"]])
+        return "\n".join(lines)+"\n"
+
+    def delete(self, session_id: str) -> dict:
+        """User-initiated removal cascades to all events and derived steps."""
+        with self.db.connect() as con:
+            cursor=con.execute("DELETE FROM browser_capture_sessions WHERE id=?",(session_id,))
+            if cursor.rowcount != 1:
+                raise CaptureRejected("没有该任务采集记录",404)
+        return {"deleted":True,"session_id":session_id}
