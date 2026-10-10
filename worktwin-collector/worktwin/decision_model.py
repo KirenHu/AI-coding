@@ -80,11 +80,13 @@ class DecisionRouter:
         return PersonalModel(base,key,model)
 
     def _enterprise(self, state, questions):
-        if not self.enterprise_url or not self.enterprise_token:
+        url=getattr(self.main,'url','') or self.enterprise_url
+        token=getattr(self.main,'token','') or self.enterprise_token
+        if not url or not token:
             return None
-        request=Request(self.enterprise_url.rstrip('/')+'/v1/decisions',method='POST',
+        request=Request(url.rstrip('/')+'/v1/decisions',method='POST',
             data=json.dumps({'state':state,'questions':questions},ensure_ascii=False).encode(),
-            headers={'Authorization':'Bearer '+self.enterprise_token,'Content-Type':'application/json'})
+            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
         with model_urlopen(request,timeout=30) as response:
             result=json.load(response)
         return result if result.get('specialized') else None
