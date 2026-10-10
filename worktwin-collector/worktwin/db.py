@@ -186,6 +186,21 @@ CREATE TABLE IF NOT EXISTS project_entities (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_project_entities_anchor ON project_entities(anchor_type,anchor)
     WHERE anchor_type!='' AND anchor!='';
+CREATE TABLE IF NOT EXISTS work_units (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    quote_hash TEXT NOT NULL,
+    topic TEXT NOT NULL DEFAULT '',
+    project_hint TEXT NOT NULL DEFAULT '',
+    project_key TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'isolated'
+       CHECK(status IN ('isolated','provisional','confirmed')),
+    confidence REAL NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(document_id,quote_hash)
+);
+CREATE INDEX IF NOT EXISTS ix_work_units_project ON work_units(project_key,status);
 CREATE TABLE IF NOT EXISTS project_memberships (
     knowledge_id INTEGER PRIMARY KEY REFERENCES knowledge(id) ON DELETE CASCADE,
     project_key TEXT NOT NULL REFERENCES project_entities(project_key) ON DELETE CASCADE,
