@@ -13,6 +13,7 @@ from .reconcile import existing_for_project, make_consolidation_plan, store_prop
 from .gardener import KnowledgeGardener
 from .scope import document_scope
 from .automation import activate_new, apply_additions, model_signature
+from .autonomy import apply_safe_replacements
 
 
 class KnowledgeWorker:
@@ -124,7 +125,7 @@ class KnowledgeWorker:
                 fresh = [item for i,item in enumerate(items) if i not in plan]
                 n = store_candidates(con, job["document_id"], split_chunks(job["content"]), fresh,
                                      created_by="enterprise_ai")
-                automatic=(apply_additions(con,job['document_id'],self.client)+activate_new(con,job['document_id'],fresh,self.client)
+                automatic=(apply_additions(con,job['document_id'],self.client)+apply_safe_replacements(con,job['document_id'])+activate_new(con,job['document_id'],fresh,self.client)
                            if model_identity==model_signature(self.client) else 0)
                 con.execute("UPDATE ai_jobs SET state='done',error=NULL,next_run_at=NULL,updated_at=datetime('now') WHERE id=? AND content_sha=? AND claim_token=?",
                             (job["job_id"], job["content_sha"],job["claim_token"]))
