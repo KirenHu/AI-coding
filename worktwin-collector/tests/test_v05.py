@@ -80,9 +80,9 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         assert client.put(f'/api/twins/{tid}/knowledge',headers=auth,json={'knowledge_ids':[old['id']]}).status_code==400
         assert client.post(f'/api/knowledge/proposals/{pid}/accept',headers=auth).status_code==200
         item=next(k for k in client.get('/api/knowledge',headers=auth).json() if k['id']==old['id'])
-        assert item['version']==3 and item['status']=='confirmed' and item['needs_review']==0
+        assert item['version']==4 and item['status']=='confirmed' and item['needs_review']==0
         assert '新的项目路由' in item['body']
-        assert len(client.get(f'/api/knowledge/{old["id"]}/history',headers=auth).json())==2
+        assert len(client.get(f'/api/knowledge/{old["id"]}/history',headers=auth).json())==3
         assert client.get('/api/twins',headers=auth).json()[0]['knowledge_count']==1
         model.requests.clear()
         answer=client.post(f'/api/twins/{tid}/ask',headers=auth,json={'question':'现在怎么执行路由？'})
