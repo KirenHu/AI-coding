@@ -117,6 +117,48 @@ def test_status_endpoint_only_signed_same_origin_paths(monkeypatch,tmp_path):
     assert validate_status_path("/api/worktwin/tasks/abc/status") == "/api/worktwin/tasks/abc/status"
 
 
+def test_status_transport_pins_origin_and_signs_read_request(monkeypatch):
+    from worktwin import browser_capture_status as transport
+    requests=[]
+    class Response:
+        status=200
+        def __enter__(self):
+            return self
+        def __exit__(self,*_):
+            return None
+        def read(self,_):
+            return json.dumps({"task_id":"task-signed","status":"completed"}).encode()
+    class Opener:
+        def open(self,request,timeout):
+            requests.append((request,timeout))
+            return Response()
+    monkeypatch.setattr(transport,"build_opener",lambda *_:Opener())
+    path="/api/worktwin/tasks/task-signed/status"
+    state=fetch_task_state(FLOW,"task-signed",path,SECRET,clock=lambda:123456)
+    assert state=="completed"
+    req,timeout=requests[0]
+    assert req.full_url==FLOW+path and timeout==5
+    assert req.get_header("X-worktwin-task")=="task-signed"
+    signature=hmac.new(SECRET.encode(),
+        ("GET\n"+"task-signed\n"+path+"\n123456").encode(),
+        hashlib.sha256).hexdigest()
+    assert req.get_header("X-worktwin-signature")==signature
+
+
+def test_model_summary_requires_observed_values_and_outcomes():
+    from worktwin.browser_capture_summary import parse_model_summary
+    observations=[
+        {"seq":1,"kind":"click","label":"新增规则"},
+        {"seq":2,"kind":"change","label":"审批方式"},
+        {"seq":3,"kind":"click","label":"保存"}
+    ]
+    def candidate(summary):
+        return json.dumps({"summary":summary,"event_ids":[1,2,3]},ensure_ascii=False)
+    assert parse_model_summary(candidate("用户点击新增规则，将审批方式设置为多人审批，保存成功。"),observations) is None
+    assert parse_model_summary(candidate("用户点击新增规则，修改审批方式并点击保存。"),observations)
+    assert parse_model_summary(candidate("用户点击新增规则，页面提示保存成功。"),observations) is None
+
+
 class Model:
     configured=True
     def __init__(self):
