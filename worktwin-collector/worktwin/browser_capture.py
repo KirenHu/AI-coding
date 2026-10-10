@@ -283,6 +283,9 @@ class BrowserCapture:
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             self._expire(con)
+            # Tickets are valid for at most 120s; bound the replay ledger
+            # without reopening any previously valid replay window.
+            con.execute("DELETE FROM browser_capture_signals WHERE received_at<?",(now-86400,))
             try:
                 con.execute("""INSERT INTO browser_capture_signals(issuer,nonce,received_at)
                     VALUES(?,?,?)""", (p["iss"], p["nonce"], now))
@@ -455,9 +458,14 @@ class BrowserCapture:
         return "\n".join(lines)+"\n"
 
     def delete(self, session_id: str) -> dict:
-        """User-initiated removal cascades to all events and derived steps."""
+        """Delete only closed observations, avoiding a live extension race."""
         with self.db.connect() as con:
-            cursor=con.execute("DELETE FROM browser_capture_sessions WHERE id=?",(session_id,))
-            if cursor.rowcount != 1:
+            con.execute("BEGIN IMMEDIATE")
+            self._expire(con)
+            existing=con.execute("SELECT task_state,capture_state FROM browser_capture_sessions WHERE id=?",(session_id,)).fetchone()
+            if not existing:
                 raise CaptureRejected("没有该任务采集记录",404)
+            if existing["task_state"]=="open" and existing["capture_state"] in ("recording","pending"):
+                raise CaptureRejected("请先停止当前采集或结束任务，再删除该记录",409)
+            con.execute("DELETE FROM browser_capture_sessions WHERE id=?",(session_id,))
         return {"deleted":True,"session_id":session_id}
