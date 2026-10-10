@@ -158,32 +158,77 @@ async function renderSources(){
     },3500);
   }
 }
+let browserRecordsPage=0;
+const captureStatuses={armed:'等待目标网页',capturing:'记录中',completed:'已结束',
+  navigation_stopped:'已离开授权网站',tab_closed:'标签页已关闭',disabled:'已停止',
+  expired:'已过期',status_unavailable:'任务连接中断'};
+function captureDate(value){return value?new Date(value*1000).toLocaleString():'—'}
+async function renderBrowserRecords(page=0){
+  browserRecordsPage=page;
+  const holder=el('browser-records');
+  if(!holder)return;
+  const rows=await api('browser-capture/sessions?limit=20&offset='+(page*20));
+  const reports=await Promise.all(rows.map(async row=>{
+    const report=await api('browser-capture/sessions/'+encodeURIComponent(row.id)+'/summary');
+    return {...row,report};
+  }));
+  holder.innerHTML=reports.length?reports.map(row=>`
+    <section class="source-item" style="display:block;padding:14px 0">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+        <b>${esc(row.mode==='manual'?'手动 · '+row.page_key:'任务 · '+row.task_id)}</b>
+        <span class="state-label ${row.status==='capturing'?'':'grey'}">${esc(captureStatuses[row.status]||row.status)}</span>
+      </div>
+      <div class="soft-caption">${captureDate(row.created_at)} · ${row.event_count} 个事件</div>
+      <p style="margin:8px 0">${esc(row.report.summary||'尚未检测到操作')}</p>
+      <button class="btn secondary small" data-capture-session="${esc(row.id)}">查看操作详情</button>
+    </section>`).join(''):'<p class="field-note">暂无网页操作记录。开始记录指定网站后，这里将展示每次采集的结果。</p>';
+  holder.innerHTML+=`<div style="display:flex;gap:10px;margin-top:12px">
+    ${page>0?'<button class="btn secondary small" id="browser-record-prev">上一页</button>':''}
+    ${reports.length===20?'<button class="btn secondary small" id="browser-record-next">下一页</button>':''}
+    <button class="btn secondary small" id="browser-record-refresh">刷新记录</button></div>`;
+  holder.querySelectorAll('[data-capture-session]').forEach(b=>b.onclick=()=>browserSessionDetails(b.dataset.captureSession));
+  el('browser-record-prev')?.addEventListener('click',()=>renderBrowserRecords(page-1));
+  el('browser-record-next')?.addEventListener('click',()=>renderBrowserRecords(page+1));
+  el('browser-record-refresh')?.addEventListener('click',()=>renderBrowserRecords(page));
+}
 async function browserCaptureHistory(){
-  try{
-    const sessions=await api('browser-capture/sessions');
-    const reports=await Promise.all(sessions.slice(0,15).map(async session=>{
-      try{
-        return {...session,report:await api('browser-capture/sessions/'+encodeURIComponent(session.id)+'/summary')};
-      }catch(error){return {...session,report:{summary:'暂时无法读取操作摘要'}}}
-    }));
-    const body='<p class="soft-caption">这里只显示当前任务网页的操作摘要和证据序号，不会写入个人知识库，也不会自动共享给流程平台。</p>'+
-      (reports.length?reports.map(s=>'<section class="source-reference" style="margin:14px 0;padding:12px;border:1px solid #e9e9e6;border-radius:9px">'+
-        '<div><b>'+esc(s.task_id)+'</b> · '+esc(s.status)+' · '+s.event_count+' 个事件</div>'+
-        '<p>'+esc(s.report.summary||'正在积累操作事件，尚无摘要')+'</p>'+
-        '<small class="soft-caption">依据事件：'+esc((s.report.evidence_seq||[]).join('、')||'无')+
-        ' · '+esc(s.report.summary_source==='model'?'AI 概括':s.report.summary_source==='rule'?'本地概括':'待生成')+'</small>'+
-        '<div style="margin-top:8px"><button class="btn secondary small" data-browser-summarize="'+esc(s.id)+'">更新摘要</button></div></section>').join(''):
-        '<p class="field-note">尚未产生浏览器采集会话。</p>');
-    dialog('网页操作摘要',body,'',true);
-    el('overlay-root').querySelectorAll('[data-browser-summarize]').forEach(button=>{
-      button.onclick=()=>busy(button,async()=>{
-        try{
-          await api('browser-capture/sessions/'+encodeURIComponent(button.dataset.browserSummarize)+'/summarize',{method:'POST'});
-          await browserCaptureHistory();
-        }catch(error){notify(error.message)}
-      });
-    });
-  }catch(error){notify(error.message)}
+  if(state.page!=='sources')await go('sources',true);
+  await renderBrowserRecords(browserRecordsPage);
+  el('browser-records')?.scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function browserSessionDetails(sessionId,offset=0){
+  const [summary,events]=await Promise.all([
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/summary'),
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/events?limit=100&offset='+offset)
+  ]);
+  const kindNames={click:'点击',change:'修改',submit:'尝试提交',feedback:'页面提示',
+    navigation:'页面导航',tab_closed:'关闭标签页'};
+  const body=`<p class="soft-caption">采集方式：${summary.task_id.startsWith('manual-')?'手动网站采集':'流程任务采集'} ·
+    ${esc(captureStatuses[summary.capture_status]||summary.capture_status)} · ${summary.event_count} 条事件</p>
+    <section class="source-reference"><h3>本次操作摘要</h3>
+      <p>${esc(summary.summary||'尚未生成操作摘要')}</p>
+      <small class="soft-caption">依据事件：${esc((summary.evidence_seq||[]).join('、')||'暂无')} ·
+      ${summary.summary_source==='model'?'AI 概括':'本地规则概括'}</small>
+      <div style="margin-top:10px"><button class="btn secondary small" id="capture-resummarize">刷新摘要</button></div>
+    </section>
+    <section class="source-reference"><h3>完整操作时间线</h3>
+      ${events.length?events.map(e=>`<div style="padding:10px 0;border-bottom:1px solid #eee">
+        <div><b>#${e.seq} · ${esc(kindNames[e.kind]||e.kind)}</b>
+        <small class="soft-caption"> · ${captureDate(e.at)}</small></div>
+        <p style="margin:5px 0">${esc(e.label||'无控件标签')}</p>
+        <small class="soft-caption">${esc(e.location||'')}</small></div>`).join(''):'<p>此页没有操作事件。</p>'}
+      <div style="display:flex;gap:10px;margin-top:12px">
+        ${offset>0?'<button class="btn secondary small" id="capture-previous-events">上一页</button>':''}
+        ${events.length===100?'<button class="btn secondary small" id="capture-more-events">下一页</button>':''}
+      </div>
+    </section><p class="field-note">仅保留脱敏动作、控件标签及页面反馈；不采集输入值、完整 DOM 或视频。</p>`;
+  dialog('网页操作详情',body,'',true);
+  el('capture-resummarize')?.addEventListener('click',async()=>{
+    await api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/summarize',{method:'POST'});
+    await browserSessionDetails(sessionId,offset);
+  });
+  el('capture-previous-events')?.addEventListener('click',()=>browserSessionDetails(sessionId,offset-100));
+  el('capture-more-events')?.addEventListener('click',()=>browserSessionDetails(sessionId,offset+100));
 }
 
 async function browserExtensionGuide(){
