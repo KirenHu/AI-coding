@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "WorkTwin · 任务触发式浏览器行为采集",
-  "version": "0.2.0",
-  "description": "仅在 WorkTwin 已开启且可信流程平台签发任务时采集目标页面的结构化操作事件",
+  "version": "0.3.0",
+  "description": "仅在明确开启手动网站监控或可信流程任务时，采集已授权页面的脱敏操作事件",
   "permissions": [
     "tabs",
     "scripting",
@@ -14,7 +14,9 @@
     "http://127.0.0.1/*"
   ],
   "optional_host_permissions": [
-    "https://*/*"
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "externally_connectable": {
     "matches": [

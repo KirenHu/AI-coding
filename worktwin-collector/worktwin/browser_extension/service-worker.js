@@ -7,6 +7,7 @@ const sessions=new Map(); // sid -> {tabId,documentId,page,flowTab,seq,status}
 const recent=new Map();   // tabId -> last navigation metadata, NOT DOM content
 const pendingSite=new Map();
 const eventQueues=new Map();
+let manualSyncRunning=null;
 const ready=chrome.storage.session.get("captureSessions").then(({captureSessions})=>{
   for(const item of captureSessions||[]){
     if(item && item.id && item.status!=="completed")sessions.set(item.id,item);
@@ -20,7 +21,11 @@ function page(url){
   try{const u=new URL(url);return u.protocol==="https:"?u.origin+u.pathname:""}catch{return ""}
 }
 function site(url){
-  try{const u=new URL(url);return u.protocol==="https:"?u.origin:""}catch{return ""}
+  try{
+    const u=new URL(url);
+    const local=u.protocol==="http:"&&["localhost","127.0.0.1"].includes(u.hostname);
+    return u.protocol==="https:"||local?u.origin:"";
+  }catch{return ""}
 }
 async function token(){return (await chrome.storage.local.get("captureToken")).captureToken||""}
 async function call(path,body){
@@ -56,8 +61,39 @@ async function heartbeat(){
         chrome.action.setBadgeText({text:""});
       }
     }
+    await syncManual();
     return true;
   }catch{return false}
+}
+async function syncManual(){
+  if(manualSyncRunning)return manualSyncRunning;
+  manualSyncRunning=(async()=>{
+    if(!await token())return;
+    const remote=await call("/capture/manual/current");
+    for(const old of sessions.values()){
+      if(!old.manual||old.id===remote.session_id)continue;
+      old.status="completed";
+      pendingSite.delete(old.id);
+      if(old.tabId!==undefined)chrome.tabs.sendMessage(old.tabId,{type:"capture:stop"}).catch(()=>{});
+    }
+    if(!remote.enabled){await persist();return;}
+    let s=sessions.get(remote.session_id);
+    if(!s){
+      s={id:remote.session_id,page:remote.site,manual:true,status:remote.status,
+         seq:remote.last_seq||0,tabId:remote.tab_id,documentId:remote.document_id};
+      sessions.set(s.id,s);
+    }
+    await persist();
+    if(s.status==="capturing")return;
+    const active=await chrome.tabs.query({active:true,lastFocusedWindow:true});
+    for(const tab of active){
+      if(Number.isInteger(tab.id)&&site(tab.url||"")===remote.site){
+        await tryBind(s,{tabId:tab.id,url:tab.url}).catch(()=>{});
+        break;
+      }
+    }
+  })();
+  try{return await manualSyncRunning}finally{manualSyncRunning=null}
 }
 async function status(){
   const connected=await heartbeat();
@@ -76,11 +112,18 @@ async function tryBind(session,details){
     if(!frame?.documentId)return;
     details={...details,url:frame.url,documentId:frame.documentId};
   }
-  if(page(details.url)!==session.page)return;
+  if((session.manual?site(details.url):page(details.url))!==session.page)return;
   // Only the launcher tab or a new tab with the original launcher's
   // openerTabId is eligible. A different tab showing the same URL is not.
   const tab=await chrome.tabs.get(details.tabId).catch(()=>null);
-  if(!tab || (details.tabId!==session.flowTab && tab.openerTabId!==session.flowTab && details.sourceTabId!==session.flowTab))return;
+  if(!tab)return;
+  if(session.manual){
+    // Only the active tab intentionally visited after enabling manual capture.
+    if(!tab.active)return;
+  }else if(details.tabId!==session.flowTab &&
+           tab.openerTabId!==session.flowTab && details.sourceTabId!==session.flowTab){
+    return;
+  }
   const origin=site(details.url);
   if(!origin)return;
   const granted=await chrome.permissions.contains({origins:[origin+"/*"]});
@@ -202,7 +245,8 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     ready.then(()=>{
     const s=[...sessions.values()].find(x=>
       x.status==="capturing" && x.tabId===sender.tab.id &&
-      x.documentId===sender.documentId && page(sender.url||"")===x.page);
+      x.documentId===sender.documentId &&
+      (x.manual?site(sender.url||""):page(sender.url||""))===x.page);
     if(s && ["click","change","submit","feedback"].includes(message.kind)){
       enqueueEvent(s,message.kind,message.label,sender.url,sender.documentId)
         .then(reply).catch(e=>reply({ok:false,error:String(e.message||e)}));
@@ -235,6 +279,24 @@ chrome.tabs.onCreated.addListener(tab=>{
     });
   }).catch(()=>{});
 });
+async function manualNavigation(s,details){
+  if(!details.documentId){
+    const frame=await chrome.webNavigation.getFrame({
+      tabId:details.tabId,frameId:0
+    }).catch(()=>null);
+    details={...details,documentId:frame?.documentId,url:frame?.url||details.url};
+  }
+  await enqueueEvent(s,"navigation","",details.url,s.documentId);
+  if(s.status!=="capturing"||!details.documentId)return;
+  await call("/capture/manual/rebind",{
+    session_id:s.id,tab_id:s.tabId,
+    document_id:details.documentId,current_url:details.url
+  });
+  s.documentId=details.documentId;
+  await persist();
+  await inject(s);
+}
+chrome.tabs.onActivated.addListener(()=>ready.then(syncManual).catch(()=>{}));
 chrome.webNavigation.onCommitted.addListener(details=>{
   if(details.frameId!==0)return;
   ready.then(()=>{
@@ -250,10 +312,12 @@ chrome.webNavigation.onCommitted.addListener(details=>{
       // Even same URL reload creates a new document: stop at first committed
       // navigation. Never attach to the replacement document.
       if(details.documentId!==s.documentId){
-        enqueueEvent(s,"navigation","",details.url,s.documentId);
+        if(s.manual)manualNavigation(s,info).catch(()=>{});
+        else enqueueEvent(s,"navigation","",details.url,s.documentId);
       }
     }else if(s.status==="armed"){
-      tryBind(s,info).catch(()=>{});
+      if(s.manual)syncManual().catch(()=>{});
+      else tryBind(s,info).catch(()=>{});
     }
   }
   });
