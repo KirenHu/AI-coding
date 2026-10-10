@@ -1,9 +1,9 @@
-/* One explicitly authorized, top-level document only.
+/* One explicitly authorized document (top-level or same-site embedded frame).
  * Observe named actions, not typed values, page HTML, URLs or screenshots.
  * A local task-complete signal stops these listeners immediately.
  */
 (()=>{
-  if(window!==window.top || globalThis.__worktwinCaptureActive)return;
+  if(globalThis.__worktwinCaptureActive)return;
   globalThis.__worktwinCaptureActive=true;
   let active=true;
   let lastFeedback="",lastFeedbackAt=0;
@@ -50,9 +50,11 @@
       .catch(stop);
   }
   function safeAction(e,kind){
-    const node=e.target?.closest?.("button,a,input,select,textarea,[role=button],[role=checkbox],[role=radio]");
+    // composedPath preserves the actual control in an open shadow-root dialog.
+    const target=e.composedPath?.()[0]||e.target;
+    const node=target?.closest?.("button,a,input,select,textarea,[role=button],[role=checkbox],[role=radio]");
     if(node && sensitive(node))return; // Even interaction metadata can be sensitive.
-    emit(kind,describe(e.target));
+    emit(kind,describe(target));
   }
   const click=e=>safeAction(e,"click");
   const change=e=>safeAction(e,"change");
@@ -89,12 +91,15 @@
   function stop(){
     if(!active)return;
     active=false;
+    globalThis.__worktwinCaptureActive=false;
     observer.disconnect();
     document.removeEventListener("click",click,true);
     document.removeEventListener("change",change,true);
     document.removeEventListener("submit",submit,true);
+    chrome.runtime.onMessage.removeListener(onMessage);
   }
-  chrome.runtime.onMessage.addListener(message=>{
+  function onMessage(message){
     if(message?.type==="capture:stop")stop();
-  });
+  }
+  chrome.runtime.onMessage.addListener(onMessage);
 })();

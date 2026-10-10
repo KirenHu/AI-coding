@@ -1,4 +1,4 @@
-name: WorkTwin 1.2.0 acceptance and signed release
+name: WorkTwin 1.3.1 acceptance and signed release
 
 on:
   workflow_dispatch:
@@ -48,6 +48,8 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - name: Browser acceptance of collection, editing and authorization
         run: PYTHONPATH=. python scripts/ui_acceptance.py
+      - name: Browser acceptance of explicit refresh and assistant source detection
+        run: PYTHONPATH=. python scripts/ui_refresh_acceptance.py
       - name: Browser acceptance of knowledge updates
         run: PYTHONPATH=. python scripts/ui_proposals_acceptance.py
       - name: Browser acceptance of remote sharing and owner offline use
@@ -72,8 +74,8 @@ jobs:
         run: |
           python -m build
           mkdir -p release
-          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.2.0-source.zip"
-          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.2.0-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
+          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.3.1-source.zip"
+          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.3.1-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
           cp dist/*.whl dist/*.tar.gz release/
       - uses: actions/upload-artifact@v4
         with:
@@ -146,7 +148,7 @@ jobs:
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release
-          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.2.0-Windows-x64.zip
+          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.3.1-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: WorkTwin-Windows-unsigned
@@ -164,22 +166,22 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-      - name: Create checksums and publish the trusted 1.2.0 release
+      - name: Create checksums and publish the trusted 1.3.1 release
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release-assets
-          test -f WorkTwin-Collector-1.2.0-macOS-arm64.dmg
-          test -f WorkTwin-Collector-1.2.0-macOS-x86_64.dmg
+          test -f WorkTwin-Collector-1.3.1-macOS-arm64.dmg
+          test -f WorkTwin-Collector-1.3.1-macOS-x86_64.dmg
           if find . -name '*-unsigned.dmg' | grep -q .; then
             echo 'Refusing to publish unsigned DMGs' >&2
             exit 1
           fi
           sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
           cd ..
-          if gh release view worktwin-v1.2.0 >/dev/null 2>&1; then
-            echo 'The existing v1.2.0 release is immutable; a new release needs a new version'
+          if gh release view worktwin-v1.3.1 >/dev/null 2>&1; then
+            echo 'The existing v1.3.1 release is immutable; a new release needs a new version'
             exit 0
           fi
-          gh release create worktwin-v1.2.0 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.2.0 (autonomous knowledge, task capture and trusted macOS delivery)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
+          gh release create worktwin-v1.3.1 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.3.1 (autonomous knowledge, task capture and trusted macOS delivery)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*

@@ -8,15 +8,17 @@ from datetime import datetime, timedelta, timezone
 from .db import Database
 from .inference import GatewayClient, extract_knowledge
 from .knowledge import store_candidates
-from .parsers import split_chunks
 from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
 from .gardener import KnowledgeGardener
 from .scope import document_scope
 from .projects import catalog, plan_work_units, apply_assignments
+from .project_recheck import ProjectRechecker
 from .decision_model import DecisionRouter
 from .credentials import DesktopSecrets
 from .automation import activate_new, apply_additions, model_signature
 from .autonomy import apply_safe_replacements
+from .ingest import pending_batch, ack_batch
+from .artifacts import work_context, context_for_model
 
 
 class KnowledgeWorker:
@@ -30,6 +32,7 @@ class KnowledgeWorker:
         self.processing = False
         self.gardener = KnowledgeGardener(db, client=self.client)
         self.decision_router=decision_router or DecisionRouter(db,DesktopSecrets(db.path),self.client)
+        self.project_rechecker=ProjectRechecker(db,self.decision_router)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -64,6 +67,10 @@ class KnowledgeWorker:
                 # Maintenance is lower priority than fresh capture: one note
                 # per idle cycle and no call if extraction is still backed up.
                 if result == "idle" and not self._stop.is_set():
+                    # A new project may resolve previously isolated sessions.
+                    # Work through a bounded batch before lower priority text
+                    # curation; no user confirmation or full-corpus re-extraction.
+                    self.project_rechecker.process_next()
                     self.gardener.client = self.client
                     self.gardener.process_next()
 
@@ -79,15 +86,33 @@ class KnowledgeWorker:
             con.execute("UPDATE ai_jobs SET state='queued',claim_token=NULL WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts<4")
             con.execute("UPDATE ai_jobs SET state='error',error='整理任务多次中断，请重试' WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts>=4")
             row = con.execute("""SELECT j.id job_id,j.document_id,j.content_sha,d.content,
+                    j.batch_generation,j.batch_from_seq,j.batch_through_seq,t.generation,
                     d.id,d.source_id,d.project,d.project_key,d.scope,d.project_verified,d.file_type,COALESCE(s.adapter,s.kind) adapter
                     FROM ai_jobs j JOIN documents d ON d.id=j.document_id
                     JOIN sources s ON s.id=d.source_id
+                    LEFT JOIN transcript_streams t ON t.document_id=d.id
                     WHERE j.state='queued' AND (j.next_run_at IS NULL OR j.next_run_at<=datetime('now'))
-                    AND s.enabled=1 AND s.allow_ai=1 AND d.sha256=j.content_sha
+                    AND s.enabled=1 AND s.allow_ai=1 AND d.deleted=0
+                    AND (t.document_id IS NOT NULL OR d.sha256=j.content_sha)
                     ORDER BY j.updated_at ASC,j.id ASC LIMIT 1""").fetchone()
             if not row:
                 return {"state": "idle"}
             job = dict(row)
+            frozen = (job['generation'] is not None
+                      and job['batch_generation'] == job['generation']
+                      and job['batch_through_seq'] is not None)
+            batch = pending_batch(con, job['document_id'],
+                                  after_seq=job['batch_from_seq'] if frozen else None,
+                                  through_seq=job['batch_through_seq'] if frozen else None)
+            if batch is not None:
+                job['content'] = batch['content']
+                if not job['content']:
+                    con.execute("""UPDATE ai_jobs SET state='done',error=NULL,next_run_at=NULL,
+                        claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL,
+                        updated_at=datetime('now') WHERE id=?""", (job['job_id'],))
+                    return {'state': 'done', 'candidates': 0, 'added': 0, 'proposals': 0, 'automatic': 0}
+                con.execute("""UPDATE ai_jobs SET batch_generation=?,batch_from_seq=?,batch_through_seq=?
+                    WHERE id=?""", (batch['generation'], batch['from_seq'], batch['through_seq'], job['job_id']))
             job['claim_token']=secrets.token_hex(16)
             con.execute("UPDATE ai_jobs SET state='running',claim_token=?,attempts=attempts+1,updated_at=datetime('now') WHERE id=?", (job['claim_token'],job["job_id"]))
         self.processing = True
@@ -107,12 +132,34 @@ class KnowledgeWorker:
                 metadata=document_scope(job)
                 con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],job['document_id']))
                 known = existing_for_project(con, job["document_id"])
+                context = work_context(con, job['document_id'],
+                                       event_start=batch['from_seq'] + 1 if batch else None,
+                                       event_end=batch['through_seq'] if batch else None)
             model_identity=model_signature(self.client)
-            items = extract_knowledge(job["content"], transcript=job["adapter"] in ("codex", "claude"),
-                                      client=leased_client,scope=metadata,existing=known)
+            class ExtractionClient:
+                configured=True
+                def chat(self, messages, max_tokens=1800):
+                    messages = [dict(message) for message in messages]
+                    if batch:
+                        messages[0]['content'] += (
+                            '\n这是会话的增量批次。前序对话仅供理解指代和确认关系，'
+                            '只整理本次新增事件带来的知识或变化，不重复提炼前序知识；'
+                            'quote或confirmation_quote必须出自本次新增事件。')
+                    messages[-1]['content'] += '\n工作成果上下文（供关联，不替代对话原文）：\n' + context_for_model(context)
+                    return leased_client.chat(messages, max_tokens=max_tokens)
+            items = extract_knowledge(job["content"], transcript=batch is not None or job["adapter"] in ("codex", "claude", "cursor"),
+                                      client=ExtractionClient(),scope=metadata,existing=known)
+            if batch:
+                items = [item for item in items if any(
+                    item.get(field) and item[field] in batch['new_content']
+                    for field in ('quote', 'confirmation_quote'))]
             with self.db.connect() as con:
                 document=con.execute('SELECT * FROM documents WHERE id=?',(job['document_id'],)).fetchone()
                 known_projects=catalog(con)
+                for item in items:
+                    item['work_context'] = work_context(con, job['document_id'], quote=item['quote'],
+                                                       event_start=batch['from_seq'] + 1 if batch else None,
+                                                       event_end=batch['through_seq'] if batch else None)
             links=plan_work_units(items,document,known_projects,self.decision_router)
             for item,link in zip(items,links):
                 item.update({k:link[k] for k in ('scope','project_key','project')})
@@ -133,24 +180,33 @@ class KnowledgeWorker:
             with self.db.connect() as con:
                 con.execute('BEGIN IMMEDIATE')
                 # A revoked source or edited document must never be resurrected by an in-flight response.
-                current = con.execute("""SELECT d.sha256,s.enabled,s.allow_ai FROM documents d
-                    JOIN sources s ON s.id=d.source_id WHERE d.id=?""", (job["document_id"],)).fetchone()
+                current = con.execute("""SELECT d.sha256,d.deleted,s.enabled,s.allow_ai,t.generation,t.captured_seq
+                    FROM documents d JOIN sources s ON s.id=d.source_id
+                    LEFT JOIN transcript_streams t ON t.document_id=d.id WHERE d.id=?""", (job["document_id"],)).fetchone()
                 claimed=con.execute('SELECT 1 FROM ai_jobs WHERE id=? AND claim_token=? AND content_sha=?',(job['job_id'],job['claim_token'],job['content_sha'])).fetchone()
-                if not claimed or not current or current["sha256"] != job["content_sha"] or not current["enabled"] or not current["allow_ai"]:
+                unchanged = current and (current['generation'] == batch['generation'] if batch else current['sha256'] == job['content_sha'])
+                if not claimed or not unchanged or current['deleted'] or not current["enabled"] or not current["allow_ai"]:
                     return {"state": "superseded"}
+                if batch and not ack_batch(con, job['document_id'], batch['through_seq'], batch['generation']):
+                    return {'state': 'superseded'}
                 # Re-validate model references within the DB transaction.
                 plan = {i:p for i,p in plan.items() if p['target_id'] in {
                     r['id'] for r in existing_for_project(con,job['document_id'],
                         project_key=items[i]['project_key'],scope=items[i]['scope'])}}
-                proposals = store_proposals(con, job['document_id'], job['content_sha'], items, plan)
+                proposals = store_proposals(con, job['document_id'], current['sha256'], items, plan)
                 fresh = [item for i,item in enumerate(items) if i not in plan]
-                n = store_candidates(con, job["document_id"], split_chunks(job["content"]), fresh,
+                n = store_candidates(con, job["document_id"], [], fresh,
                                      created_by="enterprise_ai")
                 apply_assignments(con,job['document_id'],items,links)
                 automatic=(apply_additions(con,job['document_id'],self.client)+apply_safe_replacements(con,job['document_id'])+activate_new(con,job['document_id'],fresh,self.client)
                            if model_identity==model_signature(self.client) else 0)
-                con.execute("UPDATE ai_jobs SET state='done',error=NULL,next_run_at=NULL,updated_at=datetime('now') WHERE id=? AND content_sha=? AND claim_token=?",
-                            (job["job_id"], job["content_sha"],job["claim_token"]))
+                has_more = batch and current['captured_seq'] > batch['through_seq']
+                con.execute("""UPDATE ai_jobs SET state=?,content_sha=?,error=NULL,next_run_at=NULL,
+                    claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL,
+                    attempts=CASE WHEN ? THEN 0 ELSE attempts END,updated_at=datetime('now')
+                    WHERE id=? AND content_sha=? AND claim_token=?""",
+                    ('queued' if has_more else 'done',current['sha256'],bool(has_more),
+                     job["job_id"], job["content_sha"],job["claim_token"]))
             self.db.event("ai_extracted", f"自动整理 {len(items)} 条知识，新增引用 {n} 条，待复核更新 {proposals} 项")
             return {"state": "done", "candidates": len(items), "added": n, "proposals": proposals,'automatic':automatic}
         except Exception as exc:

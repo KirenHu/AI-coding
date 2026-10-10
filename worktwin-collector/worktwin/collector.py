@@ -8,33 +8,37 @@ import threading
 import time
 from pathlib import Path
 
-from .config import MAX_FILE_BYTES, MAX_SESSION_BYTES, POLL_INTERVAL_SECONDS
+from .config import MAX_FILE_BYTES, POLL_INTERVAL_SECONDS
 from .db import Database
 from .reconcile import review_flags
 from .parsers import EXCLUDED_FILES, EXCLUDED_FOLDERS, SUPPORTED_EXTENSIONS, parse_file, split_chunks
+from .ingest import TRANSCRIPT_ADAPTERS, collect_transcript
+from .artifacts import record_file_observation, record_file_deletion
 
 
 def eligible_file(path: Path, kind: str) -> bool:
     name = path.name.lower()
     if name in EXCLUDED_FILES or name.startswith(".env") or name.endswith((".pem", ".key", ".p12", ".pfx")):
         return False
-    if kind in ("codex", "claude"):
+    if kind in TRANSCRIPT_ADAPTERS:
         return path.suffix.lower() == ".jsonl"
     return path.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
-def source_files(root: Path, kind: str):
+def source_files(root: Path, kind: str, onerror=None):
     resolved_root = Path(root).resolve()
-    for current, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink() and d not in EXCLUDED_FOLDERS and not (d.startswith(".") and kind not in ("codex", "claude"))]
+    for current, dirs, files in os.walk(root, followlinks=False, onerror=onerror):
+        dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink() and d not in EXCLUDED_FOLDERS and not (d.startswith(".") and kind not in TRANSCRIPT_ADAPTERS)]
         for name in files:
             path = Path(current) / name
-            if not eligible_file(path, kind) or path.is_symlink() or not path.is_file():
+            if not eligible_file(path, kind) or path.is_symlink():
                 continue
             try:
-                if path.stat().st_size <= (MAX_SESSION_BYTES if kind in ("codex", "claude") else MAX_FILE_BYTES) and path.resolve().is_relative_to(resolved_root):
+                if path.resolve().is_relative_to(resolved_root):
                     yield path
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                if onerror:
+                    onerror(exc)
                 continue
 
 
@@ -165,14 +169,28 @@ class Collector:
             counts["errors"] += 1
             return counts
         with self.db.connect() as con:
-            existing = {r["path"]: dict(r) for r in con.execute("SELECT id,path,sha256,mtime_ns,size_bytes FROM documents WHERE source_id=?", (src["id"],))}
+            existing = {r["path"]: dict(r) for r in con.execute("SELECT id,path,title,content,sha256,mtime_ns,size_bytes FROM documents WHERE source_id=?", (src["id"],))}
         seen: set[str] = set()
-        for path in source_files(root, kind):
+        def walk_error(exc):
+            counts["errors"] += 1
+            self.db.event("scan_unreadable", "部分目录暂时不可读取，保留已采集资料", src["id"])
+        for path in source_files(root, kind, onerror=walk_error):
             key = str(path)
             seen.add(key)
             try:
                 stat = path.stat()
                 previous = existing.get(key)
+                if kind in TRANSCRIPT_ADAPTERS:
+                    with self.db.connect() as con:
+                        result = collect_transcript(con, path, src, previous, stat)
+                    if result["state"]:
+                        counts[result["state"]] += 1
+                    counts["errors"] += result["errors"]
+                    continue
+                if stat.st_size > MAX_FILE_BYTES:
+                    counts["errors"] += 1
+                    self.db.event("scan_skipped", f"{path.name}: 文件超出当前读取上限，保留已采集资料", src["id"])
+                    continue
                 if previous and previous["mtime_ns"] == stat.st_mtime_ns and previous["size_bytes"] == stat.st_size:
                     continue
                 digest = hashlib.sha256()
@@ -224,6 +242,9 @@ class Collector:
                         counts["new"] += 1
                     for idx, (start, end, chunk) in enumerate(chunks):
                         con.execute("INSERT INTO chunks(document_id,ordinal,start_offset,end_offset,text) VALUES(?,?,?,?,?)", (document_id, idx, start, end, chunk))
+                    record_file_observation(con, document_id,
+                                            previous_content=previous["content"] if previous else None,
+                                            previous_sha=previous["sha256"] if previous else "")
                     # A quote can remain valid across edits; rebind it to the new chunk.
                     if previous:
                         evs = con.execute("SELECT id,quote FROM knowledge_evidence WHERE document_id=?", (document_id,)).fetchall()
@@ -252,11 +273,22 @@ class Collector:
             except Exception as exc:
                 counts["errors"] += 1
                 self.db.event("parse_error", f"{path.name}: {exc}", src["id"])
-        removed = set(existing) - seen
+        # Enumeration filters, read errors and incomplete walks do not prove
+        # deletion. Only a missing path removes a previously collected file.
+        removed = set()
+        for old_path in set(existing) - seen:
+            try:
+                Path(old_path).stat()
+            except FileNotFoundError:
+                removed.add(old_path)
+            except OSError:
+                counts["errors"] += 1
         if removed:
             with self.db.connect() as con:
                 for old_path in removed:
                     doc_id = existing[old_path]["id"]
+                    if kind not in TRANSCRIPT_ADAPTERS:
+                        record_file_deletion(con, doc_id)
                     affected = {int(r[0]) for r in con.execute(
                         "SELECT DISTINCT knowledge_id FROM knowledge_evidence WHERE document_id=?", (doc_id,))}
                     con.execute("DELETE FROM documents WHERE id=?", (doc_id,))

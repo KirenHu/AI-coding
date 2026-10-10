@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -53,13 +53,20 @@ STATIC = Path(__file__).parent / "static"
 
 class SourceInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
-    kind: Literal["folder", "codex", "claude"] = "folder"
+    kind: Literal["folder", "codex", "claude", "cursor"] = "folder"
     root: str = Field(min_length=1)
     allow_ai: bool = False
     allow_share: bool = False
+    validate_transcript: bool = False
+
+
+class SourceDetectionInput(BaseModel):
+    kind: Literal['codex','claude','cursor']
+    root: str | None = None
 
 
 class KnowledgeInput(BaseModel):
+    expected_version: int | None = Field(default=None, ge=1)
     title: str = Field(min_length=1, max_length=130)
     body: str = Field(min_length=1, max_length=50000)
     kind: Literal["fact", "decision", "process", "preference"] = "fact"
@@ -173,6 +180,16 @@ class CaptureToggle(BaseModel):
 
 class CaptureAiToggle(BaseModel):
     allow_ai: bool
+
+class ManualCaptureInput(BaseModel):
+    enabled: bool
+    url: str = Field(default='',max_length=2048)
+
+class ManualCaptureRebind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
 
 class CapturePair(BaseModel):
     code: str = Field(min_length=10,max_length=128)
@@ -337,6 +354,19 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_ai_toggle(body: CaptureAiToggle):
         return browser_capture.toggle_ai(body.allow_ai)
 
+    @app.put("/api/browser-capture/manual",dependencies=[Depends(authorized)])
+    def configure_manual_capture(body: ManualCaptureInput, background_tasks: BackgroundTasks):
+        before=browser_capture.settings()
+        result=browser_capture.manual_config(enabled=body.enabled,url=body.url)
+        # Finish and publish the just-closed recording immediately. Background
+        # processing also covers navigation-based or expired termination.
+        previous_id=before["manual_session_id"]
+        if (previous_id and before["manual_enabled"] and
+            previous_id!=result["manual_session_id"]):
+            # Do not delay the UI stop action while a paid summary model runs.
+            background_tasks.add_task(browser_summary_service.generate,previous_id,force=True)
+        return result
+
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
     def browser_capture_extension_download():
         extension_dir = Path(__file__).parent / "browser_extension"
@@ -353,8 +383,23 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return {"code":browser_capture.pairing_code(),"valid_seconds":300}
 
     @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
-    def browser_capture_sessions():
-        return browser_capture.recent()
+    def browser_capture_sessions(limit: int = Query(30,ge=1,le=100),
+                                 offset: int = Query(0,ge=0)):
+        return browser_capture.recent(limit=limit,offset=offset)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/events",dependencies=[Depends(authorized)])
+    def browser_capture_events(session_id: str,limit: int = Query(100,ge=1,le=200),
+                               offset: int = Query(0,ge=0)):
+        return browser_capture.events(session_id,limit=limit,offset=offset)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/site-manual",dependencies=[Depends(authorized)])
+    def browser_capture_site_manual(session_id: str):
+        with db.connect() as con:
+            manual=con.execute("""SELECT m.site,m.knowledge_id
+                FROM browser_capture_sessions s
+                JOIN browser_site_manuals m ON m.site=s.page_key
+                WHERE s.id=? AND s.mode='manual'""",(session_id,)).fetchone()
+            return dict(manual) if manual else {"knowledge_id":None}
 
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
@@ -385,6 +430,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         # An extension credential never authorizes a task on its own: the
         # external workflow must also sign the complete, expiring command.
         return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/manual/current")
+    def capture_manual_current(request: Request):
+        return browser_capture.manual_current(capture_credential(request))
+
+    @app.post("/capture/manual/rebind")
+    def capture_manual_rebind(request: Request,body: ManualCaptureRebind):
+        return browser_capture.manual_rebind(capture_credential(request),**body.model_dump())
 
     @app.post("/capture/bind")
     def capture_bind(request: Request,body: CaptureBind):
@@ -435,13 +488,18 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         root = Path(payload.root).expanduser().resolve()
         if not root.is_dir():
             raise HTTPException(400, "所选文件夹不存在或无法访问")
-        if payload.kind in ("codex", "claude") and root == Path.home():
-            raise HTTPException(400, "请选择 Codex sessions 目录，而不是整个主目录")
+        if payload.kind in ("codex", "claude", "cursor") and root == Path.home():
+            raise HTTPException(400, "请选择会话记录目录，而不是整个主目录")
+        if payload.validate_transcript and payload.kind != 'folder':
+            from .source_detection import detect_transcripts
+            detected = detect_transcripts(payload.kind, str(root))
+            if not detected['recognized']:
+                raise HTTPException(400, '没有检测到对应助手的会话记录，请先完成一次会话，或在高级设置中检查记录位置')
         with db.connect() as con:
             if con.execute("SELECT id FROM sources WHERE root=?",(str(root),)).fetchone():
                 raise HTTPException(409, "这个目录已添加")
             row = con.execute("INSERT INTO sources(name,kind,adapter,root,allow_ai,allow_share) VALUES(?,?,?,?,?,?)",
-                              (payload.name, "folder" if payload.kind == "claude" else payload.kind,
+                              (payload.name, "folder" if payload.kind in ("claude", "cursor") else payload.kind,
                                payload.kind, str(root), int(payload.allow_ai), int(payload.allow_share)))
             source_id = int(row.lastrowid)
         db.event("source_added", f"已授权：{payload.name}",source_id)
@@ -454,6 +512,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         claude = claude_projects_path()
         return {"codex": str(p), "codex_exists":p.is_dir(),
                 "claude":str(claude), "claude_exists":claude.is_dir(), "home":str(Path.home())}
+
+    @app.post('/api/sources/detect', dependencies=[Depends(authorized)])
+    def detect_source(payload: SourceDetectionInput):
+        from .source_detection import detect_transcripts
+        return detect_transcripts(payload.kind, payload.root)
 
     @app.post("/api/pick-folder", dependencies=[Depends(authorized)])
     def pick_folder():
@@ -623,9 +686,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             docs=con.execute('''SELECT d.id,d.sha256 FROM documents d JOIN sources s ON s.id=d.source_id
                 WHERE s.enabled=1 AND s.allow_ai=1 AND d.deleted=0''').fetchall()
             for d in docs:
+                con.execute('UPDATE transcript_streams SET processed_seq=0 WHERE document_id=?',(d['id'],))
                 con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state,attempts) VALUES(?,?,'queued',0)
                     ON CONFLICT(document_id) DO UPDATE SET content_sha=excluded.content_sha,state='queued',attempts=0,
-                    error=NULL,next_run_at=NULL,claim_token=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
+                    error=NULL,next_run_at=NULL,claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,
+                    batch_through_seq=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
         knowledge_worker.schedule()
         return {'queued':len(docs)}
 
@@ -688,9 +753,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/knowledge/{knowledge_id}", dependencies=[Depends(authorized)])
     def update_knowledge(knowledge_id: int, payload: KnowledgeInput):
         with db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
             old = con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
             if not old:
                 raise HTTPException(404,"知识不存在")
+            if payload.expected_version is not None and payload.expected_version != old['version']:
+                raise HTTPException(409,"知识已更新，请刷新后再保存；当前输入尚未丢弃")
             metadata=knowledge_metadata(payload,old=old)
             snapshot_history(con,old)
             con.execute("""UPDATE knowledge SET kind=?,title=?,body=?,status=?,version=version+1,
@@ -745,6 +813,42 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if result is None:
                 raise HTTPException(404,'知识不存在')
             return result
+
+    @app.post("/api/knowledge/{knowledge_id}/versions/{version}/restore", dependencies=[Depends(authorized)])
+    def restore_knowledge_version(knowledge_id: int, version: int):
+        """Copy a saved revision into a NEW current version; never rewrite history.
+
+        Project identity and source permissions belong to the current evidence
+        graph, so rolling back the text must not silently widen twin access.
+        """
+        with db.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            current=con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
+            if not current:
+                raise HTTPException(404,"知识不存在")
+            previous=con.execute("""SELECT * FROM knowledge_history
+                WHERE knowledge_id=? AND version=?""",(knowledge_id,version)).fetchone()
+            if not previous or version>=current['version']:
+                raise HTTPException(404,"历史版本不存在")
+            snapshot_history(con,current)
+            con.execute("""UPDATE knowledge SET title=?,body=?,kind=?,status=?,topic=?,
+                scope_detail=?,quality=?,outcome=?,created_by='human',attribution='human',
+                review_hold=0,needs_review=0,version=version+1,updated_at=datetime('now')
+                WHERE id=?""",
+                (previous['title'],previous['body'],previous['kind'],previous['status'],
+                 previous['topic'],previous['scope_detail'],previous['quality'],
+                 previous['outcome'],knowledge_id))
+            # Pending AI proposals refer to the superseded current version.
+            # Never leave a restored note blocked by an obsolete proposal.
+            con.execute("""UPDATE knowledge_proposals
+                SET status='dismissed',resolved_at=datetime('now')
+                WHERE target_id=? AND status='pending'""",(knowledge_id,))
+            # The restored article keeps the latest project assignment and its
+            # unchanged source grants; downstream twin/MCP resolvers read them.
+            review_flags(con,[knowledge_id])
+            new_version=current['version']+1
+        db.event("knowledge_version_restored",f"知识 {knowledge_id} 从 v{version} 回退至 v{new_version}")
+        return {"restored":True,"from_version":version,"version":new_version}
 
     @app.get("/api/knowledge/{knowledge_id}/history")
     def history(knowledge_id: int):
@@ -1228,9 +1332,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)''',(document_id,))
             con.execute("UPDATE documents SET project=?,project_key=?,scope='project',project_verified=1 WHERE id=?",(project,key,document_id))
             if changed:
+                con.execute('UPDATE transcript_streams SET processed_seq=0 WHERE document_id=?',(document_id,))
                 con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state) VALUES(?,?,'queued')
                     ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
-                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL''',(document_id,d['sha256']))
+                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL,
+                    batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL''',(document_id,d['sha256']))
         if changed:
             knowledge_worker.schedule()
         return {'project':project,'project_key':key,'queued':changed}
