@@ -308,6 +308,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_sessions():
         return browser_capture.recent()
 
+    @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
+    def browser_capture_steps(session_id: str):
+        return browser_capture.steps(session_id)
+
     @app.post("/capture/pair")
     def capture_pair(body: CapturePair):
         return {"token":browser_capture.pair(body.code)}
