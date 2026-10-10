@@ -175,7 +175,7 @@ function showCaptureSetup(browser){
       '管理员尚未配置可信流程平台公钥，当前无法接受任务触发信号。')+'</p>',
     '<button class="btn secondary" id="capture-download">下载插件 ZIP</button>'+
     '<button class="btn secondary" id="capture-new-pair">生成配对码</button>'+
-    '<button class="btn" data-close>完成');
+    '<button class="btn" data-close>完成</button>');
   el('capture-download').onclick=downloadCaptureExtension;
   el('capture-new-pair').onclick=()=>busy(el('capture-new-pair'),async()=>{
     try{
