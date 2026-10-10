@@ -73,6 +73,7 @@ def test_browser_opt_in_signed_trigger_bound_tab_and_navigation(tmp_path, monkey
               json={"session_id":capture_id,"tab_id":tab,"document_id":doc,"page_url":url})
         assert bind(21,"document-a","https://other.example.test").status_code == 403
         assert bind(21,"document-a",URL).json()["recording"]
+        assert c.delete("/api/capture/sessions/"+capture_id,headers=h).status_code == 409
         assert bind(21,"document-b",URL).status_code == 409
         payload = {
             "session_id":capture_id,"tab_id":21,"document_id":"document-a","page_url":URL,
