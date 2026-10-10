@@ -95,6 +95,10 @@ def parse_model_summary(raw, actions):
         return None
     if re.search(r"失败|报错|出错",summary) and not failure:
         return None
+    # Typed input values and select choices are deliberately not observed.
+    # Any model claim about the new value must be rejected.
+    if re.search(r"(?:修改|调整|切换|设置|改动).{0,7}(?:为|成)",summary):
+        return None
     return summary,list(dict.fromkeys(ids))
 
 
