@@ -100,6 +100,10 @@ def plan_work_units(items, document, projects, decision_router):
                 'reason':'现有项目存在同名或冲突候选，保持会话隔离'}
         else:
             repo=anchors['repositories'][0] if len(anchors['repositories'])==1 else ''
+            if any(p.get('anchor_type')=='repo' and p.get('anchor')==repo
+                    for p in available):
+                # A repository can host several business projects.
+                repo=''
             assignment={'scope':'project','project_key':'auto:'+secrets.token_hex(16),
                 'project':hint,'status':'confirmed','confidence':0.99,
                 'anchor_type':'repo' if repo else '',
