@@ -201,7 +201,17 @@ def store_proposals(con: sqlite3.Connection, document_id: int, sha: str,
         occurred=source_time(item.get('occurred_at','')) or None
         latest=con.execute('''SELECT MAX(occurred_at) FROM knowledge_evidence
             WHERE knowledge_id=? AND is_current=1 AND superseded=0''',(proposal['target_id'],)).fetchone()[0]
-        if action=='replace' and (not occurred or not source_time(latest or '') or occurred<source_time(latest)):
+        # Replacing a document on disk is itself newer source evidence when
+        # every previous citation from that same document has disappeared.
+        # This never authorizes cross-document or cross-project replacement.
+        same_document_revision = bool(con.execute("""SELECT 1 FROM knowledge_evidence e
+            WHERE e.knowledge_id=? AND e.document_id=? AND e.is_current=0
+              AND e.superseded=0""",(proposal['target_id'],document_id)).fetchone())
+        same_document_revision = same_document_revision and not con.execute("""
+            SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=?
+              AND (e.document_id!=? OR (e.is_current=1 AND e.superseded=0))
+        """,(proposal['target_id'],document_id)).fetchone()
+        if action=='replace' and not same_document_revision and (not occurred or not source_time(latest or '') or occurred<source_time(latest)):
             action='conflict'
             reason='资料先后时间缺少依据或早于现有结论，不能自动视为新版；请核对。'+reason
         if action=='enrich' and topic_key(item.get('scope_detail','')) != topic_key(target['scope_detail']):
