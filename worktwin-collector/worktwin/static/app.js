@@ -76,7 +76,9 @@ async function renderSources(){
       '<label class="permission-cell"><input class="toggle" id="browser-capture-enabled" type="checkbox" '+(capture.enabled?'checked':'')+'/> 手动启用</label></div>'+
       '<div class="field-note">插件状态：'+(capture.extension_connected?'已连接':'未连接（无法据此区分未安装和未运行）')+
       ' · 进行中任务：'+capture.active_tasks+' · 流程平台：'+(capture.flow_configured?'已配置':'尚未配置')+'</div>'+
+      '<label class="check-row" style="margin:12px 0"><input id="browser-capture-ai" type="checkbox" '+(capture.allow_ai?'checked':'')+' '+(capture.enabled?'':'disabled')+'/> <span>允许 AI 概括网页操作（独立授权）<small class="soft-caption">只发送脱敏操作事件到已配置模型；不提炼知识，不进入数字分身。</small></span></label>'+
       '<button class="btn secondary small" id="browser-extension-guide">安装或连接浏览器插件</button> '+
+      '<button class="btn secondary small" id="browser-capture-history">查看操作摘要</button> '+
       '<button class="btn secondary small" id="browser-capture-refresh">刷新连接状态</button></div>'+
     `<div class="group-heading"><h2>已授权的数据范围</h2><span class="soft-caption">${sources.length} 个数据源</span></div>`+
     `<div class="card">${sources.length?sources.map(sourceRow).join(''):emptyState('folder','还没有授权任何数据源','选择上方的信息类型，授权工作目录后即可自动、增量采集。')}</div>`+
@@ -92,6 +94,14 @@ async function renderSources(){
     }catch(error){e.target.checked=previous;notify(error.message)}
   };
   el('browser-extension-guide').onclick=browserExtensionGuide;
+  el('browser-capture-history').onclick=browserCaptureHistory;
+  el('browser-capture-ai').onchange=async e=>{
+    const old=!e.target.checked;
+    try{
+      await api('browser-capture/ai',{method:'PUT',body:{allow_ai:e.target.checked}});
+      notify(e.target.checked?'已允许 AI 概括脱敏操作':'已关闭浏览器操作的 AI 分析');
+    }catch(error){e.target.checked=old;notify(error.message)}
+  };
   el('browser-capture-refresh').onclick=()=>go('sources',true);
   el('scan').onclick=()=>busy(el('scan'),async()=>{if(await perform(()=>api('scan',{method:'POST'}),'sources'))notify('已安排检查更新')});
   el('source-settings')?.addEventListener('click',()=>go('settings'));
@@ -124,6 +134,34 @@ async function renderSources(){
     },3500);
   }
 }
+async function browserCaptureHistory(){
+  try{
+    const sessions=await api('browser-capture/sessions');
+    const reports=await Promise.all(sessions.slice(0,15).map(async session=>{
+      try{
+        return {...session,report:await api('browser-capture/sessions/'+encodeURIComponent(session.id)+'/summary')};
+      }catch(error){return {...session,report:{summary:'暂时无法读取操作摘要'}}}
+    }));
+    const body='<p class="soft-caption">这里只显示当前任务网页的操作摘要和证据序号，不会写入个人知识库，也不会自动共享给流程平台。</p>'+
+      (reports.length?reports.map(s=>'<section class="source-reference" style="margin:14px 0;padding:12px;border:1px solid #e9e9e6;border-radius:9px">'+
+        '<div><b>'+esc(s.task_id)+'</b> · '+esc(s.status)+' · '+s.event_count+' 个事件</div>'+
+        '<p>'+esc(s.report.summary||'正在积累操作事件，尚无摘要')+'</p>'+
+        '<small class="soft-caption">依据事件：'+esc((s.report.evidence_seq||[]).join('、')||'无')+
+        ' · '+esc(s.report.summary_source==='model'?'AI 概括':s.report.summary_source==='rule'?'本地概括':'待生成')+'</small>'+
+        '<div style="margin-top:8px"><button class="btn secondary small" data-browser-summarize="'+esc(s.id)+'">更新摘要</button></div></section>').join(''):
+        '<p class="field-note">尚未产生浏览器采集会话。</p>');
+    dialog('网页操作摘要',body,'',true);
+    el('overlay-root').querySelectorAll('[data-browser-summarize]').forEach(button=>{
+      button.onclick=()=>busy(button,async()=>{
+        try{
+          await api('browser-capture/sessions/'+encodeURIComponent(button.dataset.browserSummarize)+'/summarize',{method:'POST'});
+          await browserCaptureHistory();
+        }catch(error){notify(error.message)}
+      });
+    });
+  }catch(error){notify(error.message)}
+}
+
 async function browserExtensionGuide(){
   const info=await api('browser-capture');
   dialog('浏览器采集插件', '<p>请先下载 WorkTwin 浏览器插件，并在 Chrome 或 Edge 的扩展管理页启用「开发者模式」后加载解压目录。当前尚未发布浏览器商店版本。</p>'+
