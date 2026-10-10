@@ -133,6 +133,15 @@ def main() -> int:
                     with opener.open(Request('http://127.0.0.1:8765/api/knowledge', headers=headers), timeout=5) as response:
                         assert '<strong>Packaged Markdown</strong>' in json.load(response)[0]['rendered_body']
                     verify_mcp(opener,headers,note_id)
+                    # The plugin installation entry must work from a *frozen*
+                    # app, not just the editable source tree.
+                    with opener.open(Request('http://127.0.0.1:8765/api/browser-capture/extension',
+                        headers=headers),timeout=5) as response:
+                        from zipfile import ZipFile
+                        import io
+                        with ZipFile(io.BytesIO(response.read())) as packaged:
+                            assert {'manifest.json','service-worker.js','content.js','popup.html','popup.js'} <= set(packaged.namelist())
+                    print('PASS: packaged browser extension installation archive')
                     with opener.open(Request('http://127.0.0.1:8765/api/shutdown', method='POST', headers=headers, data=b'{}'), timeout=5) as response:
                         assert json.load(response)['stopping'] is True
                     process.wait(timeout=15)

@@ -1,7 +1,17 @@
-name: WorkTwin 1.1.7 acceptance and release
+name: WorkTwin 1.2.0 acceptance and signed release
 
 on:
   workflow_dispatch:
+    inputs:
+      macos_architecture:
+        description: macOS architecture to validate (main releases always build both)
+        type: choice
+        default: all
+        options: [all, arm64, x86_64]
+      signed_release:
+        description: 'Explicitly sign, notarize and publish a formal release (main and both architectures only)'
+        type: boolean
+        default: false
   pull_request:
     paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
   push:
@@ -9,8 +19,8 @@ on:
     paths: ['worktwin-collector/**', '.github/workflows/worktwin-build.yml']
 
 concurrency:
-  group: worktwin-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: worktwin-${{ github.event_name == 'workflow_dispatch' && inputs.signed_release && 'signed-release' || (github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.signed_release) }}
 permissions:
   contents: read
 defaults:
@@ -30,6 +40,11 @@ jobs:
       - run: PYTHONPATH=. python scripts/acceptance_benchmark.py
       - run: PYTHONPATH=. python scripts/http_acceptance.py
       - run: node --check worktwin/static/app.js
+      - name: Validate browser extension JavaScript
+        run: |
+          node --check worktwin/browser_extension/service-worker.js
+          node --check worktwin/browser_extension/content.js
+          node --check worktwin/browser_extension/popup.js
       - run: python -m playwright install --with-deps chromium
       - name: Browser acceptance of collection, editing and authorization
         run: PYTHONPATH=. python scripts/ui_acceptance.py
@@ -45,6 +60,8 @@ jobs:
         run: PYTHONPATH=. python scripts/ui_layout_acceptance.py
       - name: Browser acceptance of twin MCP and separate log authorization
         run: PYTHONPATH=. python scripts/ui_mcp_acceptance.py
+      - name: Chromium MV3 acceptance of signed task capture and navigation stop
+        run: PYTHONPATH=. python scripts/ui_browser_extension_acceptance.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -55,8 +72,8 @@ jobs:
         run: |
           python -m build
           mkdir -p release
-          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.1.7-source.zip"
-          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.1.7-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
+          git -C .. archive HEAD:worktwin-collector --format=zip -o "$PWD/release/WorkTwin-Collector-1.2.0-source.zip"
+          python -c 'from zipfile import ZipFile; z=ZipFile("release/WorkTwin-Collector-1.2.0-source.zip"); assert all(p in z.namelist() for p in ("README.md", "pyproject.toml", "worktwin/api.py", "third_party/rowboat/LICENSE")), "Incomplete source archive"'
           cp dist/*.whl dist/*.tar.gz release/
       - uses: actions/upload-artifact@v4
         with:
@@ -66,22 +83,54 @@ jobs:
   macos:
     needs: python-test
     strategy:
+      fail-fast: false
       matrix:
-        runner: [macos-14, macos-15-intel]
+        runner: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.macos_architecture == 'arm64' && '["macos-15"]') || (github.event_name == 'workflow_dispatch' && inputs.macos_architecture == 'x86_64' && '["macos-15-intel"]') || '["macos-15","macos-15-intel"]') }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    env:
+      WORKTWIN_REQUIRE_NOTARIZATION: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.signed_release && inputs.macos_architecture == 'all' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: zsh desktop/build-macos.sh
-      - name: Mount the release DMG and verify its code seal, installed layout, and native startup
+      - name: Prepare temporary Developer ID signing keychain
+        if: env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: python desktop/prepare-macos-signing.py
+      - name: Build, sign and notarize App and DMG
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: zsh desktop/build-macos.sh
+      - name: Mount verified DMG and Gatekeeper-test the installed app
         run: zsh desktop/verify-macos-dmg.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: WorkTwin-${{ matrix.runner }}-unsigned
+          name: WorkTwin-${{ matrix.runner }}-${{ env.WORKTWIN_REQUIRE_NOTARIZATION == '1' && 'notarized' || 'unsigned' }}
           path: worktwin-collector/release/*.dmg
           if-no-files-found: error
+      - name: Preserve signed artifacts for resuming an incomplete Apple review
+        if: failure() && env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WorkTwin-${{ matrix.runner }}-pending-notarization
+          path: |
+            worktwin-collector/dist/WorkTwin-notary.zip
+            worktwin-collector/dist/*.notary.json
+            worktwin-collector/release/*.dmg
+            worktwin-collector/release/*.notary.json
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Delete temporary developer signing credentials
+        if: always() && env.WORKTWIN_REQUIRE_NOTARIZATION == '1'
+        run: python desktop/cleanup-macos-signing.py
   windows:
     needs: python-test
     runs-on: windows-2022
@@ -97,7 +146,7 @@ jobs:
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release
-          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.1.7-Windows-x64.zip
+          Compress-Archive -Path dist/WorkTwin -DestinationPath release/WorkTwin-Collector-1.2.0-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: WorkTwin-Windows-unsigned
@@ -105,7 +154,7 @@ jobs:
           if-no-files-found: error
   release:
     needs: [python-test, macos, windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.signed_release && inputs.macos_architecture == 'all'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,16 +164,22 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-      - name: Create checksums and publish the verified 1.1 release
+      - name: Create checksums and publish the trusted 1.2.0 release
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release-assets
+          test -f WorkTwin-Collector-1.2.0-macOS-arm64.dmg
+          test -f WorkTwin-Collector-1.2.0-macOS-x86_64.dmg
+          if find . -name '*-unsigned.dmg' | grep -q .; then
+            echo 'Refusing to publish unsigned DMGs' >&2
+            exit 1
+          fi
           sha256sum *.zip *.dmg *.whl *.tar.gz > SHA256SUMS.txt
           cd ..
-          if gh release view worktwin-v1.1.7 >/dev/null 2>&1; then
-            gh release upload worktwin-v1.1.7 release-assets/* --clobber
-          else
-            gh release create worktwin-v1.1.7 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.1.7 (verified project identity)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*
+          if gh release view worktwin-v1.2.0 >/dev/null 2>&1; then
+            echo 'The existing v1.2.0 release is immutable; a new release needs a new version'
+            exit 0
           fi
+          gh release create worktwin-v1.2.0 --target "$GITHUB_SHA" --title "WorkTwin Collector 1.2.0 (autonomous knowledge, task capture and trusted macOS delivery)" --notes-file worktwin-collector/RELEASE_NOTES.md release-assets/*

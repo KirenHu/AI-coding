@@ -33,6 +33,9 @@ from .credentials import DesktopSecrets
 from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRuntime
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
+from .twin_access import effective_notes, grant_options, replace_grants
+from .decision_model import DecisionRouter, JevDecisionModel
+from .model_settings import validate_url
 from .answers import answer_from_knowledge
 from .publishing import Publisher, PublishingClient
 from . import __version__
@@ -41,6 +44,9 @@ from .search import search
 from .reconcile import review_flags, resolve_proposal
 from .answer_policy import check_answer
 from .scope import document_scope, scope_description, snapshot_history
+from .browser_capture import BrowserCapture
+from .browser_capture_status import TaskStatusMonitor
+from .browser_capture_summary import BrowserSummaryService, BrowserSummaryWorker
 
 STATIC = Path(__file__).parent / "static"
 
@@ -121,6 +127,26 @@ class TwinInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
     description: str = Field(default="", max_length=500)
     knowledge_ids: list[int] | None = Field(default=None,max_length=1500)
+    knowledge_mode: Literal['manual','dynamic'] | None = None
+    grants: list[dict] | None = Field(default=None,max_length=300)
+
+
+class DecisionModelInput(BaseModel):
+    provider: Literal['main','jev','chat'] = 'main'
+    base_url: str = Field(default='',max_length=300)
+    model: str = Field(default='',max_length=150)
+    api_key: str = Field(default='',max_length=2000)
+
+
+class TwinGrantInput(BaseModel):
+    subject_type: Literal['project','source','global','knowledge']
+    subject_key: str = Field(min_length=1,max_length=1000)
+    effect: Literal['allow','deny'] = 'allow'
+
+
+class TwinPolicyInput(BaseModel):
+    mode: Literal['manual','dynamic'] = 'dynamic'
+    grants: list[TwinGrantInput] = Field(default_factory=list,max_length=300)
 
 
 class TwinKnowledgeInput(BaseModel):
@@ -140,6 +166,38 @@ class LogPermissionInput(BaseModel):
 class DocumentScopeInput(BaseModel):
     project: str = Field(min_length=1,max_length=200)
     existing_project_key: str | None = Field(default=None,max_length=1000)
+
+
+class CaptureToggle(BaseModel):
+    enabled: bool
+
+class CaptureAiToggle(BaseModel):
+    allow_ai: bool
+
+class CapturePair(BaseModel):
+    code: str = Field(min_length=10,max_length=128)
+
+class CaptureCommand(BaseModel):
+    sender_origin: str = Field(max_length=250)
+    envelope: dict
+
+class CaptureSessionsStatus(BaseModel):
+    session_ids: list[str] = Field(default_factory=list,max_length=100)
+
+class CaptureBind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+
+class CaptureEvent(BaseModel):
+    session_id: str = Field(max_length=100)
+    seq: int
+    kind: str = Field(max_length=30)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
+    label: str = Field(default="",max_length=500)
 
 
 class EditionInput(BaseModel):
@@ -165,7 +223,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     enterprise = GatewayClient(url=saved_url,token=saved_token) if saved_url and share_active else GatewayClient(url='',token='')
     model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
-    knowledge_worker = KnowledgeWorker(db, client=model_client, interval=max(interval, 3))
+    decision_router=DecisionRouter(db,secure,model_client)
+    knowledge_worker = KnowledgeWorker(db, client=model_client,
+                                       decision_router=decision_router, interval=max(interval, 3))
+    browser_capture = BrowserCapture(db)
+    browser_status_monitor = TaskStatusMonitor(browser_capture)
+    browser_summary_service = BrowserSummaryService(db, model_client)
+    browser_summary_worker = BrowserSummaryWorker(browser_summary_service)
     local_token = secrets.token_urlsafe(32)
     # Each build uses a different resource URL, so a browser that has cached
     # the previous app cannot execute its script against the upgraded HTML.
@@ -181,8 +245,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             collector.start()
             knowledge_worker.start()
             publisher.start()
+            browser_status_monitor.start()
+            browser_summary_worker.start()
         async with mcp_server.session_manager.run():
             yield
+        browser_summary_worker.stop()
+        browser_status_monitor.stop()
         publisher.stop()
         collector.stop()
         knowledge_worker.stop()
@@ -214,7 +282,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     app.state.db = db
     app.state.collector = collector
     app.state.knowledge_worker = knowledge_worker
+    app.state.browser_capture = browser_capture
+    app.state.browser_status_monitor = browser_status_monitor
+    app.state.browser_summary_service = browser_summary_service
+    app.state.browser_summary_worker = browser_summary_worker
     app.state.model = model_client
+    app.state.decision_router = decision_router
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
     app.mount('/mcp',mcp_app,name='twin-mcp')
 
@@ -242,6 +315,84 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def health():
         return {"ok": True, "app": "WorkTwin Collector", "cloud_sync": publisher.client.configured, "version": __version__,
                 "enterprise_model": model_client.configured}
+
+    def capture_credential(request: Request) -> str:
+        auth = request.headers.get("Authorization","")
+        if not auth.startswith("Bearer ") or len(auth)<40:
+            raise HTTPException(401,"浏览器插件凭据缺失")
+        extension_origin = request.headers.get("Origin","")
+        if extension_origin and not extension_origin.startswith("chrome-extension://"):
+            raise HTTPException(403,"只接受本地插件连接")
+        return auth[7:]
+
+    @app.get("/api/browser-capture",dependencies=[Depends(authorized)])
+    def browser_capture_settings():
+        return browser_capture.settings()
+
+    @app.put("/api/browser-capture",dependencies=[Depends(authorized)])
+    def browser_capture_toggle(body: CaptureToggle):
+        return browser_capture.toggle(body.enabled)
+
+    @app.put("/api/browser-capture/ai",dependencies=[Depends(authorized)])
+    def browser_capture_ai_toggle(body: CaptureAiToggle):
+        return browser_capture.toggle_ai(body.allow_ai)
+
+    @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
+    def browser_capture_extension_download():
+        extension_dir = Path(__file__).parent / "browser_extension"
+        names = ("manifest.json","service-worker.js","content.js","popup.html","popup.js")
+        result = io.BytesIO()
+        with zipfile.ZipFile(result,"w",compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in names:
+                archive.write(extension_dir/name,arcname=name)
+        return Response(content=result.getvalue(),media_type="application/zip",
+                        headers={"Content-Disposition":'attachment; filename="WorkTwin-Browser-Extension.zip"'})
+
+    @app.post("/api/browser-capture/pairing",dependencies=[Depends(authorized)])
+    def browser_capture_pairing():
+        return {"code":browser_capture.pairing_code(),"valid_seconds":300}
+
+    @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
+    def browser_capture_sessions():
+        return browser_capture.recent()
+
+    @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
+    def browser_capture_steps(session_id: str):
+        return browser_capture.steps(session_id)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/summary",dependencies=[Depends(authorized)])
+    def browser_capture_summary(session_id: str):
+        return browser_summary_service.get(session_id)
+
+    @app.post("/api/browser-capture/sessions/{session_id}/summarize",dependencies=[Depends(authorized)])
+    def browser_capture_summarize(session_id: str):
+        return browser_summary_service.generate(session_id,force=True)
+
+    @app.post("/capture/pair")
+    def capture_pair(body: CapturePair):
+        return {"token":browser_capture.pair(body.code)}
+
+    @app.post("/capture/heartbeat")
+    def capture_heartbeat(request: Request):
+        return browser_capture.heartbeat(capture_credential(request))
+
+    @app.post("/capture/sessions/status")
+    def capture_sessions_status(request: Request,body: CaptureSessionsStatus):
+        return browser_capture.extension_sessions(capture_credential(request),body.session_ids)
+
+    @app.post("/capture/command")
+    def capture_command(request: Request,body: CaptureCommand):
+        # An extension credential never authorizes a task on its own: the
+        # external workflow must also sign the complete, expiring command.
+        return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/bind")
+    def capture_bind(request: Request,body: CaptureBind):
+        return browser_capture.bind(capture_credential(request),**body.model_dump())
+
+    @app.post("/capture/event")
+    def capture_event(request: Request,body: CaptureEvent):
+        return browser_capture.event(capture_credential(request),**body.model_dump())
 
     @app.post('/api/shutdown', dependencies=[Depends(authorized)])
     def shutdown():
@@ -652,7 +803,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         from .automation import acceptance_status
         with db.connect() as con:
             automation=acceptance_status(con,model_client)
-        return {"enterprise_model_ready": model_client.configured,'knowledge_automation':automation,
+        return {"decision_model":decision_router.config(),
+                "enterprise_model_ready": model_client.configured,'knowledge_automation':{"ready":bool(model_client.configured),"real_data_evaluated":automation["ready"],"reason":"在用户已授权的数据源内自动维护知识；跨来源项目识别不足时保持隔离"},
                 "edition":model_client.mode,"edition_selected":bool(db.setting('edition')),
                 "model_status":model_client.status,"model_error":model_client.error,
                 "model_name":getattr(model_client.client,'model','') or db.setting('enterprise_model_name'),
@@ -729,6 +881,42 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         except Exception as exc:
             message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '无法读取模型密钥，请解锁系统安全存储或重新填写 API Key'
             raise HTTPException(400,message+'；也可手动填写模型名称') from None
+
+    @app.put('/api/model/decision',dependencies=[Depends(authorized)])
+    def save_personal_decision(payload: DecisionModelInput):
+        if model_client.mode!='personal':
+            raise HTTPException(403,'企业判断模型只能由企业管理员统一设置')
+        previous=decision_router.config()
+        if payload.provider=='main':
+            secure.set('decision_model_key','')
+            for field in ('decision_base_url','decision_model'):
+                db.set_setting(field,'')
+            db.set_setting('decision_provider','main')
+            return {'provider':'main','configured':False}
+        try:
+            url=validate_url(payload.base_url)
+            if not payload.api_key and (payload.provider!=previous['provider'] or url!=previous.get('base_url')):
+                raise ValueError('切换模型类型或服务地址时需要填写 API Key')
+            key=payload.api_key or secure.get('decision_model_key')
+            if not key or not payload.model:
+                raise ValueError('判断模型及密钥不能为空')
+            if payload.provider=='jev':
+                candidate=JevDecisionModel(url,key,payload.model)
+                candidate.test()
+            else:
+                candidate=PersonalModel(url,key,payload.model)
+                candidate.chat([{'role':'user','content':'请只回复 OK'}],max_tokens=MODEL_TEST_TOKENS)
+        except Exception as exc:
+            message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '判断模型连接失败'
+            raise HTTPException(400,message+'；保持原配置') from None
+        try:
+            secure.set('decision_model_key',key)
+        except Exception:
+            raise HTTPException(400,'判断模型调用成功，但无法安全保存密钥；配置未更改') from None
+        db.set_setting('decision_base_url',url)
+        db.set_setting('decision_model',payload.model)
+        db.set_setting('decision_provider',payload.provider)
+        return {'provider':payload.provider,'configured':True,'model':payload.model}
 
     @app.post('/api/model/test',dependencies=[Depends(authorized)])
     def test_current_model():
@@ -814,6 +1002,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         model_client.status,model_client.error='connected',''
         return result
 
+    @app.put('/api/admin/decision-model',dependencies=[Depends(authorized)])
+    def admin_decision_model(payload: DecisionModelInput):
+        return admin_request('PUT','decision-model',payload.model_dump())
+
     @app.post('/api/admin/models',dependencies=[Depends(authorized)])
     def admin_models(payload: ModelListInput):
         return admin_request('POST','models',payload.model_dump())
@@ -868,7 +1060,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
                 raise HTTPException(404,'分身不存在')
-            rows=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,))]
+            rows=effective_notes(con,twin_id)
+            # Also show disabled explicit pins for actionable reasons.
+            disabled=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,)) if r['id'] not in {k['id'] for k in rows}]
+            rows += disabled
             result=[{'id':r['id'],'title':r['title'],'local_reason':unavailable_reason(con,r),'share_reason':unavailable_reason(con,r,sharing=True)} for r in rows]
         return {'selected_count':len(rows),'usable_count':sum(not r['local_reason'] for r in result),
                 'publishable_count':sum(not r['share_reason'] for r in result),'knowledge':result}
@@ -911,16 +1106,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/twins")
     def twins():
         with db.connect() as con:
-            rows = [dict(x) for x in con.execute("""SELECT t.*,
-                (SELECT count(*) FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-                  WHERE tk.twin_id=t.id AND """ + READY_SQL + """) knowledge_count
-                FROM twins t ORDER BY t.updated_at DESC,t.id DESC""")]
+            rows = [dict(x) for x in con.execute("SELECT * FROM twins ORDER BY updated_at DESC,id DESC")]
+            for row in rows:
+                row['knowledge_count']=len(effective_notes(con,row['id']))
             return rows
 
     @app.post("/api/twins", dependencies=[Depends(authorized)])
     def create_twin(payload: TwinInput):
         with db.connect() as con:
-            res = con.execute("INSERT INTO twins(name,description) VALUES(?,?)",
+            res = con.execute("INSERT INTO twins(name,description,knowledge_mode) VALUES(?,?,'dynamic')",
                               (payload.name.strip(),payload.description.strip()))
             return {"id":int(res.lastrowid)}
 
@@ -931,7 +1125,39 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not row:
                 raise HTTPException(404,"数字分身不存在")
             selected = [r[0] for r in con.execute("SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?",(twin_id,))]
-            return {**dict(row),"knowledge_ids":selected}
+            grants=[dict(g) for g in con.execute("""SELECT subject_type,subject_key,effect
+                FROM twin_grants WHERE twin_id=? ORDER BY subject_type,subject_key""",(twin_id,))]
+            return {**dict(row),"knowledge_ids":selected,"grants":grants}
+
+    @app.get('/api/twin-grant-options')
+    def twin_grant_options():
+        with db.connect() as con:
+            return grant_options(con)
+
+    @app.put('/api/twins/{twin_id}/policy',dependencies=[Depends(authorized)])
+    def save_twin_policy(twin_id: int, payload: TwinPolicyInput):
+        with db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            if not con.execute('SELECT id FROM twins WHERE id=?',(twin_id,)).fetchone():
+                raise HTTPException(404,'数字分身不存在')
+            entries=[g.model_dump() for g in payload.grants]
+            if len({(g['subject_type'],g['subject_key'],g['effect']) for g in entries})!=len(entries):
+                raise HTTPException(400,'授权规则不能重复')
+            options=grant_options(con)
+            known_projects={p['project_key'] for p in options['projects']}
+            known_sources={str(p['id']) for p in options['sources']}
+            for grant in entries:
+                kind,key=grant['subject_type'],grant['subject_key']
+                if ((kind=='project' and key not in known_projects) or
+                    (kind=='source' and key not in known_sources) or
+                    (kind=='global' and key!='*') or
+                    (kind=='knowledge' and (not key.isdecimal() or not con.execute(
+                        'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                    raise HTTPException(400,'授权范围无效或已不存在')
+            replace_grants(con,twin_id,entries)
+            con.execute("UPDATE twins SET knowledge_mode=?,updated_at=datetime('now') WHERE id=?",
+                        (payload.mode,twin_id))
+            return {'mode':payload.mode,'grants':entries,'knowledge_count':len(effective_notes(con,twin_id))}
 
     @app.get('/api/twins/{twin_id}/mcp')
     def mcp_status(twin_id:int,request:Request):
@@ -1023,6 +1249,25 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if payload.knowledge_ids is not None:
                 con.execute('DELETE FROM twin_knowledge WHERE twin_id=?',(twin_id,))
                 con.executemany('INSERT INTO twin_knowledge VALUES(?,?)',[(twin_id,k) for k in sorted(set(payload.knowledge_ids))])
+            if payload.grants is not None:
+                try:
+                    entries=[TwinGrantInput.model_validate(g).model_dump() for g in payload.grants]
+                except Exception:
+                    raise HTTPException(400,'分身授权规则格式错误') from None
+                opts=grant_options(con)
+                known_projects={p['project_key'] for p in opts['projects']}
+                known_sources={str(p['id']) for p in opts['sources']}
+                for grant in entries:
+                    kind,key=grant['subject_type'],grant['subject_key']
+                    if ((kind=='project' and key not in known_projects) or
+                        (kind=='source' and key not in known_sources) or
+                        (kind=='global' and key!='*') or
+                        (kind=='knowledge' and (not key.isdecimal() or not con.execute(
+                            'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                        raise HTTPException(400,'项目或来源授权范围无效')
+                replace_grants(con,twin_id,entries)
+            if payload.knowledge_mode is not None:
+                con.execute("UPDATE twins SET knowledge_mode=? WHERE id=?",(payload.knowledge_mode,twin_id))
         return {"updated":True}
 
     @app.delete("/api/twins/{twin_id}", dependencies=[Depends(authorized)])
@@ -1063,9 +1308,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             twin = con.execute("SELECT name,description FROM twins WHERE id=?",(twin_id,)).fetchone()
             if not twin:
                 raise HTTPException(404,"数字分身不存在")
-            rows = [dict(x) for x in con.execute("""SELECT k.* FROM twin_knowledge tk
-                JOIN knowledge k ON k.id=tk.knowledge_id
-                WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))]
+            rows = effective_notes(con,twin_id)
             for r in rows:
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -1083,8 +1326,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(502,"模型请求失败，请检查设置、服务额度或稍后重试") from exc
         # Recheck authorization after a slow model call.
         with db.connect() as con:
-            current={(r[0],r[1]) for r in con.execute("""SELECT k.id,k.version FROM twin_knowledge tk JOIN knowledge k ON k.id=tk.knowledge_id
-                WHERE tk.twin_id=? AND """+READY_SQL,(twin_id,))}
+            current={(r['id'],r['version']) for r in effective_notes(con,twin_id)}
         if not {(r['id'],r['version']) for r in rows}.issubset(current):
             raise HTTPException(409,'分身知识授权已更新，请重新提问')
         return result

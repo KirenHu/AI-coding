@@ -39,6 +39,22 @@ class EnterpriseSettings:
             for key,value in {'base_url':payload['url'],'model':payload['model'],**limits}.items():
                 con.execute('INSERT INTO service_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(key,str(value)))
 
+    def decision_config(self):
+        return {'provider':self.get('decision_provider','main'),
+                'url':self.get('decision_url',''),
+                'model':self.get('decision_model','jev-latest'),
+                'key':self.secrets.get('decision_model_key')}
+
+    def save_decision(self, provider, url, model, key):
+        # Deleting a specialized configuration also removes its secret.
+        self.secrets.set('decision_model_key',key if provider!='main' else '')
+        with self.store.connect() as con:
+            for field,value in {'decision_provider':provider,
+                    'decision_url':url if provider!='main' else '',
+                    'decision_model':model if provider!='main' else ''}.items():
+                con.execute('''INSERT INTO service_settings(key,value) VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value''',(field,value))
+
     def identify(self, token):
         with self.store.connect() as con:
             row=con.execute('SELECT identity FROM employees WHERE token_hash=? AND enabled=1',(self.hash(token),)).fetchone()

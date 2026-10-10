@@ -25,3 +25,9 @@ enterprise.env
 credential.key
 credentials.json
 credentials.tmp
+
+# Release credentials must never be committed.
+*.p12
+*.pfx
+*.p8
+*.keychain-db

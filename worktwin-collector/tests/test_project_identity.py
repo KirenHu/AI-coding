@@ -94,7 +94,7 @@ def test_verified_business_projects_may_combine_distinct_sources(tmp_path):
         assert existing_for_project(con,d2) == []
 
 
-def test_legacy_unverified_folder_groups_are_quarantined_on_upgrade(tmp_path):
+def test_safe_single_source_legacy_notes_recover_without_confirmation(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     with db.connect() as con:
         s = source(con, "legacy")
@@ -113,18 +113,19 @@ def test_legacy_unverified_folder_groups_are_quarantined_on_upgrade(tmp_path):
                    'legacy','source:1:legacy','project','归属','仅旧来源资料','useful')""").lastrowid
         con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote) VALUES(?,?,?)",
                     (edited,d,"真实资料中的已确认工作要求"))
-        con.execute("DELETE FROM settings WHERE key='project_identity_v2'")
+        con.execute("DELETE FROM settings WHERE key IN ('project_identity_v2','autonomous_legacy_scoping_v1')")
     Database(db.path)
     with db.connect() as con:
         doc = con.execute("SELECT * FROM documents WHERE id=?",(d,)).fetchone()
         know = con.execute("SELECT * FROM knowledge WHERE id=?",(kid,)).fetchone()
         assert doc["scope"] == "session" and doc["project_key"] == f"session:{d}"
         assert know["body"] == "旧知识草稿"
-        assert know["review_hold"] == 1 and know["needs_review"] == 1
+        assert know["review_hold"] == 0 and know["needs_review"] == 0
+        assert know["scope"] == "session" and know["project_key"] == f"session:{d}"
         human = con.execute("SELECT body,review_hold,needs_review FROM knowledge WHERE id=?",(edited,)).fetchone()
         assert human["body"] == "人工修改后的正文必须保留"
-        assert human["review_hold"] == 1 and human["needs_review"] == 1
-    # Running the migration again must not silently reactivate frozen notes.
+        assert human["review_hold"] == 0 and human["needs_review"] == 0
+    # Reopening the database preserves the repaired, more restrictive scope.
     Database(db.path)
     with db.connect() as con:
-        assert con.execute("SELECT review_hold FROM knowledge WHERE id=?",(kid,)).fetchone()[0] == 1
+        assert con.execute("SELECT review_hold FROM knowledge WHERE id=?",(kid,)).fetchone()[0] == 0

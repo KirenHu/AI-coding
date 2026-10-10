@@ -30,7 +30,7 @@ def test_local_web_workflow(tmp_path: Path):
         item=client.get("/api/knowledge",headers=headers).json()[0]
         edit=client.put(f"/api/knowledge/{item['id']}",headers=headers,json={"title":"决策记录","body":"保留人工复核","kind":"decision","status":"confirmed"})
         assert edit.status_code == 200
-        assert len(client.get(f"/api/knowledge/{item['id']}/history",headers=headers).json()) == 1
+        assert len(client.get(f"/api/knowledge/{item['id']}/history",headers=headers).json()) == 2  # AI activation plus owner edit
         assert client.get("/api/stats",headers=headers).json()["confirmed"] == 1
         assert client.get("/api/export",headers=headers).json()["entries"][0]["title"] == "决策记录"
         assert "决策记录" in client.get("/api/export-markdown",headers=headers).text

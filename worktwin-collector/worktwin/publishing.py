@@ -6,7 +6,7 @@ import secrets
 import threading
 from urllib.request import Request, urlopen
 from .inference import GatewayClient
-from .knowledge_policy import SHARE_SQL
+from .twin_access import effective_notes
 
 
 class PublishingClient(GatewayClient):
@@ -47,9 +47,8 @@ class Publisher:
             twins = [dict(r) for r in con.execute('SELECT t.id,t.name,t.description FROM twins t JOIN publications p ON p.twin_id=t.id WHERE p.enabled=1')]
             assets = {}
             for t in twins:
-                rows = [dict(r) for r in con.execute('''SELECT k.id,k.title,k.body,k.version,k.scope,k.project,k.project_key,k.topic,k.scope_detail FROM twin_knowledge tk
-                    JOIN knowledge k ON k.id=tk.knowledge_id WHERE tk.twin_id=?
-                    AND ''' + SHARE_SQL,(t['id'],))]
+                rows = [{field:k[field] for field in ('id','title','body','version','scope','project','project_key','topic','scope_detail')}
+                        for k in effective_notes(con,t['id'],sharing=True)]
                 t['knowledge_ids']=[r['id'] for r in rows]
                 assets.update({r['id']:r for r in rows})
             return {'twins':twins,'assets':list(assets.values())}

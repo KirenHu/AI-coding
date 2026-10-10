@@ -167,6 +167,49 @@ CREATE TABLE IF NOT EXISTS twin_mcp (
   allow_logs INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS twin_grants (
+    twin_id INTEGER NOT NULL REFERENCES twins(id) ON DELETE CASCADE,
+    subject_type TEXT NOT NULL CHECK(subject_type IN ('project','source','global','knowledge')),
+    subject_key TEXT NOT NULL,
+    effect TEXT NOT NULL DEFAULT 'allow' CHECK(effect IN ('allow','deny')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(twin_id,subject_type,subject_key,effect)
+);
+CREATE INDEX IF NOT EXISTS ix_twin_grants_subject ON twin_grants(subject_type,subject_key);
+CREATE TABLE IF NOT EXISTS project_entities (
+    project_key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    anchor_type TEXT NOT NULL DEFAULT '',
+    anchor TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'auto',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_project_entities_anchor ON project_entities(anchor_type,anchor)
+    WHERE anchor_type!='' AND anchor!='';
+CREATE TABLE IF NOT EXISTS work_units (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    quote_hash TEXT NOT NULL,
+    topic TEXT NOT NULL DEFAULT '',
+    project_hint TEXT NOT NULL DEFAULT '',
+    project_key TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'isolated'
+       CHECK(status IN ('isolated','provisional','confirmed')),
+    confidence REAL NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(document_id,quote_hash)
+);
+CREATE INDEX IF NOT EXISTS ix_work_units_project ON work_units(project_key,status);
+CREATE TABLE IF NOT EXISTS project_memberships (
+    knowledge_id INTEGER PRIMARY KEY REFERENCES knowledge(id) ON DELETE CASCADE,
+    project_key TEXT NOT NULL REFERENCES project_entities(project_key) ON DELETE CASCADE,
+    confidence REAL NOT NULL DEFAULT 1,
+    status TEXT NOT NULL CHECK(status IN ('confirmed','provisional')),
+    reason TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_project_memberships_project ON project_memberships(project_key,status);
 CREATE TABLE IF NOT EXISTS knowledge_acceptance (
   model_signature TEXT PRIMARY KEY,
   policy_version TEXT NOT NULL,
@@ -194,6 +237,7 @@ class Database:
     def _migrate(conn: sqlite3.Connection) -> None:
         """Idempotent in-place upgrades from the 0.1 SQLite schema."""
         additions = {
+            "twins": {"knowledge_mode": "TEXT NOT NULL DEFAULT 'manual'"},
             "sources": {"adapter": "TEXT", "allow_ai": "INTEGER NOT NULL DEFAULT 0", "allow_share": "INTEGER NOT NULL DEFAULT 0"},
             "documents": {"project": "TEXT NOT NULL DEFAULT ''", "project_key": "TEXT NOT NULL DEFAULT ''", "scope": "TEXT NOT NULL DEFAULT 'unknown'", "project_verified": "INTEGER NOT NULL DEFAULT 0"},
             "knowledge": {"source_bound": "INTEGER NOT NULL DEFAULT 0", "review_hold": "INTEGER NOT NULL DEFAULT 0",
@@ -254,6 +298,38 @@ class Database:
                     source_bound=1 AND project_key LIKE 'source:%' AND id IN
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)""", (doc_id,))
             conn.execute("INSERT INTO settings(key,value) VALUES('project_identity_v2','1')")
+
+        # v1.1.8: a previously quarantined note should not require owner review
+        # when ALL of its evidence still belongs to one authorized, unchanged
+        # document. Narrow it to this document's session instead of reviving the
+        # old unverified directory-level project identity.
+        if not conn.execute("SELECT 1 FROM settings WHERE key='autonomous_legacy_scoping_v1'").fetchone():
+            rows = conn.execute("""SELECT * FROM knowledge
+                WHERE review_hold=1 AND source_bound=1 AND project_key LIKE 'source:%'
+                  AND status!='archived'""").fetchall()
+            for note in rows:
+                evidence = conn.execute("""SELECT e.quote,e.is_current,e.superseded,
+                    d.id document_id,d.content,d.project,d.project_key,d.scope,d.project_verified,
+                    d.deleted,s.enabled,s.allow_ai
+                    FROM knowledge_evidence e
+                    JOIN documents d ON d.id=e.document_id
+                    JOIN sources s ON s.id=d.source_id
+                    WHERE e.knowledge_id=?""",(note['id'],)).fetchall()
+                if not evidence or len({e['document_id'] for e in evidence})!=1:
+                    continue
+                if not all(e['scope']=='session' and e['project_verified']==0
+                    and e['is_current']==1 and e['superseded']==0
+                    and e['deleted']==0 and e['enabled']==1 and e['allow_ai']==1
+                    and e['quote'] in e['content'] for e in evidence):
+                    continue
+                if conn.execute("""SELECT 1 FROM knowledge_proposals
+                    WHERE target_id=? AND status='pending'""",(note['id'],)).fetchone():
+                    continue
+                origin=evidence[0]
+                conn.execute("""UPDATE knowledge SET project_key=?,scope='session',
+                    project=?,review_hold=0,needs_review=0,updated_at=datetime('now')
+                    WHERE id=?""",(origin['project_key'],origin['project'],note['id']))
+            conn.execute("INSERT INTO settings(key,value) VALUES('autonomous_legacy_scoping_v1','1')")
 
 
     @contextmanager

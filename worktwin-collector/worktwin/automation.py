@@ -49,18 +49,21 @@ def record_acceptance(con, client, report):
 
 
 def activate_new(con, document_id, items, client):
-    if not acceptance_status(con,client)['ready']:
-        return 0
-    doc = con.execute('SELECT * FROM documents WHERE id=?',(document_id,)).fetchone()
-    # A directory label and an isolated session are not a verified business project.
-    if not doc['project_verified'] or doc['scope'] not in ('project','global'):
+    doc = con.execute("""SELECT d.* FROM documents d JOIN sources s ON s.id=d.source_id
+        WHERE d.id=? AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1""",
+        (document_id,)).fetchone()
+    # Knowledge scoped to this session is useful without a user-created
+    # business-project identity. The source still needs explicit AI consent.
+    if not doc or doc['scope'] not in ('session','project','global'):
         return 0
     activated = 0
     for item in items:
-        if item.get('requires_review',True) is not False or item.get('quality')!='useful' or item.get('attribution') not in ('user','document') or item.get('outcome')=='reported':
+        if item.get('quality')!='useful' or item.get('attribution') not in ('user','document') or item.get('outcome')=='reported':
             continue
-        candidates=con.execute('''SELECT * FROM knowledge WHERE project_key=? AND scope=?
-            AND status!='archived' ''',(doc['project_key'],doc['scope'])).fetchall()
+        key=item.get('project_key') or doc['project_key']
+        scope=item.get('scope') or doc['scope']
+        candidates=con.execute("""SELECT * FROM knowledge WHERE project_key=? AND scope=?
+            AND status!='archived'""",(key,scope)).fetchall()
         matches=[k for k in candidates if topic_key(k['topic'])==topic_key(item.get('topic',''))]
         # Same-topic duplicates and uncertain relationships need review.
         if len(matches)!=1:
@@ -78,10 +81,10 @@ def activate_new(con, document_id, items, client):
 
 
 def apply_additions(con, document_id, client):
-    if not acceptance_status(con,client)['ready']:
-        return 0
-    doc=con.execute('SELECT * FROM documents WHERE id=?',(document_id,)).fetchone()
-    if not doc['project_verified'] or doc['scope'] not in ('project','global'):
+    doc=con.execute("""SELECT d.* FROM documents d JOIN sources s ON s.id=d.source_id
+        WHERE d.id=? AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1""",
+        (document_id,)).fetchone()
+    if not doc or doc['scope'] not in ('session','project','global'):
         return 0
     from .reconcile import resolve_proposal
     applied=0
@@ -94,7 +97,8 @@ def apply_additions(con, document_id, client):
         # Enrichment must preserve the exact current body, not a model rewrite.
         if not p['body'].startswith(k['body'].rstrip()+'\n\n'):
             continue
-        resolve_proposal(con,p['id'],accept=True)
-        con.execute("UPDATE knowledge SET created_by='enterprise_ai' WHERE id=?",(k['id'],))
+        if k['created_by']=='human':
+            continue
+        resolve_proposal(con,p['id'],accept=True,actor='enterprise_ai')
         applied+=1
     return applied

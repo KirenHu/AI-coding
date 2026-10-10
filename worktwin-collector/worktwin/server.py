@@ -25,6 +25,7 @@ from .provider import ChatRequest, ProviderService
 from .enterprise_settings import EnterpriseSettings
 from .model_settings import ModelInput, ModelListInput, PersonalModel, validate_url
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
+from .decision_model import JevDecisionModel, DecisionRouter
 
 
 class Asset(BaseModel):
@@ -66,6 +67,17 @@ class AdminModelInput(ModelInput):
     daily_calls: int = Field(default=1000, ge=1, le=1000000)
     daily_tokens: int = Field(default=2000000, ge=100, le=1000000000)
     minute_calls: int = Field(default=20, ge=1, le=10000)
+
+
+class DecisionAdminInput(BaseModel):
+    provider: Literal['main','jev','chat'] = 'main'
+    base_url: str = Field(default='', max_length=300)
+    model: str = Field(default='', max_length=150)
+    api_key: str = Field(default='', max_length=2000)
+
+
+class DecisionEvaluation(BaseModel):
+    state: dict = Field(default_factory=dict)
 
 
 class EmployeeInput(BaseModel):
@@ -216,7 +228,11 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
     def admin_settings(identity=Depends(administrator)):
         return {**public_model(),'base_url':provider.url if provider else '', 'has_api_key':bool(provider and provider.key),
                 'daily_calls':provider.daily_calls if provider else 1000,'daily_tokens':provider.daily_tokens if provider else 2000000,
-                'minute_calls':provider.minute_calls if provider else 20,'employees':config.employees()}
+                'minute_calls':provider.minute_calls if provider else 20,'employees':config.employees(),
+                'decision_provider':config.decision_config()['provider'],
+                'decision_url':config.decision_config()['url'],
+                'decision_model':config.decision_config()['model'],
+                'decision_has_key':bool(config.decision_config()['key'])}
 
     @app.post('/v1/admin/models')
     def admin_models(body: ModelListInput, identity=Depends(administrator)):
@@ -252,6 +268,74 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
             provider=ProviderService(store.path.with_name('usage.sqlite'),config={'url':url,'key':key,'model':body.model},limits=limits)
             app.state.provider=provider
         return {'ok':True,**public_model()}
+
+    @app.put('/v1/admin/decision-model')
+    def save_decision_model(body: DecisionAdminInput, identity=Depends(administrator)):
+        previous=config.decision_config()
+        if body.provider=='main':
+            config.save_decision('main','','','')
+            return {'provider':'main','configured':False}
+        try:
+            url=validate_url(body.base_url)
+            if not body.api_key and (body.provider!=previous['provider'] or url!=previous['url']):
+                raise ValueError('切换判断模型或服务地址时必须填写新 API Key')
+            key=body.api_key or previous['key']
+            if not key or not body.model:
+                raise ValueError('判断模型名称与 API Key 不能为空')
+            if body.provider=='jev':
+                candidate=JevDecisionModel(url,key,body.model)
+                candidate.test()
+            else:
+                candidate=PersonalModel(url,key,body.model)
+                candidate.chat([{'role':'user','content':'请只回复 OK'}],max_tokens=MODEL_TEST_TOKENS)
+        except Exception as exc:
+            message=str(exc) if isinstance(exc,(ValueError,ModelConnectionError)) else '判断模型连接失败'
+            raise HTTPException(400,message+'；原配置未修改') from None
+        config.save_decision(body.provider,url,body.model,key)
+        return {'provider':body.provider,'configured':True,'model':body.model}
+
+    @app.post('/v1/decisions')
+    def decide_project(body: DecisionEvaluation, authorization: str = Header(default='')):
+        if not model_access(authorization):
+            raise HTTPException(401,'未获得企业判断模型权限')
+        state=body.state
+        if (not isinstance(state,dict) or
+            set(state)!={'work_unit','candidate'} or
+            not all(isinstance(v,dict) for v in state.values()) or
+            len(json.dumps(state,ensure_ascii=False))>8000):
+            raise HTTPException(400,'项目判断只接受有界的两个工作单元')
+        settings=config.decision_config()
+        if settings['provider']=='main' or not settings['key']:
+            return {'specialized':False}
+        # Bounded shared per-minute quota for the separate paid decision model.
+        identity=config.identify(authorization.removeprefix('Bearer ')) or '__administrator__'
+        with store.connect() as con:
+            con.execute("""CREATE TABLE IF NOT EXISTS decision_usage(
+                identity TEXT NOT NULL, minute INTEGER NOT NULL, calls INTEGER NOT NULL,
+                PRIMARY KEY(identity,minute))""")
+            minute=int(time.time())//60
+            con.execute("""INSERT INTO decision_usage(identity,minute,calls) VALUES(?,?,1)
+                ON CONFLICT(identity,minute) DO UPDATE SET calls=calls+1""",(identity,minute))
+            used=con.execute('SELECT calls FROM decision_usage WHERE identity=? AND minute=?',
+                             (identity,minute)).fetchone()[0]
+            if used>60:
+                raise HTTPException(429,'判断模型每分钟调用次数达到上限')
+        try:
+            if settings['provider']=='jev':
+                result=JevDecisionModel(settings['url'],settings['key'],settings['model']).evaluate(
+                    state,DecisionRouter._questions())
+            else:
+                result=PersonalModel(settings['url'],settings['key'],settings['model']).chat([
+                    {'role':'system','content':'判断这两个工作单元是否属于同一个真实项目。只返回 JSON: {"same_project":true|false,"different_project":true|false}。同名或相似主题不足以证明属于同一项目。'},
+                    {'role':'user','content':json.dumps(state,ensure_ascii=False)}],max_tokens=180)
+                parsed=json.loads(result)
+                result={'answers':{'same_project':{'noul':1.0 if parsed.get('same_project') is True else 0.0},
+                                   'different_project':{'noul':1.0 if parsed.get('different_project') is True else 0.0}}}
+        except Exception:
+            raise HTTPException(502,'企业判断模型调用失败，请检查管理员配置或额度') from None
+        if not model_access(authorization):
+            raise HTTPException(401,'企业 Token 已被撤销')
+        return {'specialized':True,'answers':result['answers']}
 
     @app.post('/v1/admin/employees')
     def issue_employee(body: EmployeeInput, identity=Depends(administrator)):

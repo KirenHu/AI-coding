@@ -94,3 +94,45 @@ def test_full_logs_need_separate_permission_and_selected_current_citation(tmp_pa
                             assert (await session.call_tool('read_knowledge',{'knowledge_id':note})).is_error
                             assert (await session.call_tool('read_source_log',{'document_id':did})).is_error
     asyncio.run(scenario())
+
+
+def test_mixed_project_source_log_requires_full_source_grant(tmp_path):
+    from worktwin.db import Database
+    from worktwin.twin_mcp import full_log_scope_allowed
+
+    db=Database(tmp_path/'mixed-logs.sqlite')
+    with db.connect() as con:
+        sid=con.execute("""INSERT INTO sources(name,kind,root,allow_ai,allow_share)
+            VALUES('multi','folder','/tmp/worktwin-mixed-source',1,1)""").lastrowid
+        did=con.execute("""INSERT INTO documents
+            (source_id,path,relative_path,title,file_type,content,sha256,size_bytes,mtime_ns,
+             project_key,scope)
+            VALUES(?,'/tmp/worktwin-mixed-source/weekly.md','weekly.md',
+                'weekly.md','.md','Project A and Project B','hash',30,1,?,'session')""",
+            (sid,'session:test')).lastrowid
+        for i,project in enumerate(('auto:projectA','auto:projectB')):
+            con.execute("""INSERT INTO work_units
+                (document_id,quote_hash,project_key,status) VALUES(?,?,?,'confirmed')""",
+                (did,'hash'+str(i),project))
+        twin=con.execute("""INSERT INTO twins(name,knowledge_mode)
+            VALUES('交接分身','dynamic')""").lastrowid
+        assert not full_log_scope_allowed(con,twin,did)
+        con.execute("""INSERT INTO twin_grants
+            (twin_id,subject_type,subject_key,effect)
+            VALUES(?,'source',?,'allow')""",(twin,str(sid)))
+        assert full_log_scope_allowed(con,twin,did)
+        con.execute("""INSERT INTO twin_grants
+            (twin_id,subject_type,subject_key,effect)
+            VALUES(?,'project','auto:projectB','deny')""",(twin,))
+        assert not full_log_scope_allowed(con,twin,did)
+        con.execute("""DELETE FROM twin_grants WHERE effect='deny'""")
+        note=con.execute("""INSERT INTO knowledge(kind,title,body,status,scope,project_key)
+            VALUES('decision','秘密','仅允许内部使用','confirmed','project',
+            'auto:projectB')""").lastrowid
+        con.execute("""INSERT INTO knowledge_evidence
+            (knowledge_id,document_id,quote) VALUES(?,?,'internal-only quote')""",
+            (note,did))
+        con.execute("""INSERT INTO twin_grants
+            (twin_id,subject_type,subject_key,effect)
+            VALUES(?,'knowledge',?,'deny')""",(twin,str(note)))
+        assert not full_log_scope_allowed(con,twin,did)
