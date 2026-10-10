@@ -69,7 +69,8 @@ class BrowserCapture:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS browser_capture_settings(
                     id INTEGER PRIMARY KEY CHECK(id=1),
-                    enabled INTEGER NOT NULL DEFAULT 0);
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    allow_ai INTEGER NOT NULL DEFAULT 0);
                 INSERT OR IGNORE INTO browser_capture_settings(id,enabled) VALUES(1,0);
                 CREATE TABLE IF NOT EXISTS browser_extension_pairing(
                     id INTEGER PRIMARY KEY CHECK(id=1), code_hash TEXT NOT NULL,
@@ -106,7 +107,17 @@ class BrowserCapture:
                     action TEXT NOT NULL, status TEXT NOT NULL, label TEXT NOT NULL,
                     PRIMARY KEY(session_id,step));
                 CREATE INDEX IF NOT EXISTS ix_browser_steps_session ON browser_capture_steps(session_id,step);
+                CREATE TABLE IF NOT EXISTS browser_capture_summaries(
+                    session_id TEXT PRIMARY KEY REFERENCES browser_capture_sessions(id) ON DELETE CASCADE,
+                    event_seq INTEGER NOT NULL DEFAULT 0,summary TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    source TEXT NOT NULL DEFAULT 'rule',status TEXT NOT NULL DEFAULT 'preview',
+                    updated_at INTEGER NOT NULL);
             """)
+            # Older preview installations have a settings row without allow_ai.
+            cols={r[1] for r in con.execute("PRAGMA table_info(browser_capture_settings)")}
+            if "allow_ai" not in cols:
+                con.execute("ALTER TABLE browser_capture_settings ADD COLUMN allow_ai INTEGER NOT NULL DEFAULT 0")
 
     def enabled(self, con) -> bool:
         return bool(con.execute("SELECT enabled FROM browser_capture_settings WHERE id=1").fetchone()[0])
@@ -119,7 +130,8 @@ class BrowserCapture:
                 (SELECT task_id,launcher_origin FROM browser_capture_sessions
                 WHERE status IN ('armed','capturing','navigation_stopped') AND expires_at>?
                 GROUP BY task_id,launcher_origin)""", (now,)).fetchone()[0]
-            return {"enabled":self.enabled(con),
+            return {"enabled":self.enabled(con),"allow_ai":bool(con.execute(
+                       "SELECT allow_ai FROM browser_capture_settings WHERE id=1").fetchone()[0]),
                     "extension_connected":bool(client and now-int(client["last_seen"])<=90),
                     "active_tasks":sessions,
                     "flow_configured":bool(os.environ.get("WORKTWIN_CAPTURE_FLOW_ORIGIN") and
@@ -134,7 +146,16 @@ class BrowserCapture:
                 con.execute("DELETE FROM browser_extension_pairing")
                 # Existing extension may re-pair when the user next enables capture.
                 con.execute("DELETE FROM browser_extension_clients")
+                con.execute("UPDATE browser_capture_settings SET allow_ai=0 WHERE id=1")
                 con.execute("UPDATE browser_capture_tasks SET state='disabled' WHERE state='active'")
+        return self.settings()
+
+    def toggle_ai(self,allow_ai: bool):
+        with self.db.connect() as con:
+            if allow_ai and not self.enabled(con):
+                raise HTTPException(409,"请先启用浏览器行为采集")
+            con.execute("UPDATE browser_capture_settings SET allow_ai=? WHERE id=1",
+                        (int(allow_ai),))
         return self.settings()
 
     def pairing_code(self) -> str:
