@@ -182,11 +182,16 @@ def main():
                         assert all(isinstance(n,int) for n in data["evidence_seq"]),data
                         # Separate manual mode: the user explicitly enters
                         # a site, then activates one matching browser tab.
-                        site_started=client.put('/api/browser-capture/manual',
-                            headers=dashboard,json={'enabled':True,
-                                'url':'https://portal.example.com'})
-                        assert site_started.status_code==200,site_started.text
-                        manual_sid=site_started.json()['manual_session_id']
+                        dashboard_page=browser.new_page()
+                        dashboard_page.goto(BASE,wait_until='domcontentloaded')
+                        dashboard_page.locator('button[data-page="sources"]').click()
+                        eventually(lambda:dashboard_page.locator('#browser-manual-site').count()>0)
+                        dashboard_page.locator('#browser-manual-site').fill('https://portal.example.com')
+                        dashboard_page.locator('#browser-manual-toggle').click()
+                        eventually(lambda:client.get('/api/browser-capture',headers=dashboard)
+                                   .json()['manual_enabled'],timeout=10)
+                        manual_sid=client.get('/api/browser-capture',
+                            headers=dashboard).json()['manual_session_id']
                         target.bring_to_front()
                         def manual_bound():
                             with sqlite3.connect(db) as con:
@@ -204,10 +209,17 @@ def main():
                         eventually(lambda:any('保存' in label for _,kind,label in
                                    events(db,manual_sid) if kind=='click'),timeout=12)
                         assert manual_bound(),"manual mode stopped on same-site navigation"
-                        stopped_manual=client.put('/api/browser-capture/manual',
-                            headers=dashboard,json={'enabled':False})
-                        assert stopped_manual.status_code==200
-                        assert not stopped_manual.json()['manual_enabled']
+                        dashboard_page.bring_to_front()
+                        dashboard_page.locator('#browser-manual-toggle').click()
+                        eventually(lambda:not client.get('/api/browser-capture',
+                            headers=dashboard).json()['manual_enabled'],timeout=10)
+                        dashboard_page.locator('#browser-record-refresh').click()
+                        eventually(lambda:dashboard_page.locator(
+                            '[data-capture-session="'+manual_sid+'"]').count()==1,timeout=10)
+                        dashboard_page.locator('[data-capture-session="'+manual_sid+'"]').click()
+                        eventually(lambda:'完整操作时间线' in
+                            dashboard_page.locator('#overlay-root').inner_text(),timeout=10)
+                        assert '#1' in dashboard_page.locator('#overlay-root').inner_text()
                         listing=client.get('/api/browser-capture/sessions',
                             headers=dashboard).json()
                         assert any(x['id']==manual_sid and x['mode']=='manual'
