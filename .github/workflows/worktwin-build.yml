@@ -37,6 +37,8 @@ jobs:
           node --check worktwin/static/extension/popup.js
           python -m json.tool worktwin/static/extension/manifest.json >/dev/null
       - run: python -m playwright install --with-deps chromium
+      - name: Real Chromium extension and signed workflow navigation acceptance
+        run: PYTHONPATH=. python scripts/ui_browser_capture_acceptance.py
       - name: Browser acceptance of collection, editing and authorization
         run: PYTHONPATH=. python scripts/ui_acceptance.py
       - name: Browser acceptance of knowledge updates
