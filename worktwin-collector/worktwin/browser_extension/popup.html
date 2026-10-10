@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:14px system-ui;width:320px;margin:16px;color:#202630}label{display:block;margin:10px 0 5px}input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #bfc5cc;border-radius:6px}button{padding:9px 12px;margin-top:10px;cursor:pointer}p{line-height:1.5;color:#56616f}#status{font-weight:600;color:#1b685a}</style></head>
+<body><h3>WorkTwin 浏览器采集</h3><p id="status">正在检查连接…</p>
+<section id="pairing"><label for="pair-code">WorkTwin 内生成的配对码</label><input id="pair-code" autocomplete="off" placeholder="先在 WorkTwin 启用浏览器采集"><button id="pair">连接本地 WorkTwin</button></section>
+<section id="permission" hidden><p id="site"></p><button id="grant">授权本次任务网站</button></section>
+<p>插件不会持续监控浏览记录。只接收可信流程平台签发的任务，且用户已在 WorkTwin 开启采集时，才开始记录授权目标文档。</p><script src="popup.js"></script></body></html>
