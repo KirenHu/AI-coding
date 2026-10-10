@@ -12,12 +12,15 @@ from .parsers import split_chunks
 from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
 from .gardener import KnowledgeGardener
 from .scope import document_scope
+from .projects import catalog, plan_work_units, apply_assignments
+from .decision_model import DecisionRouter
+from .credentials import DesktopSecrets
 from .automation import activate_new, apply_additions, model_signature
 from .autonomy import apply_safe_replacements
 
 
 class KnowledgeWorker:
-    def __init__(self, db: Database, *, client: GatewayClient | None = None, interval: int = 30):
+    def __init__(self, db: Database, *, client: GatewayClient | None = None, interval: int = 30, decision_router=None):
         self.db = db
         self.client = client or GatewayClient()
         self.interval = interval
@@ -26,6 +29,7 @@ class KnowledgeWorker:
         self._thread: threading.Thread | None = None
         self.processing = False
         self.gardener = KnowledgeGardener(db, client=self.client)
+        self.decision_router=decision_router or DecisionRouter(db,DesktopSecrets(db.path),self.client)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -106,10 +110,26 @@ class KnowledgeWorker:
             model_identity=model_signature(self.client)
             items = extract_knowledge(job["content"], transcript=job["adapter"] in ("codex", "claude"),
                                       client=leased_client,scope=metadata,existing=known)
-            # Compare candidates with already structured, AI-authorized knowledge.
-            # Models propose revisions; the independent acceptance gate below
-            # allows only verified, unambiguous additions to take effect.
-            plan = make_consolidation_plan(leased_client, items, known)
+            with self.db.connect() as con:
+                document=con.execute('SELECT * FROM documents WHERE id=?',(job['document_id'],)).fetchone()
+                known_projects=catalog(con)
+            links=plan_work_units(items,document,known_projects,self.decision_router)
+            for item,link in zip(items,links):
+                item.update({k:link[k] for k in ('scope','project_key','project')})
+            # Existing articles are retrieved by work-unit identity, not the
+            # containing file's directory. Cross-source AI grants revalidate.
+            with self.db.connect() as con:
+                known_by_id={k['id']:k for k in known}
+                for item in items:
+                    for k in existing_for_project(con,job['document_id'],
+                            project_key=item['project_key'],scope=item['scope']):
+                        known_by_id[k['id']]=k
+            known=list(known_by_id.values())[:45]
+            plan=make_consolidation_plan(leased_client,items,known)
+            plan={i:p for i,p in plan.items() if i<len(items)
+                  and p['target_id'] in known_by_id
+                  and known_by_id[p['target_id']]['project_key']==items[i]['project_key']
+                  and known_by_id[p['target_id']]['scope']==items[i]['scope']}
             with self.db.connect() as con:
                 con.execute('BEGIN IMMEDIATE')
                 # A revoked source or edited document must never be resurrected by an in-flight response.
@@ -119,12 +139,14 @@ class KnowledgeWorker:
                 if not claimed or not current or current["sha256"] != job["content_sha"] or not current["enabled"] or not current["allow_ai"]:
                     return {"state": "superseded"}
                 # Re-validate model references within the DB transaction.
-                permissible = {r['id'] for r in existing_for_project(con, job['document_id'])}
-                plan = {i:p for i,p in plan.items() if p['target_id'] in permissible}
+                plan = {i:p for i,p in plan.items() if p['target_id'] in {
+                    r['id'] for r in existing_for_project(con,job['document_id'],
+                        project_key=items[i]['project_key'],scope=items[i]['scope'])}}
                 proposals = store_proposals(con, job['document_id'], job['content_sha'], items, plan)
                 fresh = [item for i,item in enumerate(items) if i not in plan]
                 n = store_candidates(con, job["document_id"], split_chunks(job["content"]), fresh,
                                      created_by="enterprise_ai")
+                apply_assignments(con,job['document_id'],items,links)
                 automatic=(apply_additions(con,job['document_id'],self.client)+apply_safe_replacements(con,job['document_id'])+activate_new(con,job['document_id'],fresh,self.client)
                            if model_identity==model_signature(self.client) else 0)
                 con.execute("UPDATE ai_jobs SET state='done',error=NULL,next_run_at=NULL,updated_at=datetime('now') WHERE id=? AND content_sha=? AND claim_token=?",
