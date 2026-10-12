@@ -17,7 +17,7 @@ from mcp.types import ToolAnnotations
 from starlette.responses import JSONResponse
 
 from .twin_access import effective_notes
-from .article_sources import source_passages, matching_passages
+from .article_sources import source_passages
 
 credential = ContextVar('worktwin_mcp_credential',default='')
 
@@ -131,7 +131,7 @@ def create_server(db):
             _,notes=authorized_notes(con)
             if not any(k['id']==knowledge_id for k in notes):
                 raise ToolError('文章不存在、不可用或未授权')
-            return matching_passages(source_passages(con,knowledge_id),query)
+            return source_passages(con,knowledge_id,query=query)
 
     @server.tool(annotations=annotations)
     def read_source_log(document_id:int, offset:int=0, limit:int=12000) -> dict:

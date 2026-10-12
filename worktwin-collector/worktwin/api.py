@@ -35,7 +35,7 @@ from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRunt
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
 from .twin_access import effective_notes, grant_options, replace_grants
-from .article_sources import source_passages
+from .article_sources import source_passages, source_versions
 from .decision_model import DecisionRouter, JevDecisionModel
 from .model_settings import validate_url
 from .answers import answer_from_knowledge
@@ -1469,7 +1469,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,"数字分身不存在")
             rows = effective_notes(con,twin_id)
             for r in rows:
-                r['source_passages'] = source_passages(con, r['id'])
+                query='\n'.join([m.content for m in payload.messages if m.role=='user']+[payload.question])
+                r['source_passages'] = source_passages(con,r['id'],query=query)
+                r['source_versions'] = source_versions(con,r['id'])
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
                     WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0 LIMIT 3""",(r['id'],))]

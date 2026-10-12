@@ -12,7 +12,7 @@ def test_article_grant_carries_current_source_passages_but_material_does_not(tmp
     db=Database(tmp_path/'articles.sqlite')
     quote='审批结果按流程节点传递。'
     with db.connect() as con:
-        sid,did=create_source(con,'业务资料','流程.md',quote+'\n\n传递时必须携带活动实例编号，便于幂等处理。\n\n'+'无关内容。'*1000)
+        sid,did=create_source(con,'业务资料','流程.md',quote+'\n\n传递时必须携带活动实例编号，便于幂等处理。\n\n'+'无关内容。'*1000+'\n\n幂等重试的间隔为五秒。')
         article=con.execute('''INSERT INTO knowledge(kind,title,body,status,scope,project_key,project,quality)
             VALUES('process','流程协作说明','业务输出由流程节点传递。','confirmed','project','business','协作产品','useful')''').lastrowid
         material=con.execute('''INSERT INTO knowledge(kind,title,body,status,scope,project_key,quality,organization)
@@ -25,6 +25,7 @@ def test_article_grant_carries_current_source_passages_but_material_does_not(tmp
         passages=source_passages(con,article)
         assert matching_passages(passages,'活动实例编号')[0]['document_id']==did
         assert '无关内容。'*100 not in passages[0]['text']
+        assert '五秒' in source_passages(con,article,query='幂等重试间隔')[0]['text']
         rows[0]['source_passages']=passages
         class Model:
             def chat(self,messages,max_tokens):

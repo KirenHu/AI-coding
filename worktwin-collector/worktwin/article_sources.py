@@ -2,13 +2,26 @@
 import re
 
 
-def source_passages(con, knowledge_id: int, *, budget: int = 12000) -> list[dict]:
+def source_passages(con, knowledge_id: int, *, query: str = '', budget: int = 12000) -> list[dict]:
     passages, seen, length = [], set(), 0
-    for row in con.execute('''SELECT e.quote,d.id document_id,d.title,d.content
+    records=list(con.execute('''SELECT e.quote,d.id document_id,d.title,d.content
         FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
         JOIN sources s ON s.id=d.source_id
         WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0
-          AND d.deleted=0 AND s.allow_ai=1 ORDER BY e.id''', (knowledge_id,)):
+          AND d.deleted=0 AND s.allow_ai=1 ORDER BY e.id''', (knowledge_id,)))
+    if query:
+        documents={r['document_id']:r for r in records if r['quote'] in r['content']}
+        candidates=[]
+        for row in documents.values():
+            for paragraph in row['content'].split('\n\n'):
+                for start in range(0,len(paragraph),1800):
+                    candidates.append({'document_id':row['document_id'],'title':row['title'],
+                                       'text':paragraph[start:start+1800]})
+        for passage in matching_passages(candidates,query,limit=12):
+            if length+len(passage['text'])<=budget:
+                passages.append(passage);length+=len(passage['text'])
+        return passages
+    for row in records:
         content, quote = row['content'], row['quote']
         start = content.find(quote)
         if start < 0:
@@ -28,6 +41,13 @@ def source_passages(con, knowledge_id: int, *, budget: int = 12000) -> list[dict
         seen.add(identity); length += len(text)
         passages.append({'document_id':row['document_id'], 'title':row['title'], 'text':text})
     return passages
+
+
+def source_versions(con,knowledge_id:int) -> list[tuple]:
+    return [tuple(row) for row in con.execute('''SELECT DISTINCT d.id,d.sha256
+        FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
+        WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0
+          AND d.deleted=0 ORDER BY d.id''',(knowledge_id,))]
 
 
 def matching_passages(passages: list[dict], query: str, limit: int = 6) -> list[dict]:
