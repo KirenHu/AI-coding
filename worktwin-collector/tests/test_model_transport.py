@@ -15,6 +15,36 @@ from worktwin.provider import ProviderService, ChatRequest
 from tests.test_phase1_settings import auth
 
 
+def test_keychain_permission_wait_does_not_block_desktop_server(tmp_path):
+    import threading
+    from worktwin.db import Database
+    path = tmp_path / 'local.sqlite'
+    db = Database(path)
+    db.set_setting('personal_base_url', 'https://model.invalid/v1')
+    db.set_setting('personal_model', 'test-model')
+    entered, release = threading.Event(), threading.Event()
+
+    class WaitingKeychain:
+        label = '系统钥匙串'
+        def get(self, name):
+            if name != 'personal_model_key':
+                return ''
+            entered.set()
+            assert release.wait(3)
+            return 'test-key'
+
+    app = create_app(path, secret_store=WaitingKeychain(), interval=100)
+    try:
+        with TestClient(app) as client:
+            assert entered.wait(1)
+            assert client.get('/api/health').status_code == 200
+            assert client.get('/api/settings',headers=auth(client)).json()['model_status'] == 'reading_credentials'
+            assert not app.state.model.configured
+            release.set()
+    finally:
+        release.set()
+
+
 def reply(content='OK', finish_reason='stop'):
     return io.BytesIO(json.dumps({'choices':[{'message':{'content':content},'finish_reason':finish_reason}]}).encode())
 

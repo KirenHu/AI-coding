@@ -105,9 +105,13 @@ def test_source_share_consent_and_confirmed_only(tmp_path):
         with TestClient(app) as c:
             h=auth(c);sid=c.post('/api/sources',headers=h,json={'name':'项目','root':str(root),'allow_ai':True}).json()['id']
             app.state.collector.scan_all();app.state.knowledge_worker.process_next()
-            k=c.get('/api/knowledge',headers=h).json()[0]
+            material=c.get('/api/knowledge',headers=h,params={'organization':'material'}).json()[0]
             tid=c.post('/api/twins',headers=h,json={'name':'助手'}).json()['id']
-            assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[k['id']]}).status_code==200  # Auto-active privately; sharing remains separately prohibited
+            assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[material['id']]}).status_code==400
+            assert app.state.knowledge_worker.article_maintainer.process_next()['articles']==1
+            k=c.get('/api/knowledge',headers=h,params={'organization':'article'}).json()[0]
+            assert k['status']=='confirmed' and k['article_summary']
+            assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[k['id']]}).status_code==200
             c.post(f'/api/twins/{tid}/publish',headers=h)
             assert app.state.publisher.snapshot()['assets']==[]
             c.put(f'/api/knowledge/{k["id"]}',headers=h,json={**{key:k[key] for key in ('kind','title','body')},'status':'confirmed'})

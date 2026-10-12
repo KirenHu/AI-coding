@@ -19,8 +19,10 @@ def main():
         with TestClient(app) as client,sync_playwright() as pw:
             html=client.get('/').text
             token=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',html).group(1);auth={'X-Worktwin-Token':token}
-            article={'title':'需求评审工作指南','body':'## 准备材料\n\n1. 确认评审范围。\n2. 梳理关键流程。\n\n## 评审后\n\n保留结论及依据。','status':'confirmed'}
+            article={'title':'需求评审工作指南','article_summary':'面向项目参与者，说明评审前需要准备的材料，以及评审后如何保留结论和依据。','body':'# 需求评审工作指南\n\n## 准备材料\n\n1. 确认评审范围。\n2. 梳理关键流程。\n\n## 评审后\n\n保留结论及依据。','status':'confirmed'}
             kid=client.post('/api/knowledge',headers=auth,json=article).json()['id']
+            client.put(f'/api/knowledge/{kid}',headers=auth,json={**article,'body':article['body']+'\n新增异常事项应记录负责人。'})
+            archived=client.post('/api/knowledge',headers=auth,json={**article,'body':'旧版片段，已合并到新的完整文章。','status':'archived'}).json()['id']
             material=client.post('/api/knowledge',headers=auth,json={'title':'评审中的单条观察','body':'待归并的资料'}).json()['id']
             with app.state.db.connect() as con:con.execute("UPDATE knowledge SET organization='material' WHERE id=?",(material,))
             tid=client.post('/api/twins',headers=auth,json={'name':'项目协作助手'}).json()['id']
@@ -41,17 +43,63 @@ def main():
                 page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text());page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
                 (ROOT/'release').mkdir(exist_ok=True)
                 expect(page.locator('[data-entry]')).to_have_count(1)
-                expect(page.locator('#pending-materials')).to_have_text('待整理 1')
+                expect(page.locator(f'[data-entry="{archived}"]')).to_have_count(0)
+                page.locator('[data-lifecycle=archived]').click()
+                expect(page.locator(f'[data-entry="{archived}"]')).to_be_visible()
+                expect(page.locator(f'[data-entry="{kid}"]')).to_have_count(0)
+                page.locator(f'[data-entry="{archived}"]').click()
+                expect(page.locator('.drawer-body')).to_contain_text('旧版片段')
+                page.locator('#drawer-close').click();page.locator('[data-lifecycle=active]').click()
+                expect(page.locator(f'[data-entry="{archived}"]')).to_have_count(0)
+                expect(page.locator('#pending-materials')).to_have_count(0)
                 page.screenshot(path=str(ROOT/'release/WorkTwin-1.4-library.png'))
-                page.locator('#pending-materials').click();page.locator(f'[data-pending-entry="{material}"]').click()
-                expect(page.locator('.drawer-top h2')).to_have_text('评审中的单条观察')
-                page.locator('#drawer-close').click();page.locator(f'[data-entry="{kid}"]').click()
+                page.locator(f'[data-entry="{kid}"]').click()
                 expect(page.locator('.drawer-top h2')).to_have_text('需求评审工作指南')
                 expect(page.locator('.drawer-body h2')).to_have_count(2)
+                expect(page.locator('.drawer-body h1')).to_have_count(0)
+                expect(page.locator('.article-summary p')).to_have_text(article['article_summary'])
+                expect(page.locator('.article-updates tbody tr')).to_have_count(2)
+                assert page.locator('.article-summary').evaluate('(el)=>el.offsetTop') < page.locator('.article-updates').evaluate('(el)=>el.offsetTop') < page.locator('.drawer-body').evaluate('(el)=>el.offsetTop')
+                page.locator('[data-view-version="1"]').click()
+                expect(page.locator('.version-heading')).to_contain_text('v1 · 历史版本')
+                expect(page.locator('#restore-version')).to_be_visible()
+                expect(page.locator('.drawer-body')).not_to_contain_text('新增异常事项')
+                page.locator('#history-back').click()
+                for width,height in [(900,480),(520,700)]:
+                    page.set_viewport_size({'width':width,'height':height})
+                    box=page.locator('#edit-entry').bounding_box()
+                    assert box and box['y']>=0 and box['y']+box['height']<=height,(width,height,box)
+                    assert page.evaluate('document.body.scrollWidth<=innerWidth')
+                page.set_viewport_size({'width':1280,'height':900})
                 expect(page.locator('#knowledge-history')).to_have_count(0)
                 page.screenshot(path=str(ROOT/'release/WorkTwin-1.4-detail.png'))
                 page.locator('#drawer-history-jump').click();expect(page.get_by_role('heading',name='变更日志')).to_be_visible()
-                page.locator('#history-back').click();page.locator('#drawer-close').click()
+                page.locator('#history-back').click()
+                page.locator('#edit-entry').click()
+                expect(page.locator('#edit-k-summary')).to_have_value(article['article_summary'])
+                edited_summary=article['article_summary']+'重点保留待决策问题。'
+                # Hold the refreshed list after saving. The editor must remain
+                # open so a fast click cannot reopen a stale cached revision.
+                page.evaluate('''() => {
+                    window.__articleTestFetch=window.fetch;window.__holdArticleReload=true;
+                    window.fetch=async(path,opts={})=>{
+                        const response=await window.__articleTestFetch(path,opts);
+                        if(path.startsWith('/api/knowledge?')&&window.__holdArticleReload){
+                            window.__holdArticleReload=false;
+                            return new Promise(resolve=>window.__finishArticleReload=()=>resolve(response));
+                        }
+                        return response;
+                    };
+                }''')
+                page.locator('#edit-k-summary').fill(edited_summary);page.locator('#save-entry').click()
+                page.wait_for_function('typeof window.__finishArticleReload === "function"')
+                expect(page.locator('#save-entry')).to_be_disabled()
+                expect(page.locator('.detail-drawer')).to_be_visible()
+                page.evaluate('window.__finishArticleReload();window.fetch=window.__articleTestFetch;delete window.__articleTestFetch;delete window.__finishArticleReload')
+                expect(page.locator('.detail-drawer')).to_have_count(0)
+                page.locator(f'[data-entry="{kid}"]').click()
+                expect(page.locator('.article-summary p')).to_have_text(edited_summary)
+                page.locator('#drawer-close').click()
                 page.locator('[data-page=twins]').click();page.locator(f'[data-twin="{tid}"]').click()
                 expect(page.locator('[data-exclude-note]')).to_have_count(0)
                 expect(page.locator(f'[data-select-entry="{material}"]')).to_have_count(0)
@@ -124,8 +172,32 @@ def main():
                 page.locator('[data-source-tab=folders]').click()
                 expect(page.locator('.source-summary b')).to_have_count(2)
                 assert set(page.locator('.source-summary b').all_text_contents())=={'项目资料','会议记录'}
+                # Article evidence exposes the existing browser-operation viewer.
+                client.put(f'/api/knowledge/{kid}',headers=auth,json=article)
+                with app.state.db.connect() as con:
+                    con.execute("""INSERT INTO browser_capture_sessions
+                        (id,task_id,page_key,launcher_origin,mode,status,created_at,expires_at,ended_at,last_seq,event_count)
+                        VALUES('ui-browser-evidence','','https://example.org','', 'manual','completed',1,1,1,1,1)""")
+                    con.execute("INSERT INTO browser_capture_events(session_id,seq,at,kind,label,location) VALUES('ui-browser-evidence',1,1,'click','查询订单','https://example.org/orders')")
+                    con.execute("INSERT INTO browser_capture_summaries(session_id,event_seq,summary,evidence_json,updated_at) VALUES('ui-browser-evidence',1,'用户点击查询订单。','[1]',1)")
+                    con.execute("INSERT INTO browser_article_observations VALUES(?,'ui-browser-evidence','[1]')",(kid,))
+                    sid=con.execute('SELECT id FROM sources ORDER BY id LIMIT 1').fetchone()[0]
+                    con.execute('UPDATE sources SET allow_ai=1 WHERE id=?',(sid,))
+                    did=con.execute("""INSERT INTO documents(source_id,path,relative_path,title,file_type,project,content,sha256,size_bytes,mtime_ns)
+                        VALUES(?,?,'history.md','历史材料','.md','验收项目','旧版已归档引用','test-history',24,1)""",(sid,str(Path(tmp)/'history.md'))).lastrowid
+                    con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,quote,is_current,superseded) VALUES(?,?,'旧版已归档引用',0,1)",(kid,did))
+
+                page.locator('[data-page=knowledge]').click();page.locator(f'[data-entry="{kid}"]').click()
+                page.locator('.source-reference > summary',has_text='来源依据').click()
+                expect(page.locator('.reference-row').filter(has_text='历史材料')).to_contain_text('旧版历史引用')
+                expect(page.locator('.reference-row').filter(has_text='历史材料')).not_to_contain_text('需要重新核对')
+                expect(page.locator('.browser-evidence-events')).to_contain_text('查询订单')
+                page.locator('[data-read-browser]').click()
+                expect(page.get_by_role('heading',name='网页操作详情',exact=True)).to_be_visible()
+                expect(page.get_by_role('heading',name='完整操作时间线',exact=True)).to_be_visible()
+                expect(page.locator('.dialog-body')).to_contain_text('查询订单')
                 assert not errors,errors
-                print('UI INTERACTION PASS: articles/materials, log entry, 12-turn conversation/context reset, website whitelist switches, plugin sections')
+                print('UI INTERACTION PASS: article overview/update table/body and history restoration, backstage materials, log entry, 12-turn conversation/context reset, website whitelist switches, plugin sections')
             finally:browser.close()
 
 

@@ -6,5 +6,6 @@ from worktwin.cli import main
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    sys.argv = [sys.argv[0], "serve", "--open"]
+    if len(sys.argv)==1:
+        sys.argv = [sys.argv[0], "serve", "--open"]
     main()

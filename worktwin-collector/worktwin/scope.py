@@ -66,6 +66,8 @@ def scope_description(item) -> str:
 
 def snapshot_history(con, item) -> None:
     con.execute('''INSERT INTO knowledge_history
-        (knowledge_id,version,kind,title,body,status,scope,project,project_key,topic,scope_detail,quality,outcome)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''', tuple(item[x] for x in
-        ('id','version','kind','title','body','status','scope','project','project_key','topic','scope_detail','quality','outcome')))
+        (knowledge_id,version,kind,title,body,status,scope,project,project_key,topic,scope_detail,quality,outcome,
+         article_summary,change_summary,changed_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', tuple(item[x] for x in
+        ('id','version','kind','title','body','status','scope','project','project_key','topic','scope_detail','quality','outcome',
+         'article_summary','change_summary','updated_at')))

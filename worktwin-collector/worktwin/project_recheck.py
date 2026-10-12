@@ -9,8 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-from .projects import (catalog, normalized_name, source_anchors, valid_grounding,
-                       _identity_kind, continuity_context)
+from .projects import (catalog, source_anchors, valid_grounding,
+                       _identity_kind, continuity_context, source_context,
+                       project_candidates, project_brief)
 from .scope import snapshot_history
 
 
@@ -23,7 +24,7 @@ class ProjectRechecker:
     def _signature(projects, sources=()):
         # Model-generated labels/summary timestamps must not trigger themselves.
         stable = [(p['project_key'], p['name'], p.get('anchor',''),
-                   p.get('identity_supports', [])) for p in projects]
+                   p.get('identity_supports', []), p.get('background', {})) for p in projects]
         return hashlib.sha256(json.dumps([stable, sources], ensure_ascii=False,
             sort_keys=True).encode()).hexdigest()
 
@@ -60,6 +61,7 @@ class ProjectRechecker:
             con.execute("""INSERT INTO settings(key,value) VALUES('project_recheck_cursor',?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (str(position),))
             rows = [dict(r) for r in con.execute("""SELECT w.*,d.content,d.sha256,
+                d.source_id,d.path,d.title,d.mtime_ns,
                 d.project_verified,d.deleted,s.enabled source_enabled,s.allow_ai,
                 EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.document_id=w.document_id
                     AND e.quote=json_extract(w.evidence_json,'$.quote')
@@ -76,9 +78,12 @@ class ProjectRechecker:
             quote = evidence.get('quote', '')
             local = ' '.join(str(evidence.get(k) or '') for k in
                              ('quote','context_quote','confirmation_quote'))
-            authorized = not work['deleted'] and work['allow_ai']
-            grounded = bool(quote and authorized and work['current_reference']
+            grounded = bool(quote and not work['deleted'] and work['current_reference']
                             and valid_grounding(evidence, work['content']))
+            # Revoking model use does not erase a classification already made
+            # from valid evidence. No protected source is sent to the judge.
+            if grounded and not work['allow_ai']:
+                continue
             anchors = source_anchors(local)
             hint = str(work['project_hint'] or '').strip()
             explicit = bool(hint and hint.casefold() in local.casefold())
@@ -92,11 +97,19 @@ class ProjectRechecker:
             # Exclude the assigned work from the candidate's support; matching
             # a previous label against itself would never discover a mistake.
             independent_target = self._without_self(target, work, quote)
+            if grounded and work['status']=='confirmed' and not target and not contradicted:
+                with self.db.connect() as con:
+                    if self._stored_identity_is_current(con, evidence, work, quote):
+                        continue
             invalid = bool(work['status'] == 'confirmed' and
                 (not grounded or contradicted or (not independent and not independent_target)))
             context = ''
             context_keys = set()
             context_sources = []
+            routing_context = {}
+            if grounded:
+                with self.db.connect() as con:
+                    routing_context = source_context(con, dict(work, id=work['document_id']))
             if grounded and (not explicit or _identity_kind(evidence) == 'context'):
                 from .artifacts import work_context
                 with self.db.connect() as con:
@@ -108,9 +121,9 @@ class ProjectRechecker:
 
             matches = []
             if grounded:
-                proposals = [p for p in projects if
-                    (explicit and normalized_name(p['name']) == normalized_name(hint)) or
-                    (not explicit and p['project_key'] in context_keys)]
+                routing_item = dict(evidence, project_hint=hint, topic=work['topic'],
+                                    project_context=routing_context)
+                proposals = project_candidates(routing_item, projects, context_keys)
                 proposals.sort(key=lambda p:p['project_key'] != work['project_key'])
                 for project in proposals[:6]:
                     proposal = self._without_self(project, work, quote)
@@ -121,11 +134,9 @@ class ProjectRechecker:
                         proposal = project
                     if not proposal:
                         continue
-                    if not ((explicit and normalized_name(proposal['name']) == normalized_name(hint))
-                            or (not explicit and proposal['project_key'] in context_keys)):
-                        continue
                     candidate_repo = proposal.get('anchor','') if proposal.get('anchor_type') == 'repo' else ''
-                    observed = anchors['repositories'] or (source_anchors(context)['repositories'] if context else [])
+                    observed = anchors['repositories'] or source_anchors(
+                        context or routing_context.get('document_opening', ''))['repositories']
                     if candidate_repo and candidate_repo not in observed and (explicit or observed):
                         continue
                     if proposal['project_key'] == work['project_key'] and independent:
@@ -133,9 +144,12 @@ class ProjectRechecker:
                     result = ({'same':1.0, 'conflict':0.0, 'engine':'source-origin'} if restoring_origin else
                         self.judge.compare({'name':hint if explicit else '', 'quote':quote[:700],
                             'topic':work['topic'], 'repositories':anchors['repositories'],
-                            'preceding_work':context},
+                            'objective':evidence.get('project_objective', ''),
+                            'source_context':routing_context, 'preceding_work':context},
                             {'name':proposal['name'], 'project_key':proposal['project_key'],
-                             'anchor':candidate_repo, 'existing_work':proposal.get('summary','')}))
+                             'anchor':candidate_repo, 'existing_work':proposal.get('summary',''),
+                             'project_background':{k:v for k,v in proposal.get('background', {}).items()
+                                                   if k != 'records'}}))
                     if proposal['project_key'] == work['project_key'] and result['conflict'] >= .92:
                         invalid = True
                     if result['same'] >= .92 and result['conflict'] <= .08:
@@ -146,7 +160,8 @@ class ProjectRechecker:
                 # evidence, or after their old basis was withdrawn.
                 exact = (chosen[0].get('anchor_type') == 'repo' and
                          chosen[0].get('anchor') in anchors['repositories'])
-                if work['status'] == 'confirmed' and not invalid and not exact:
+                objective_match = bool(evidence.get('project_objective') and routing_context)
+                if work['status'] == 'confirmed' and not invalid and not (exact or objective_match):
                     chosen = None
             if chosen and (chosen[0]['project_key'] != work['project_key'] or work['status'] != 'confirmed'):
                 if self._apply(work, evidence, chosen[0], chosen[1], context, context_sources):
@@ -166,6 +181,22 @@ class ProjectRechecker:
                 'updated':updated, 'withdrawn':withdrawn}
 
     @staticmethod
+    def _stored_identity_is_current(con, evidence, work, quote):
+        """Read old identity witnesses without granting them model access."""
+        for support in evidence.get('identity_supports', []):
+            if support['document_id']==work['document_id'] and support['quote']==quote:
+                continue
+            document=con.execute('SELECT content,deleted FROM documents WHERE id=?',
+                                 (support['document_id'],)).fetchone()
+            if not document or document['deleted'] or not valid_grounding(support,document['content']):
+                continue
+            if support.get('verified') or con.execute('''SELECT 1 FROM knowledge_evidence
+                WHERE document_id=? AND quote=? AND is_current=1 AND superseded=0''',
+                (support['document_id'],support['quote'])).fetchone():
+                return True
+        return False
+
+    @staticmethod
     def _without_self(project, work, quote):
         if not project:
             return None
@@ -173,8 +204,9 @@ class ProjectRechecker:
                     if s.get('verified') or not (s['document_id'] == work['document_id'] and s['quote'] == quote)]
         if not supports:
             return None
-        return dict(project, identity_supports=supports,
-                    summary=' / '.join(s['quote'][:260] for s in supports[:2])[:550])
+        records = [r for r in project.get('background', {}).get('records', [])
+                   if not (r['document_id'] == work['document_id'] and r['quote'] == quote)]
+        return project_brief(project, supports, records)
 
     def _apply(self, work, evidence, target, result, context, context_sources=()):
         quote = evidence.get('quote','')

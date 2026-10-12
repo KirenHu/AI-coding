@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from playwright.sync_api import sync_playwright, expect
 from worktwin.api import create_app
+from worktwin.article_maintenance import source_materials, _signature
 
 ROOT=Path(__file__).parents[1]
 
@@ -76,6 +77,63 @@ def main():
                     page.locator('[data-assistant=codex]').uncheck()
                     expect(page.locator('[data-assistant=codex]')).not_to_be_checked()
                     assert client.get('/api/sources',headers=auth).json()
+                    # New material can wait for the article agent without a run row yet.
+                    with app.state.db.connect() as con:
+                        source_id=added.json()['id']
+                        content='验收资料：订单查询规则。'
+                        doc_id=con.execute("""INSERT INTO documents(source_id,path,relative_path,title,file_type,project,content,sha256,size_bytes,mtime_ns)
+                            VALUES(?,?,'queued.md','待整理资料','.md','订单项目',?,'ui-queued-doc',40,1)""",(source_id,str(work/'queued.md'),content)).lastrowid
+                        con.execute('UPDATE sources SET allow_ai=1 WHERE id=?',(source_id,))
+                        mid=con.execute("""INSERT INTO knowledge(kind,title,body,status,created_by,source_bound,organization,scope,project_key,project,topic,scope_detail,quality,attribution)
+                            VALUES('process','订单查询材料','订单查询规则及背景。','draft','enterprise_ai',1,'material','project','ui-article-error','订单项目','订单查询','订单查询验收','useful','document')""").lastrowid
+                        con.execute('INSERT INTO knowledge_evidence(knowledge_id,document_id,quote,is_current) VALUES(?,?,?,1)',(mid,doc_id,content))
+                    page.locator('[data-source-tab=folders]').click()
+                    expect(page.locator('#show-processing')).to_have_text('1 项待整理 · 0 项整理中 · 0 项失败')
+                    page.locator('#show-processing').click()
+                    expect(page.locator('#queued-article-jobs')).to_have_text('1 个项目等待整理。')
+                    expect(page.locator('.dialog-body')).not_to_contain_text('没有待处理任务')
+                    expect(page.locator('.job-row')).to_have_count(0)
+                    page.locator('.dialog-footer [data-close]').click()
+                    # Extraction may be finished while article writing is active.
+                    with app.state.db.connect() as con:
+                        con.execute("INSERT INTO article_maintenance_runs(scope,project_key,input_signature,state) VALUES('project','ui-article-running','test','running')")
+                        con.execute("INSERT INTO article_maintenance_runs(scope,project_key,input_signature,state,error) VALUES('project','ui-article-error','test','error','TransientError')")
+                    page.locator('[data-source-tab=assistants]').click()
+                    expect(page.locator('#show-processing')).to_have_text('1 项整理中 · 1 项失败')
+                    page.locator('#show-processing').click()
+                    expect(page.locator('.job-row')).to_have_count(2)
+                    expect(page.locator('.dialog-body')).to_contain_text('正在维护文章')
+                    expect(page.locator('.dialog-body')).to_contain_text('文章整理失败')
+                    expect(page.locator('#retry-ai')).to_be_visible()
+                    page.locator('#retry-ai').click()
+                    expect(page.locator('.dialog')).to_have_count(0)
+                    expect(page.locator('#show-processing')).to_have_text('1 项待整理 · 1 项整理中 · 0 项失败')
+                    with app.state.db.connect() as con:
+                        retried=con.execute("SELECT state,attempts,error FROM article_maintenance_runs WHERE project_key='ui-article-error'").fetchone()
+                        assert tuple(retried)==('queued',0,'')
+                    page.clock.fast_forward(4000)
+                    expect(page.locator('#refresh-notice')).to_have_count(0)
+                    with app.state.db.connect() as con:
+                        con.execute("UPDATE article_maintenance_runs SET state='done' WHERE project_key LIKE 'ui-article-%'")
+                        material=next(m for m in source_materials(con) if m['id']==mid)
+                        con.execute('INSERT INTO article_material_receipts(material_id,input_signature) VALUES(?,?)',(mid,_signature([material])))
+                    page.clock.fast_forward(4000)
+                    expect(page.locator('#refresh-notice')).to_contain_text('文章整理已完成')
+                    # The page explains a delayed native credential read without changing the form.
+                    page.evaluate("""() => {
+                        window.__credentialTestFetch=window.fetch;
+                        window.fetch=async(path,opts={})=>{
+                            const response=await window.__credentialTestFetch(path,opts);
+                            if(path==='/api/settings'){
+                                const data=await response.json();data.model_status='reading_credentials';data.model_error='';
+                                return new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+                            }
+                            return response;
+                        };
+                    }""")
+                    page.locator('#settings-link').click()
+                    expect(page.locator('#settings-result')).to_have_text('正在读取系统钥匙串，请处理 macOS 的权限提示')
+                    page.evaluate('window.fetch=window.__credentialTestFetch;delete window.__credentialTestFetch')
                     original={'title':'会变化的知识','body':'最初正文','kind':'process','status':'confirmed'}
                     kid=client.post('/api/knowledge',headers=auth,json=original).json()['id']
                     page.locator('[data-page=knowledge]').click()

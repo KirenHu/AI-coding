@@ -8,18 +8,16 @@ from datetime import datetime, timedelta, timezone
 from .db import Database
 from .inference import GatewayClient, extract_knowledge
 from .knowledge import store_candidates
-from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
-from .gardener import KnowledgeGardener
+from .reconcile import existing_for_project
 from .scope import document_scope
 from .projects import catalog, plan_work_units, apply_assignments, source_context
 from .project_recheck import ProjectRechecker
 from .decision_model import DecisionRouter
 from .credentials import DesktopSecrets
-from .automation import activate_new, apply_additions, model_signature
-from .autonomy import apply_safe_replacements
 from .ingest import pending_batch, ack_batch
 from .artifacts import work_context, context_for_model
-from .articles import organize_batch
+from .article_maintenance import ArticleMaintainer
+from .gardener import KnowledgeGardener
 
 
 class KnowledgeWorker:
@@ -31,9 +29,12 @@ class KnowledgeWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.processing = False
-        self.gardener = KnowledgeGardener(db, client=self.client)
         self.decision_router=decision_router or DecisionRouter(db,DesktopSecrets(db.path),self.client)
         self.project_rechecker=ProjectRechecker(db,self.decision_router)
+        self.article_maintainer=ArticleMaintainer(db,self.client)
+        # Retain explicit owner-reviewed curation and its existing proposal API.
+        # Scheduled authorship is handled solely by the article maintainer.
+        self.gardener=KnowledgeGardener(db,client=self.client)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -67,13 +68,14 @@ class KnowledgeWorker:
                         break
                 # Maintenance is lower priority than fresh capture: one note
                 # per idle cycle and no call if extraction is still backed up.
+                if not self._stop.is_set():
+                    self.article_maintainer.client = self.client
+                    self.article_maintainer.process_next()
                 if result == "idle" and not self._stop.is_set():
                     # A new project may resolve previously isolated sessions.
                     # Work through a bounded batch before lower priority text
                     # curation; no user confirmation or full-corpus re-extraction.
                     self.project_rechecker.process_next()
-                    self.gardener.client = self.client
-                    self.gardener.process_next()
 
     def process_next(self) -> dict:
         if not self.client.configured:
@@ -139,7 +141,6 @@ class KnowledgeWorker:
                 context = work_context(con, job['document_id'],
                                        event_start=batch['from_seq'] + 1 if batch else None,
                                        event_end=batch['through_seq'] if batch else None)
-            model_identity=model_signature(self.client)
             class ExtractionClient:
                 configured=True
                 def chat(self, messages, max_tokens=1800):
@@ -168,22 +169,6 @@ class KnowledgeWorker:
             links=plan_work_units(items,document,known_projects,self.decision_router)
             for item,link in zip(items,links):
                 item.update({k:link[k] for k in ('scope','project_key','project')})
-            source_items = items
-            items = organize_batch(leased_client, source_items)
-            # Existing articles are retrieved by work-unit identity, not the
-            # containing file's directory. Cross-source AI grants revalidate.
-            with self.db.connect() as con:
-                known_by_id={k['id']:k for k in known}
-                for item in items:
-                    for k in existing_for_project(con,job['document_id'],
-                            project_key=item['project_key'],scope=item['scope']):
-                        known_by_id[k['id']]=k
-            known=list(known_by_id.values())[:45]
-            plan=make_consolidation_plan(leased_client,items,known)
-            plan={i:p for i,p in plan.items() if i<len(items)
-                  and p['target_id'] in known_by_id
-                  and known_by_id[p['target_id']]['project_key']==items[i]['project_key']
-                  and known_by_id[p['target_id']]['scope']==items[i]['scope']}
             with self.db.connect() as con:
                 con.execute('BEGIN IMMEDIATE')
                 # A revoked source or edited document must never be resurrected by an in-flight response.
@@ -196,17 +181,9 @@ class KnowledgeWorker:
                     return {"state": "superseded"}
                 if batch and not ack_batch(con, job['document_id'], batch['through_seq'], batch['generation']):
                     return {'state': 'superseded'}
-                # Re-validate model references within the DB transaction.
-                plan = {i:p for i,p in plan.items() if p['target_id'] in {
-                    r['id'] for r in existing_for_project(con,job['document_id'],
-                        project_key=items[i]['project_key'],scope=items[i]['scope'])}}
-                proposals = store_proposals(con, job['document_id'], current['sha256'], items, plan)
-                fresh = [item for i,item in enumerate(items) if i not in plan]
-                n = store_candidates(con, job["document_id"], [], fresh,
+                n = store_candidates(con, job["document_id"], [], items,
                                      created_by="enterprise_ai")
-                apply_assignments(con,job['document_id'],source_items,links)
-                automatic=(apply_additions(con,job['document_id'],self.client)+apply_safe_replacements(con,job['document_id'])+activate_new(con,job['document_id'],fresh,self.client)
-                           if model_identity==model_signature(self.client) else 0)
+                apply_assignments(con,job['document_id'],items,links)
                 has_more = batch and current['captured_seq'] > batch['through_seq']
                 con.execute("""UPDATE ai_jobs SET state=?,content_sha=?,error=NULL,next_run_at=NULL,
                     claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL,
@@ -214,8 +191,8 @@ class KnowledgeWorker:
                     WHERE id=? AND content_sha=? AND claim_token=?""",
                     ('queued' if has_more else 'done',current['sha256'],bool(has_more),
                      job["job_id"], job["content_sha"],job["claim_token"]))
-            self.db.event("ai_extracted", f"自动整理 {len(items)} 条知识，新增引用 {n} 条，待复核更新 {proposals} 项")
-            return {"state": "done", "candidates": len(items), "added": n, "proposals": proposals,'automatic':automatic}
+            self.db.event("ai_extracted", f"记录 {len(items)} 条待整理材料，新增 {n} 条")
+            return {"state": "done", "candidates": len(items), "added": n, "proposals": 0,'automatic':0}
         except Exception as exc:
             # Do not persist provider error bodies, URLs, or credentials. Retry
             # transient failures a bounded number of times with backoff.

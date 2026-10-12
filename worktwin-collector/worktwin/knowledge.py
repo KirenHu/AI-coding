@@ -108,7 +108,7 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
         fingerprint = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
         cursor = con.execute("INSERT OR IGNORE INTO knowledge(kind,title,body,created_by,source_bound,fingerprint,organization) VALUES(?,?,?,?,1,?,?)",
                              (item["kind"], item["title"][:130], item["body"], created_by, fingerprint,
-                              "article" if created_by=="enterprise_ai" else "material"))
+                              item.get('organization','material')))
         row = con.execute("SELECT id FROM knowledge WHERE fingerprint=?", (fingerprint,)).fetchone()
         if not row:
             continue

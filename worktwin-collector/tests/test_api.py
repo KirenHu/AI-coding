@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from worktwin.api import create_app
-from tests.support import run_ai
+from tests.support import run_ai, run_ai_article
 
 
 def test_local_web_workflow(tmp_path: Path):
@@ -22,17 +22,24 @@ def test_local_web_workflow(tmp_path: Path):
         assert response.status_code == 200
         app.state.collector.scan_all()
         run_ai(app.state.db)
+        materials=client.get('/api/knowledge',headers=headers,params={'organization':'material'}).json()
+        assert len(materials)==1 and materials[0]['status']=='draft'
+        assert client.get('/api/knowledge',headers=headers,params={'organization':'article'}).json()==[]
+        run_ai_article(app.state.db)
         documents = client.get("/api/documents",headers=headers).json()
         assert len(documents) == 1
         hits=client.get("/api/search",params={"q":"审批"},headers=headers).json()
         assert hits["documents"]
         assert client.get("/api/knowledge",headers=headers).json()
-        item=client.get("/api/knowledge",headers=headers).json()[0]
+        item=client.get('/api/knowledge',headers=headers,params={'organization':'article'}).json()[0]
+        assert item['article_summary'] and item['status']=='confirmed'
         edit=client.put(f"/api/knowledge/{item['id']}",headers=headers,json={"title":"决策记录","body":"保留人工复核","kind":"decision","status":"confirmed"})
         assert edit.status_code == 200
-        assert len(client.get(f"/api/knowledge/{item['id']}/history",headers=headers).json()) == 2  # AI activation plus owner edit
+        assert len(client.get(f"/api/knowledge/{item['id']}/history",headers=headers).json()) == 1
+        assert client.get(f"/api/knowledge-item/{materials[0]['id']}",headers=headers).json()['status']=='draft'
         assert client.get("/api/stats",headers=headers).json()["confirmed"] == 1
-        assert client.get("/api/export",headers=headers).json()["entries"][0]["title"] == "决策记录"
+        exported=client.get("/api/export",headers=headers).json()["entries"]
+        assert next(e for e in exported if e['id']==item['id'])['title']=='决策记录'
         assert "决策记录" in client.get("/api/export-markdown",headers=headers).text
         delete=client.delete(f"/api/sources/{response.json()['id']}",headers=headers)
         assert delete.status_code == 200
@@ -117,3 +124,18 @@ def test_restoring_version_clears_stale_ai_proposal_instead_of_requiring_review(
         with app.state.db.connect() as con:
             assert con.execute("""SELECT status FROM knowledge_proposals
                 WHERE fingerprint='test-history-pending'""").fetchone()[0]=='dismissed'
+
+
+def test_retry_includes_article_maintenance_after_attempt_limit(tmp_path):
+    app=create_app(tmp_path/'retry.sqlite',start_worker=False)
+    with TestClient(app) as c:
+        h={'X-Worktwin-Token':re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',c.get('/').text).group(1)}
+        with app.state.db.connect() as con:
+            con.execute("INSERT INTO article_maintenance_runs(scope,project_key,input_signature,state,attempts,error) VALUES('project','project:test','signature','error',3,'failure')")
+            con.execute("INSERT INTO browser_article_runs(site,input_signature,state,error) VALUES('https://test.invalid','signature','error','failure')")
+        response=c.post('/api/ai/jobs/retry',headers=h)
+        assert response.status_code==200 and response.json()['queued']==2
+        with app.state.db.connect() as con:
+            row=con.execute('SELECT state,attempts,error,next_run_at FROM article_maintenance_runs').fetchone()
+            assert tuple(row)==('queued',0,'',None)
+            assert con.execute('SELECT state FROM browser_article_runs').fetchone()[0]=='queued'

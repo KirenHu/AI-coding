@@ -92,17 +92,44 @@ def main():
         env['WORKTWIN_ACCEPTANCE_PORT']=str(port)
         # Only this subprocess exposes the nonce and the isolated DB identity.
         # The installed app has neither this route nor this temporary nonce.
-        server_code='''
+        server_code=r'''
 import os
+import json
 from pathlib import Path
 import uvicorn
 from worktwin.api import create_app
 from worktwin import __version__
+from worktwin.browser_capture_summary import rule_summary
+
+class SyntheticBrowserArticleModel:
+    configured=True
+    def chat(self,messages,max_tokens=450):
+        request=json.loads(messages[-1]['content'])
+        if 'events' in request:
+            summary,ids=rule_summary(request['events'])
+            return json.dumps({'summary':summary,'event_ids':ids},ensure_ascii=False)
+        observations=request['observations']
+        previous=next((a for a in request['articles'] if a['topic']=='审批规则配置'),None)
+        steps=list(dict.fromkeys(event['operation'] for observation in observations
+                                 for event in observation['events']))
+        body='## 操作对象\n\n这份记录描述审批规则页面及其弹窗中已经观察到的控件操作。\n\n'
+        body+='## 已观察到的操作\n\n'+'\n'.join('- '+step for step in steps)
+        body+='\n\n## 观察范围\n\n这些操作来自本次网页记录，输入值没有采集。页面反馈不代表后台业务结果已核实。'
+        return json.dumps({'articles':[{'existing_id':previous['id'] if previous else None,
+            'topic':'审批规则配置','title':'审批规则页面与弹窗的操作观察',
+            'summary':'整理审批规则页面与弹窗中实际发生的操作，保留步骤及来源，不推断业务结果。',
+            'body':body,'change_summary':'补充审批规则页面与弹窗中观察到的操作。',
+            'observations':[{'session_id':o['session_id'],'event_ids':[e['seq'] for e in o['events']]}
+                            for o in observations]}]},ensure_ascii=False)
+
 db_path=Path(os.environ['WORKTWIN_DATA_DIR'])/'worktwin.sqlite'
-app=create_app(db_path,start_worker=False)
+app=create_app(db_path,start_worker=False,inference_client=SyntheticBrowserArticleModel())
 @app.get('/acceptance/identity')
 def identity():
     return {'id':os.environ['WORKTWIN_ACCEPTANCE_ID'], 'database':str(db_path), 'version':__version__}
+@app.post('/acceptance/articles')
+def write_browser_articles():
+    return app.state.browser_summary_service.process_due(limit=100)
 uvicorn.run(app,host='127.0.0.1',port=int(os.environ['WORKTWIN_ACCEPTANCE_PORT']))
 '''
         server=subprocess.Popen([sys.executable,'-c',server_code],
@@ -343,12 +370,30 @@ uvicorn.run(app,host='127.0.0.1',port=int(os.environ['WORKTWIN_ACCEPTANCE_PORT']
                                 params={'status':'all','limit':200}).json()
                             return next((n for n in notes if n['kind']=='process' and
                                 n['project_key'].startswith('browser-site:')),None)
+                        # Recording materials is independent of article writing.
+                        # Only the isolated synthetic model is authorized here.
+                        assert site_guide() is None,'raw observations published without AI authorization'
+                        client.put('/api/browser-capture/ai',headers=dashboard,
+                            json={'allow_ai':True}).raise_for_status()
+                        client.post('/acceptance/articles').raise_for_status()
                         guide=eventually(site_guide,timeout=15)
                         assert '新增审批规则' in guide['body'],guide
+                        assert guide['article_summary'] and guide['topic']=='审批规则配置',guide
+                        detail=client.get('/api/knowledge-item/'+str(guide['id']),headers=dashboard).json()
+                        source=next((s for s in detail['browser_sources'] if s['session_id']==first_interval),None)
+                        assert source and source['events'],detail
+                        captured=events(db,first_interval)
+                        expected={seq for seq,_,_ in captured}
+                        assert {e['seq'] for e in source['events']}==expected,(source,captured)
+                        assert any('保存弹窗' in e['label'] for e in source['events']),source
+                        assert 'PRIVATE_INPUT_VALUE' not in json.dumps(detail['browser_sources'])
+                        assert 'PRIVATE_PASSWORD' not in json.dumps(detail['browser_sources'])
                         print(json.dumps({'result':'PASS','extension':'MV3 Chromium',
                             'legacy_task_first_page_only':True,'continuous_site_multi_tab':True,
                             'same_origin_iframe_and_shadow':True,'cross_origin_iframe_excluded':True,
-                            'pairing_survives_pause':True,'site_history_preserved':True},ensure_ascii=False))
+                            'pairing_survives_pause':True,'site_history_preserved':True,
+                            'periodic_topic_article_from_real_events':True,
+                            'article_original_event_links':True},ensure_ascii=False))
                     finally:
                         browser.close()
         finally:

@@ -128,6 +128,7 @@ def organize_batch(client, items):
                 article = dict(page[first][1])
                 article.update({key:group[key] for key in ('kind','topic','title','body','scope_detail')})
                 article['parts'] = parts
+                article['organization'] = 'article'
                 article['requires_review'] = any(page[index][1].get('requires_review', True) for index in members)
                 merged[first] = (min(page[index][0] for index in members),article)
                 consumed.update(members)

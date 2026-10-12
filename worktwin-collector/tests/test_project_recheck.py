@@ -46,7 +46,7 @@ def add_work(con, doc, item, judge=None):
     apply_assignments(con,doc,[item],[link])
     kid = con.execute('SELECT knowledge_id FROM knowledge_evidence WHERE document_id=? AND quote=?',
                       (doc,item['quote'])).fetchone()[0]
-    con.execute("UPDATE knowledge SET status='confirmed',needs_review=0 WHERE id=?",(kid,))
+    con.execute("UPDATE knowledge SET status='confirmed',needs_review=0,organization='article' WHERE id=?",(kid,))
     return kid, link
 
 
@@ -55,7 +55,7 @@ def replace_content(con, doc, text):
                 (text,hashlib.sha256(text.encode()).hexdigest(),doc))
 
 
-def test_lost_origin_withdraws_matches_without_self_reinforcement_and_can_recover(tmp_path):
+def test_revoked_model_access_preserves_current_identity_and_blocks_source_use(tmp_path):
     db = Database(tmp_path/'db.sqlite')
     origin = 'WorkTwin 项目明确采用可持续更新的工作知识库。'
     follow = 'WorkTwin 项目补充按来源维护知识的规则。'
@@ -73,24 +73,61 @@ def test_lost_origin_withdraws_matches_without_self_reinforcement_and_can_recove
     recheck.process_next()
     with db.connect() as con:
         con.execute('UPDATE sources SET allow_ai=0 WHERE id=?',(source,))
-    assert recheck.process_next()['withdrawn'] == 2
+    assert recheck.process_next()['withdrawn'] == 0
     for _ in range(3):
         recheck.process_next()
     with db.connect() as con:
         assert not catalog(con)
-        assert effective_notes(con,twin) == []
-        assert con.execute('SELECT count(*) FROM project_memberships').fetchone()[0] == 0
+        assert {k['id'] for k in effective_notes(con,twin)} == {note}
+        assert con.execute('SELECT count(*) FROM project_memberships').fetchone()[0] == 2
         assert con.execute('SELECT count(*) FROM twin_grants').fetchone()[0] == 1
-        assert {r[0] for r in con.execute('SELECT scope FROM knowledge')} == {'session'}
+        assert {r[0] for r in con.execute('SELECT scope FROM knowledge')} == {'project'}
         con.execute('UPDATE sources SET allow_ai=1 WHERE id=?',(source,))
-    assert recheck.process_next()['updated'] == 2
+    assert recheck.process_next()['updated'] == 0
     with db.connect() as con:
         assert {k['id'] for k in effective_notes(con,twin)} == {seed,note}
         assert {r[0] for r in con.execute('SELECT project_key FROM knowledge')} == {link['project_key']}
         assert con.execute('SELECT count(*) FROM twin_grants').fetchone()[0] == 1
-        assert con.execute('SELECT version FROM knowledge WHERE id=?',(note,)).fetchone()[0] == 3
+        assert con.execute('SELECT version FROM knowledge WHERE id=?',(note,)).fetchone()[0] == 1
     assert recheck.process_next()['updated'] == 0
     assert recheck.process_next()['state'] == 'idle'
+
+
+def test_ai_disabled_one_off_classification_survives_until_actual_evidence_loss(tmp_path):
+    db=Database(tmp_path/'one-off.sqlite')
+    quote='WorkTwin 项目明确采用持续维护的知识文章。'
+    with db.connect() as con:
+        sid,doc=source_document(con,'one-off',quote)
+        note,link=add_work(con,doc,item_for(quote))
+        con.execute('UPDATE sources SET allow_ai=0 WHERE id=?',(sid,))
+    judge=Judge()
+    recheck=ProjectRechecker(db,judge)
+    assert recheck.process_next()['updated']==0
+    assert judge.calls==[]
+    with db.connect() as con:
+        assert con.execute('SELECT project_key FROM work_units WHERE document_id=?',(doc,)).fetchone()[0]==link['project_key']
+        assert con.execute('SELECT scope FROM knowledge WHERE id=?',(note,)).fetchone()[0]=='project'
+        replace_content(con,doc,'原结论已整体移除，当前记录的是其他工作。')
+    assert recheck.process_next()['withdrawn']==1
+    assert judge.calls==[]
+    with db.connect() as con:
+        assert con.execute('SELECT scope FROM knowledge WHERE id=?',(note,)).fetchone()[0]=='session'
+
+
+def test_missing_identity_origin_withdraws_matches_without_self_reinforcement(tmp_path):
+    db=Database(tmp_path/'missing-origin.sqlite')
+    origin='WorkTwin 项目明确采用可持续更新的工作知识库。'
+    follow='WorkTwin 项目补充按来源维护知识的规则。'
+    with db.connect() as con:
+        _,first=source_document(con,'origin',origin)
+        add_work(con,first,item_for(origin))
+        _,second=source_document(con,'follow',follow)
+        add_work(con,second,item_for(follow))
+        replace_content(con,first,'项目背景已经整体删除，原身份依据不再存在。')
+    assert ProjectRechecker(db,Judge()).process_next()['withdrawn']==2
+    with db.connect() as con:
+        assert not catalog(con)
+        assert {r[0] for r in con.execute('SELECT scope FROM knowledge')}=={'session'}
 
 
 def test_changed_reference_rechecks_even_while_other_project_support_is_unchanged(tmp_path):
@@ -108,7 +145,9 @@ def test_changed_reference_rechecks_even_while_other_project_support_is_unchange
     with db.connect() as con:
         before = catalog(con)
         replace_content(con,second,'现在记录的是另一项工作，原引用已删除。')
-        assert catalog(con) == before  # New trigger is source evidence, not catalog.
+        after = catalog(con)
+        assert after[0]['identity_supports'] == before[0]['identity_supports']
+        assert follow in before[0]['summary'] and follow not in after[0]['summary']
     result = recheck.process_next()
     assert result['withdrawn'] == 1
     with db.connect() as con:

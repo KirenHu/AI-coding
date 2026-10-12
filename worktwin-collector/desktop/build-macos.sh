@@ -23,8 +23,9 @@ export PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR=1
 export PYINSTALLER_VERIFY_BUNDLE_SIGNATURE=1
 
 args=(
-  --clean --noconfirm --onedir --windowed
+  --onedir --windowed
   --name WorkTwin
+  --paths .
   --osx-bundle-identifier io.github.kirenhu.worktwin
   --collect-data worktwin
   --collect-data certifi
@@ -42,7 +43,18 @@ args=(
 if [[ -n "${WORKTWIN_CODESIGN_IDENTITY:-}" ]]; then
   args+=(--codesign-identity "$WORKTWIN_CODESIGN_IDENTITY")
 fi
-pyinstaller "${args[@]}" desktop/launcher.py
+pyi-makespec "${args[@]}" desktop/launcher.py
+python - <<'PY'
+from pathlib import Path
+from worktwin import __version__
+spec=Path('WorkTwin.spec')
+text=spec.read_text()
+text=text.replace("bundle_identifier='io.github.kirenhu.worktwin',",
+    "bundle_identifier='io.github.kirenhu.worktwin',\n    info_plist="+
+    repr({'CFBundleShortVersionString':__version__,'CFBundleVersion':__version__})+',')
+spec.write_text(text)
+PY
+pyinstaller --clean --noconfirm WorkTwin.spec
 
 app="dist/WorkTwin.app"
 # Never copy files into the app *after* signing: this previously invalidated
@@ -62,7 +74,7 @@ suffix="-unsigned"
 if [[ "$formal" == 1 ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.4.1-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.5.0-macOS-$(uname -m)${suffix}.dmg"
 # macOS Intel GitHub runners occasionally leave DiskImages busy at the
 # first attempt. Retry only this specific observed hdiutil failure once.
 if output=$(hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg" 2>&1); then

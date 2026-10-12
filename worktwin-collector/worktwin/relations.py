@@ -49,13 +49,13 @@ def related_knowledge(con: sqlite3.Connection, knowledge_id: int, limit: int = 1
     Relations are computed from live state rather than stored as a separate
     graph. Archive and revocation take effect immediately without reindexing.
     """
-    own = con.execute("SELECT id FROM knowledge WHERE id=? AND status!='archived'",
+    own = con.execute("SELECT id,body,status FROM knowledge WHERE id=?",
                       (knowledge_id,)).fetchone()
     if own is None:
         return None
     entries = _available_knowledge(con)
     by_id = {int(k['id']): k for k in entries}
-    body = by_id.get(knowledge_id, {}).get('body', '')
+    body = own['body']
 
     def show(ids: set[int]) -> list[dict]:
         return [{"id": k['id'], "title": k['title'], "kind": k['kind'],

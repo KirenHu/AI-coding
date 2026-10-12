@@ -1,12 +1,13 @@
 """Regression of model-assisted knowledge updates, citations and permissions."""
 import json
 import re
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from tests.support import FakeModel
+from tests.support import FakeModel, run_ai_article
 from worktwin.api import create_app
-from worktwin.reconcile import existing_for_project
+from worktwin.reconcile import existing_for_project, store_proposals
 
 
 def token(client):
@@ -31,25 +32,33 @@ def verify_collected_project(client, headers):
         key = response.json()['project_key']
 
 
-class RevisingModel(FakeModel):
-    def chat(self, messages, max_tokens=2400):
-        if messages[0]['role']=='system' and 'new_item' in messages[0]['content']:
-            self.requests.append(messages)
-            incoming=json.loads(messages[-1]['content'])
-            existing=incoming['existing']
-            if not existing:
-                return '{"items":[]}'
-            return json.dumps({'items':[{'index':0,'action':'replace','target_id':existing[0]['id'],
-                'title':'最新版：项目路由规则','body':'新的项目路由方案由业务工作台统一执行，旧独立路由已停用。',
-                'reason':'后续文档明确决定替换旧路由'}]},ensure_ascii=False)
-        return super().chat(messages,max_tokens)
+def seed_legacy_proposal(app, target_id):
+    """Persist an old-version proposal to verify retained accept/dismiss APIs.
+
+    Current extraction intentionally creates materials, not these proposals.
+    The fixture goes through the real source/project/version validation.
+    """
+    with app.state.db.connect() as con:
+        document=con.execute("SELECT * FROM documents WHERE relative_path='02-new.md'").fetchone()
+        target=con.execute('SELECT * FROM knowledge WHERE id=?',(target_id,)).fetchone()
+        item={'kind':'decision','title':'新版路由决定','body':document['content'],
+            'quote':document['content'],'topic':target['topic'],
+            'scope_detail':target['scope_detail'],'scope':document['scope'],
+            'project_key':document['project_key'],'attribution':'document','outcome':'none',
+            'occurred_at':datetime.fromtimestamp(document['mtime_ns']/1e9,timezone.utc).isoformat()}
+        plan={0:{'action':'replace','target_id':target_id,'title':'最新版：项目路由规则',
+            'body':'新的项目路由方案由业务工作台统一执行，旧独立路由已停用。',
+            'reason':'后续文档明确决定替换旧路由','same_topic':True}}
+        assert store_proposals(con,document['id'],document['sha256'],[item],plan)==1
+        return con.execute('SELECT id FROM knowledge_proposals WHERE target_id=? AND status=\'pending\'',
+                           (target_id,)).fetchone()[0]
 
 
 def setup(tmp_path):
     path=tmp_path/'workspace';path.mkdir()
     a=path/'01-old.md'
     a.write_text('最终决定沿用旧版路由，所有审批先经过中间调度服务。',encoding='utf-8')
-    model=RevisingModel()
+    model=FakeModel()
     app=create_app(tmp_path/'memory.sqlite',start_worker=False,inference_client=model)
     return app, path, a, model
 
@@ -61,18 +70,20 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         sid=client.post('/api/sources',headers=auth,json={'name':'项目','root':str(folder),'allow_ai':True}).json()['id']
         app.state.collector.scan_all()
         verify_collected_project(client, auth)
-        assert app.state.knowledge_worker.process_next()['state']=='done'
-        old=client.get('/api/knowledge',headers=auth).json()[0]
+        run_ai_article(app.state.db,model=model)
+        old=client.get('/api/knowledge',headers=auth,params={'organization':'article'}).json()[0]
         tid=client.post('/api/twins',headers=auth,json={'name':'业务交接'}).json()['id']
         assert client.put(f'/api/knowledge/{old["id"]}',headers=auth,json={**{key:old[key] for key in ('kind','title','body')},'status':'confirmed'}).status_code==200
         assert client.put(f'/api/twins/{tid}/knowledge',headers=auth,json={'knowledge_ids':[old['id']]}).status_code==200
+        prior_version=client.get(f'/api/knowledge-item/{old["id"]}',headers=auth).json()['version']
         new=folder/'02-new.md'
         new.write_text('最终决定不再使用旧版路由，而由业务工作台统一执行审批路由。',encoding='utf-8')
         app.state.collector.scan_all()
         verify_collected_project(client, auth)
         out=app.state.knowledge_worker.process_next()
         assert out['state']=='done',out
-        assert out['proposals']==1,out
+        assert out['proposals']==0 and out['added']==1,out
+        seed_legacy_proposal(app,old['id'])
         proposals=client.get('/api/knowledge/proposals',headers=auth).json()
         assert len(proposals)==1 and proposals[0]['target_id']==old['id']
         pid=proposals[0]['id']
@@ -80,9 +91,10 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
         assert client.put(f'/api/twins/{tid}/knowledge',headers=auth,json={'knowledge_ids':[old['id']]}).status_code==400
         assert client.post(f'/api/knowledge/proposals/{pid}/accept',headers=auth).status_code==200
         item=next(k for k in client.get('/api/knowledge',headers=auth).json() if k['id']==old['id'])
-        assert item['version']==4 and item['status']=='confirmed' and item['needs_review']==0
+        assert item['version']==prior_version+1 and item['status']=='confirmed' and item['needs_review']==0
         assert '新的项目路由' in item['body']
-        assert len(client.get(f'/api/knowledge/{old["id"]}/history',headers=auth).json())==3
+        history=client.get(f'/api/knowledge/{old["id"]}/history',headers=auth).json()
+        assert [h['version'] for h in history]==[2,1]
         assert client.get('/api/twins',headers=auth).json()[0]['knowledge_count']==1
         model.requests.clear()
         answer=client.post(f'/api/twins/{tid}/ask',headers=auth,json={'question':'现在怎么执行路由？'})
@@ -96,15 +108,17 @@ def test_revision_requires_review_and_supersedes_old_citations(tmp_path):
 
 
 def test_revisions_expire_if_source_or_target_changed(tmp_path):
-    app, folder, oldfile, _=setup(tmp_path)
+    app, folder, oldfile, model=setup(tmp_path)
     with TestClient(app) as client:
         auth=token(client)
         client.post('/api/sources',headers=auth,json={'name':'项目','root':str(folder),'allow_ai':True})
         app.state.collector.scan_all();verify_collected_project(client, auth)
-        assert app.state.knowledge_worker.process_next()['state']=='done'
+        run_ai_article(app.state.db,model=model)
+        original=client.get('/api/knowledge',headers=auth,params={'organization':'article'}).json()[0]
         fresh=folder/'02-new.md';fresh.write_text('最终决定不再使用旧版路由，全部走新的统一引擎。',encoding='utf-8')
         app.state.collector.scan_all();verify_collected_project(client, auth)
-        assert app.state.knowledge_worker.process_next()['proposals']==1
+        assert app.state.knowledge_worker.process_next()['proposals']==0
+        seed_legacy_proposal(app,original['id'])
         p=client.get('/api/knowledge/proposals',headers=auth).json()[0]
         item=next(k for k in client.get('/api/knowledge',headers=auth).json() if k['id']==p['target_id'])
         modified=client.put(f'/api/knowledge/{item["id"]}',headers=auth,json={
@@ -119,6 +133,12 @@ def test_revisions_expire_if_source_or_target_changed(tmp_path):
         fresh.write_text('最终决定重做新一代统一引擎，不再采用之前的路由模式。',encoding='utf-8')
         app.state.collector.scan_all()
         assert client.get('/api/knowledge/proposals',headers=auth).json()==[]
+        source_proposal=seed_legacy_proposal(app,item['id'])
+        fresh.write_text('最终决定改用另一种审批实现，之前的新一代引擎已不再适用。',encoding='utf-8')
+        app.state.collector.scan_all()
+        assert client.get('/api/knowledge/proposals',headers=auth).json()==[]
+        assert client.post(f'/api/knowledge/proposals/{source_proposal}/accept',headers=auth).status_code==404
+        assert client.get(f'/api/knowledge-item/{item["id"]}',headers=auth).json()['body']=='人工确认的另外一个版本，不应该被旧提案覆盖。'
 
 
 def test_dismiss_restores_knowledge_and_rejects_unauthorized_reconciliation(tmp_path):
@@ -127,14 +147,16 @@ def test_dismiss_restores_knowledge_and_rejects_unauthorized_reconciliation(tmp_
         auth=token(client)
         client.post('/api/sources',headers=auth,json={'name':'项目','root':str(folder),'allow_ai':True})
         app.state.collector.scan_all();verify_collected_project(client, auth)
-        app.state.knowledge_worker.process_next()
+        run_ai_article(app.state.db,model=model)
+        old=client.get('/api/knowledge',headers=auth,params={'organization':'article'}).json()[0]
         second=folder/'02-new.md';second.write_text('最终决定采用新版路由，准备替换旧版调度。',encoding='utf-8')
         app.state.collector.scan_all();verify_collected_project(client, auth)
         app.state.knowledge_worker.process_next()
+        seed_legacy_proposal(app,old['id'])
         proposal=client.get('/api/knowledge/proposals',headers=auth).json()[0]
         assert client.post(f'/api/knowledge/proposals/{proposal["id"]}/dismiss',headers=auth).status_code==200
         assert client.get('/api/knowledge/proposals',headers=auth).json()==[]
-        assert client.get('/api/knowledge',headers=auth).json()[0]['needs_review']==0
+        assert client.get(f'/api/knowledge-item/{old["id"]}',headers=auth).json()['needs_review']==0
         # Knowledge from a separate source with AI-processing revoked cannot be sent to the model.
         with app.state.db.connect() as con:
             old_doc_id=con.execute("SELECT id FROM documents WHERE relative_path='01-old.md'").fetchone()[0]

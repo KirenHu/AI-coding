@@ -9,7 +9,7 @@ from worktwin.api import create_app
 from worktwin.gateway import create_gateway
 from worktwin.inference import GatewayClient, extract_knowledge, text_batches
 from worktwin.jobs import KnowledgeWorker
-from tests.support import FakeModel, run_ai
+from tests.support import FakeModel, run_ai, run_ai_article
 
 
 def auth(client):
@@ -55,7 +55,9 @@ def test_twin_knowledge_acl_and_revocation(tmp_path):
         app.state.collector.scan_all()
         assert app.state.knowledge_worker.process_next()['state']=='done'
         assert app.state.knowledge_worker.process_next()['state']=='done'
-        entries=c.get('/api/knowledge',headers=h).json()
+        assert len(c.get('/api/knowledge',headers=h,params={'organization':'material'}).json())==2
+        run_ai_article(app.state.db,model=live_model)
+        entries=c.get('/api/knowledge',headers=h,params={'organization':'article'}).json()
         assert len(entries)==2
         approved=next(k for k in entries if '工作流节点' in k['body'])
         denied=next(k for k in entries if '472995' in k['body'])
@@ -89,10 +91,11 @@ def test_assigning_stale_knowledge_denied(tmp_path):
     with TestClient(app) as c:
         h=auth(c)
         c.post('/api/sources',headers=h,json={'name':'work','root':str(folder),'allow_ai':True})
-        app.state.collector.scan_all();run_ai(app.state.db)
-        entry=c.get('/api/knowledge',headers=h).json()[0]
+        app.state.collector.scan_all();run_ai_article(app.state.db)
+        entry=c.get('/api/knowledge',headers=h,params={'organization':'article'}).json()[0]
         tid=c.post('/api/twins',headers=h,json={'name':'交接'}).json()['id']
-        c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[entry['id']]})
+        assert c.put(f'/api/twins/{tid}/knowledge',headers=h,json={'knowledge_ids':[entry['id']]}).status_code==200
+        assert c.get('/api/twins',headers=h).json()[0]['knowledge_count']==1
         note.write_text('我们最终决定换成完全不同的审批权限设计。',encoding='utf-8')
         app.state.collector.scan_all()
         assert c.get('/api/twins',headers=h).json()[0]['knowledge_count']==0

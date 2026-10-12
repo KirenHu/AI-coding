@@ -78,7 +78,7 @@ def main():
                 page.locator('#edit-k-body').fill(f'## 当前方案\n\n审批复用**统一工作流引擎**。\n\n参见 [[K{linked}|关联审批细则]]。')
                 page.locator('#edit-k-confirmed').check();page.get_by_role('button',name='保存知识').click()
                 page.get_by_text('审批节点说明').first.click()
-                page.locator('#drawer-history-jump').click();expect(page.locator('.history-version summary')).to_contain_text('v1');page.locator('#history-back').click()
+                page.locator('#drawer-history-jump').click();expect(page.locator('.article-updates tbody')).to_contain_text('v1');page.locator('[data-view-version="1"]').click();expect(page.locator('.version-heading')).to_contain_text('v1 · 历史版本');page.locator('#history-back').click()
                 page.locator(f'.markdown-body a[href="#knowledge-{linked}"]').click()
                 expect(page.locator('.drawer-top h2')).to_have_text('审批细则')
                 page.locator('.source-reference > summary',has_text='关联文章').click();page.locator(f'[data-open-knowledge="{kid}"]').click()

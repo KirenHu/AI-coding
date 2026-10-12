@@ -80,7 +80,7 @@ class PersonalModel:
 
 
 class ModelRuntime:
-    def __init__(self, db, secrets, *, enterprise=None, injected=None):
+    def __init__(self, db, secrets, *, enterprise=None, injected=None, defer_credentials=False):
         self.db, self.secrets = db, secrets
         self.lock = threading.RLock()
         self.error = ''
@@ -90,15 +90,39 @@ class ModelRuntime:
         if injected is not None:
             self.client = injected
         elif self.mode == 'personal':
-            try:
-                key = secrets.get('personal_model_key')
-                self.client = PersonalModel(db.setting('personal_base_url'), key, db.setting('personal_model'))
-            except Exception:
-                self.client = PersonalModel()
-                self.error = '无法读取模型凭据，请检查系统安全存储并重新连接'
+            self.client = PersonalModel(db.setting('personal_base_url'), '', db.setting('personal_model'))
         else:
             self.client = enterprise or GatewayClient(url='', token='')
         self.status = 'connected' if self.injected else ('configured' if self.configured else 'not_configured')
+        self.credentials_pending = not self.injected and self.mode == 'personal' and bool(self.client.url and self.client.model)
+        if self.credentials_pending:
+            self.status = 'reading_credentials'
+            if not defer_credentials:
+                self.load_credentials()
+
+    def load_credentials(self):
+        """A macOS permission prompt must not hold up the local web server."""
+        if not self.credentials_pending:
+            return
+        client = self.client
+        try:
+            key = self.secrets.get('personal_model_key')
+        except Exception:
+            with self.lock:
+                if client is self.client:
+                    self.credentials_pending = False
+                    self.status = 'error'
+                    self.error = '无法读取模型凭据，请检查系统安全存储并重新连接'
+            return
+        with self.lock:
+            if client is self.client:
+                client.key = key.strip()
+                self.credentials_pending = False
+                self.status = 'configured' if client.configured else 'not_configured'
+
+    def start_credentials(self):
+        if self.credentials_pending:
+            threading.Thread(target=self.load_credentials, name='WorkTwin credentials', daemon=True).start()
 
     @property
     def configured(self):
@@ -115,6 +139,7 @@ class ModelRuntime:
     def replace(self, client, mode, *, tested=False):
         with self.lock:
             self.client, self.mode = client, mode
+            self.credentials_pending = False
             self.status, self.error = ('connected' if tested else 'configured'), ''
             self.db.set_setting('edition', mode)
 

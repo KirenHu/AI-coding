@@ -49,9 +49,23 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                         'topic':'审批架构','scope_detail':'审批系统的架构设计',
                         'value_reason':'解释审批为何采用工作流节点','attribution':'document','outcome':'none'
                 }]}, ensure_ascii=False)
+            elif '"materials"' in raw and '"articles"' in raw:
+                payload=json.loads(raw)
+                answer=json.dumps({'items':[{'topic':'审批架构',
+                    'material_ids':[m['id'] for m in payload['materials']],
+                    'article_ids':[],'defer':False}]},ensure_ascii=False)
+            elif '"source_materials"' in raw:
+                assert expected_quote in raw
+                answer=json.dumps({'items':[{'complete':True,'unchanged':False,
+                    'unresolved_conflict':False,'kind':'decision','title':'审批采用工作流节点',
+                    'topic':'审批架构','scope_detail':'审批系统的架构设计',
+                    'article_summary':'审批在现有工作流中实现，复用节点和路由能力，避免维护两套系统。',
+                    'body':'## 审批架构\n\n审批配置为工作流节点，复用现有工作流上下文和路由能力。\n\n## 选择依据\n\n采用统一架构，避免重复维护独立审批系统。',
+                    'change_summary':'形成审批架构及选择依据'}]},ensure_ascii=False)
             else:
-                assert '[K1]' in raw  # twin is given assigned knowledge and its provenance
-                answer = '根据 [K1] 的知识，审批复用工作流节点实现。'
+                citation=re.search(r'\[K\d+\]',raw)
+                assert citation  # twin receives the generated article and its provenance
+                answer = '根据 '+citation.group(0)+' 的知识，审批复用工作流节点实现。'
             body = json.dumps({'choices': [{'message': {'content': answer}}]}, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -102,7 +116,10 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
             assert len(api.get('/api/ai/jobs', headers=access).json()) == 1
             worker = KnowledgeWorker(app.state.db, client=client)
             assert worker.process_next()['state'] == 'done'
-            extracted = api.get('/api/knowledge', headers=access).json()
+            materials=api.get('/api/knowledge',headers=access,params={'organization':'material'}).json()
+            assert len(materials)==1 and materials[0]['status']=='draft'
+            assert worker.article_maintainer.process_next()['articles']==1
+            extracted = api.get('/api/knowledge', headers=access,params={'organization':'article'}).json()
             assert len(extracted) == 1 and extracted[0]['evidence'][0]['is_current']
             twin = api.post('/api/twins', headers=access, json={'name': '项目交接助手'}).json()['id']
             knowledge_id = extracted[0]['id']
@@ -112,7 +129,7 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                 'question': '为什么把审批配置为工作流节点？'})
             assert answer.status_code == 200, answer.text
             assert answer.json()['citations'][0]['knowledge_id'] == knowledge_id
-            assert len(requests) == 2
+            assert len(requests) == 4
             assert all(auth == 'Bearer enterprise-provider-only-secret' for auth, _ in requests)
             assert all(payload['model'] == 'centrally-billed-model' for _, payload in requests)
             assert 'SECRET-9988' not in json.dumps(requests, ensure_ascii=False)

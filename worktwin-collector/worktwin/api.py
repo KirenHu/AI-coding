@@ -82,6 +82,7 @@ class KnowledgeInput(BaseModel):
     topic: str | None = Field(default=None,max_length=100)
     scope_detail: str | None = Field(default=None,max_length=500)
     quality: Literal['useful','uncertain','noise'] | None = None
+    article_summary: str | None = Field(default=None,max_length=2000)
 
 
 def knowledge_metadata(payload, old=None, document=None):
@@ -247,7 +248,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         storage_error = '系统凭据存储不可用，请解锁后重新连接企业服务'
     share_active=db.setting('share_connection_enabled','1')=='1'
     enterprise = GatewayClient(url=saved_url,token=saved_token) if saved_url and share_active else GatewayClient(url='',token='')
-    model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
+    model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client,
+                                defer_credentials=start_worker)
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     decision_router=DecisionRouter(db,secure,model_client)
     knowledge_worker = KnowledgeWorker(db, client=model_client,
@@ -268,6 +270,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if start_worker:
+            model_client.start_credentials()
             collector.start()
             knowledge_worker.start()
             publisher.start()
@@ -407,11 +410,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/browser-capture/sessions/{session_id}/site-manual",dependencies=[Depends(authorized)])
     def browser_capture_site_manual(session_id: str):
         with db.connect() as con:
-            manual=con.execute("""SELECT m.site,m.knowledge_id
+            manuals=con.execute("""SELECT DISTINCT m.site,m.knowledge_id
                 FROM browser_capture_sessions s
-                JOIN browser_site_manuals m ON m.site=s.page_key
-                WHERE s.id=? AND s.mode='manual'""",(session_id,)).fetchone()
-            return dict(manual) if manual else {"knowledge_id":None}
+                JOIN browser_article_observations o ON o.session_id=s.id
+                JOIN browser_site_manuals m ON m.knowledge_id=o.knowledge_id
+                WHERE s.id=? AND s.mode='manual' ORDER BY m.knowledge_id""",(session_id,)).fetchall()
+            return (dict(manuals[0]) | {'knowledge_ids':[m['knowledge_id'] for m in manuals]}
+                    if manuals else {"knowledge_id":None,'knowledge_ids':[]})
 
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
@@ -473,6 +478,19 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             def count(sql):
                 return int(con.execute(sql).fetchone()[0])
+            from .article_maintenance import source_materials, _signature
+            receipts={r['material_id']:r['input_signature'] for r in con.execute('SELECT * FROM article_material_receipts')}
+            groups={}
+            for material in source_materials(con):
+                groups.setdefault((material['scope'],material['project_key']),[]).append(material)
+            queued_articles=0
+            for key,materials in groups.items():
+                if not any(receipts.get(m['id'])!=_signature([m]) for m in materials):
+                    continue
+                run=con.execute('SELECT state,input_signature FROM article_maintenance_runs WHERE scope=? AND project_key=?',key).fetchone()
+                if run and (run['state'] in ('running','error') or run['input_signature']==_signature(materials) and run['state'] in ('done','waiting')):
+                    continue
+                queued_articles+=1
             events = [dict(r) for r in con.execute("""SELECT e.action,e.details,e.at,s.name source_name FROM events e LEFT JOIN sources s ON s.id=e.source_id ORDER BY e.id DESC LIMIT 12""")]
             return {"sources":count("SELECT count(*) FROM sources"),
                     "documents":count("SELECT count(*) FROM documents"),
@@ -486,7 +504,16 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     "local_only":True,
                     "model_configured":model_client.configured,
                     "ai_jobs":{state:count(f"SELECT count(*) FROM ai_jobs WHERE state='{state}'")
-                               for state in ('queued','running','done','error')}}
+                               for state in ('queued','running','done','error')},
+                    'article_jobs':{state:count(f"SELECT count(*) FROM article_maintenance_runs WHERE state='{state}'")
+                                    for state in ('running','waiting','error')} | {'queued':queued_articles}}
+
+    @app.get('/api/articles/jobs',dependencies=[Depends(authorized)])
+    def article_jobs():
+        with db.connect() as con:
+            return [dict(r) for r in con.execute('''SELECT r.state,r.error,r.updated_at,
+                COALESCE((SELECT MIN(project) FROM knowledge k WHERE k.project_key=r.project_key),'') project
+                FROM article_maintenance_runs r WHERE r.state!='done' ORDER BY r.updated_at DESC''')]
 
     @app.get("/api/sources")
     def sources():
@@ -715,6 +742,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(knowledge_id,))]
             from .articles import detail_parts
             result['parts'] = detail_parts(con, knowledge_id)
+            result['browser_sources'] = []
+            for source in con.execute('''SELECT o.session_id,o.event_ids_json,s.page_key,r.summary
+                    FROM browser_article_observations o JOIN browser_capture_sessions s ON s.id=o.session_id
+                    LEFT JOIN browser_capture_summaries r ON r.session_id=o.session_id
+                    WHERE o.knowledge_id=?''',(knowledge_id,)):
+                selected = set(json.loads(source['event_ids_json']))
+                result['browser_sources'].append({'session_id':source['session_id'],
+                    'source_title':source['page_key']+' · 操作记录','summary':source['summary'] or '',
+                    'events':[dict(e) for e in con.execute('SELECT seq,kind,label,location FROM browser_capture_events WHERE session_id=? ORDER BY seq',(source['session_id'],)) if e['seq'] in selected]})
             result['unavailable_reason'] = unavailable_reason(con, result)
             result['share_unavailable_reason'] = unavailable_reason(con, result, sharing=True)
             result['can_use'] = not result['unavailable_reason']
@@ -784,6 +820,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             res = con.execute("INSERT INTO knowledge(kind,title,body,status,created_by,source_bound) VALUES(?,?,?,?, 'human',?)",
                               (payload.kind,payload.title,payload.body,payload.status, int(payload.document_id is not None)))
             know_id = int(res.lastrowid)
+            con.execute('UPDATE knowledge SET article_summary=?,change_summary=? WHERE id=?',
+                        (payload.article_summary or '', '人工创建文章',know_id))
             con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=? WHERE id=?',
                         (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],know_id))
             if payload.document_id is not None:
@@ -806,8 +844,20 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             con.execute("""UPDATE knowledge SET kind=?,title=?,body=?,status=?,version=version+1,
                 created_by='human',review_hold=0,updated_at=datetime('now') WHERE id=?""",
                         (payload.kind,payload.title,payload.body,payload.status,knowledge_id))
-            if payload.body != old['body']:
+            if payload.body != old['body'] or payload.status=='confirmed':
                 con.execute("UPDATE knowledge SET organization='article' WHERE id=?", (knowledge_id,))
+            changes = []
+            if payload.body!=old['body']:
+                changes.append('人工修订正文')
+            if payload.title!=old['title']:
+                changes.append('调整标题')
+            if payload.article_summary is not None and payload.article_summary!=old['article_summary']:
+                changes.append('修订概要')
+            if payload.status!=old['status']:
+                changes.append({'draft':'调整为待处理','confirmed':'确认文章','archived':'归档文章'}[payload.status])
+            con.execute('UPDATE knowledge SET article_summary=?,change_summary=? WHERE id=?',
+                (old['article_summary'] if payload.article_summary is None else payload.article_summary,
+                 '；'.join(changes) or '更新文章信息',knowledge_id))
             con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=?,attribution=? WHERE id=?',
                         (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],
                          'human' if payload.body!=old['body'] else old['attribution'],knowledge_id))
@@ -824,7 +874,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 d.title source_title,d.project,d.sha256 current_sha
                 FROM knowledge_proposals p
                 JOIN knowledge k ON k.id=p.target_id JOIN documents d ON d.id=p.document_id
-                WHERE p.status='pending' ORDER BY p.id DESC LIMIT 100""")]
+                WHERE p.status='pending' AND k.organization='article' AND k.status!='archived'
+                  AND p.target_version=k.version ORDER BY p.id DESC LIMIT 100""")]
 
     @app.post("/api/knowledge/proposals/{proposal_id}/accept", dependencies=[Depends(authorized)])
     def accept_proposal(proposal_id: int):
@@ -875,6 +926,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not previous or version>=current['version']:
                 raise HTTPException(404,"历史版本不存在")
             snapshot_history(con,current)
+            con.execute('UPDATE knowledge SET article_summary=?,change_summary=? WHERE id=?',
+                        (previous['article_summary'],f'恢复到 v{version} 的文章内容',knowledge_id))
             con.execute("""UPDATE knowledge SET title=?,body=?,kind=?,status=?,topic=?,
                 scope_detail=?,quality=?,outcome=?,created_by='human',attribution='human',
                 review_hold=0,needs_review=0,version=version+1,updated_at=datetime('now')
@@ -897,7 +950,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/knowledge/{knowledge_id}/history")
     def history(knowledge_id: int):
         with db.connect() as con:
-            return [dict(r) for r in con.execute("SELECT * FROM knowledge_history WHERE knowledge_id=? ORDER BY version DESC",(knowledge_id,))]
+            from markdown_it import MarkdownIt
+            versions = [dict(r) for r in con.execute("SELECT * FROM knowledge_history WHERE knowledge_id=? ORDER BY version DESC",(knowledge_id,))]
+            for version in versions:
+                version['rendered_body'] = MarkdownIt('commonmark',{'html':False}).render(WIKILINK.sub(
+                    lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',version['body']))
+            return versions
 
     @app.get("/api/projects")
     def projects():
@@ -1252,8 +1310,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         where, parameters = (' AND document_id IN (SELECT id FROM documents WHERE source_id=?)', [source_id]) if source_id is not None else ('', [])
         with db.connect() as con:
             updated = con.execute("UPDATE ai_jobs SET state='queued',attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now') WHERE state='error'" + where, parameters)
+            article_where = " AND EXISTS (SELECT 1 FROM knowledge k JOIN knowledge_evidence e ON e.knowledge_id=k.id JOIN documents d ON d.id=e.document_id WHERE k.scope=article_maintenance_runs.scope AND k.project_key=article_maintenance_runs.project_key AND d.source_id=?)" if source_id is not None else ''
+            article_count = con.execute("UPDATE article_maintenance_runs SET state='queued',attempts=0,next_run_at=NULL,error='',updated_at=datetime('now') WHERE state='error'" + article_where, parameters).rowcount
+            browser_count = 0
+            if source_id is None:
+                browser_count = con.execute("UPDATE browser_article_runs SET state='queued',error='',updated_at=datetime('now') WHERE state='error'").rowcount
         knowledge_worker.schedule()
-        return {"queued":updated.rowcount}
+        return {"queued":updated.rowcount+article_count+browser_count,
+                "article_queued":article_count,"browser_queued":browser_count}
 
     @app.get("/api/twins")
     def twins():

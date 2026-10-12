@@ -111,7 +111,7 @@ class BrowserSummaryService:
     def __init__(self,db,model):
         from .browser_site_manual import BrowserSiteManuals
         self.db,self.model=db,model
-        self.site_manuals=BrowserSiteManuals(db)
+        self.site_manuals=BrowserSiteManuals(db,model)
 
     def get(self,sid):
         with self.db.connect() as con:
@@ -136,9 +136,8 @@ class BrowserSummaryService:
             previous=con.execute("SELECT * FROM browser_capture_summaries WHERE session_id=?",(sid,)).fetchone()
             if not force and previous and previous["event_seq"]>=s["last_seq"] and (
                 previous["status"]=="final" or s["status"] not in TERMINAL):
-                # Summary may be final although its site guide was not yet
-                # materialized (e.g. interrupted worker).
-                if s["mode"]=="manual" and previous["status"]=="final":
+                # A finished summary may still need its raw observation saved.
+                if s["mode"]=="manual":
                     self.site_manuals.sync(sid)
                 return self.get(sid)
             allow_ai=bool(con.execute("SELECT allow_ai FROM browser_capture_settings WHERE id=1").fetchone()[0])
@@ -189,9 +188,9 @@ class BrowserSummaryService:
                 status=excluded.status,updated_at=excluded.updated_at""",
                 (sid,current["last_seq"],summary,json.dumps(evidence),
                  source,state,int(time.time())))
-        if s["mode"]=="manual" and state=="final":
-            # Manual recordings alone become site knowledge; enterprise flow
-            # tasks remain separate even though they share event storage.
+        if s["mode"]=="manual":
+            # Keep completed manual observations as materials. The periodic
+            # article agent handles grouping and writing independently.
             self.site_manuals.sync(sid)
         return self.get(sid)
 
@@ -210,6 +209,7 @@ class BrowserSummaryService:
                 ORDER BY s.created_at,s.id LIMIT ?""",(limit,))]
         for sid in ids:
             self.generate(sid)
+        self.site_manuals.process_due()
         return {"processed":len(ids)}
 
 

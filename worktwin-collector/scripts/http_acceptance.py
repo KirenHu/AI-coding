@@ -73,10 +73,13 @@ def main():
                 assert len(quote) >= 8
                 created = client.post('/api/knowledge', headers=h, json={
                     'title': '工作流审批设计原则', 'kind': 'decision', 'status': 'confirmed',
+                    'article_summary':'审批作为工作流节点实现，复用已有流程能力，避免重复维护独立审批系统。',
                     'body': '复用工作流节点以避免审批系统重复维护。',
                     'document_id': doc['id'], 'quote': quote})
                 assert created.status_code == 200, created.text
                 kid = created.json()['id']
+                article=client.get(f'/api/knowledge-item/{kid}',headers=h).json()
+                assert article['organization']=='article' and article['article_summary']
                 twin = client.post('/api/twins', headers=h, json={'name': '交接助手'}).json()['id']
                 assert client.put(f'/api/sources/{added.json()["id"]}/ai',headers=h,json={'allow_ai':True}).status_code==200
                 assigned = client.put(f'/api/twins/{twin}/knowledge', headers=h, json={'knowledge_ids': [kid]})

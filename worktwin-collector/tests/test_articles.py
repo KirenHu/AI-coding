@@ -133,7 +133,7 @@ def test_long_article_is_preserved_and_synonymous_topic_can_update():
     assert json.loads(response.requests[-1][0][-1]['content'])['new_items'][0]['body'] == body
 
 
-def test_worker_organizes_before_inserting_and_keeps_both_work_units(tmp_path):
+def test_extraction_keeps_materials_for_periodic_article_writer(tmp_path):
     from tests.support import FakeModel
     from tests.test_incremental_jobs import setup_session, user_message
     from worktwin.jobs import KnowledgeWorker
@@ -155,13 +155,12 @@ def test_worker_organizes_before_inserting_and_keeps_both_work_units(tmp_path):
             return super().chat(messages,max_tokens)
 
     result = KnowledgeWorker(db,client=ArticleModel()).process_next()
-    assert result['state']=='done' and result['candidates']==1
+    assert result['state']=='done' and result['candidates']==2
     with db.connect() as con:
-        assert con.execute('SELECT count(*) FROM knowledge').fetchone()[0]==1
+        assert con.execute('SELECT count(*) FROM knowledge').fetchone()[0]==2
         assert con.execute('SELECT count(*) FROM work_units').fetchone()[0]==2
-        article = con.execute('SELECT * FROM knowledge').fetchone()
-        assert article['organization']=='article'
-        assert {part['quote'] for part in detail_parts(con,article['id'])}=={first,second}
+        assert {row[0] for row in con.execute('SELECT organization FROM knowledge')}=={'material'}
+        assert {row[0] for row in con.execute('SELECT quote FROM article_parts')}=={first,second}
         assert {row[0] for row in con.execute('SELECT occurred_at FROM knowledge_evidence')} == {
             '2026-10-10 10:00:01','2026-10-10 10:00:02'}
 
