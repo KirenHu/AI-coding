@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .answers import answer_from_knowledge
+from .conversation import ConversationQuestion, prepare_conversation
 from .provider import ChatRequest, ProviderService
 from .enterprise_settings import EnterpriseSettings
 from .model_settings import ModelInput, ModelListInput, PersonalModel, validate_url
@@ -58,9 +59,8 @@ class GrantInput(BaseModel):
     days: int = Field(default=7, ge=1, le=90)
 
 
-class Question(BaseModel):
-    question: str = Field(min_length=2, max_length=500)
-    project_key: str | None = Field(default=None,max_length=1000)
+class Question(ConversationQuestion):
+    pass
 
 
 class AdminModelInput(ModelInput):
@@ -390,12 +390,13 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                 if inference_client:
                     return inference_client.chat(messages,max_tokens=max_tokens)
                 return provider.complete(identity,ChatRequest(messages=messages,max_tokens=max_tokens))['choices'][0]['message']['content']
-        result=answer_from_knowledge(ScopedModel(),body.question,rows,project_key=body.project_key)
+        context_revision, messages = prepare_conversation(body, rows, f'published:{twin_id}:{revision}')
+        result=answer_from_knowledge(ScopedModel(),body.question,rows,project_key=body.project_key,messages=messages)
         owner(authorization)
         with store.connect() as con:
             if owned(con,twin_id,identity)['version']!=revision:
                 raise HTTPException(409,'发布版本已更新，请重新提问')
-        return {**result,'scope':'published','publication_version':revision}
+        return {**result,'scope':'published','publication_version':revision,'context_revision':context_revision}
 
     @app.put('/v1/publications/{installation}')
     def publish(installation: str, body: Publication, identity=Depends(owner)):
@@ -482,7 +483,8 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                     return inference_client.chat(messages,max_tokens=max_tokens)
                 result = provider.complete('grant:'+gid,ChatRequest(messages=messages,max_tokens=max_tokens))
                 return result['choices'][0]['message']['content']
-        result = answer_from_knowledge(ScopedModel(),body.question,knowledge,project_key=body.project_key)
+        context_revision, messages = prepare_conversation(body, knowledge, f"shared:{row['id']}:{revision}")
+        result = answer_from_knowledge(ScopedModel(),body.question,knowledge,project_key=body.project_key,messages=messages)
         # Revocation or publication during an in-flight call must not disclose
         # its former snapshot even if the provider already received it.
         with store.connect() as con:
@@ -490,7 +492,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
             if current['version'] != revision:
                 raise HTTPException(409,'分身知识已更新，请重新提问')
             audit(con,'ask',row['owner'],gid)
-        return result
+        return {**result, 'context_revision': context_revision}
 
     @app.get('/share', response_class=HTMLResponse)
     def shared_page():

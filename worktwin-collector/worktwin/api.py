@@ -13,6 +13,7 @@ import subprocess
 import sys
 import sqlite3
 import tempfile
+from urllib.error import HTTPError
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -37,6 +38,7 @@ from .twin_access import effective_notes, grant_options, replace_grants
 from .decision_model import DecisionRouter, JevDecisionModel
 from .model_settings import validate_url
 from .answers import answer_from_knowledge
+from .conversation import ConversationQuestion, prepare_conversation
 from .publishing import Publisher, PublishingClient
 from . import __version__
 from .jobs import KnowledgeWorker
@@ -112,6 +114,10 @@ class SourcePermissionInput(BaseModel):
     allow_ai: bool
 
 
+class AssistantSelection(BaseModel):
+    enabled: bool
+
+
 class SharePermissionInput(BaseModel):
     allow_share: bool
 
@@ -148,7 +154,7 @@ class DecisionModelInput(BaseModel):
 class TwinGrantInput(BaseModel):
     subject_type: Literal['project','source','global','knowledge']
     subject_key: str = Field(min_length=1,max_length=1000)
-    effect: Literal['allow','deny'] = 'allow'
+    effect: Literal['allow'] = 'allow'
 
 
 class TwinPolicyInput(BaseModel):
@@ -160,10 +166,8 @@ class TwinKnowledgeInput(BaseModel):
     knowledge_ids: list[int] = Field(default_factory=list, max_length=1500)
 
 
-class AskInput(BaseModel):
-    question: str = Field(min_length=2, max_length=500)
+class AskInput(ConversationQuestion):
     scope: Literal['local','published'] = 'local'
-    project_key: str | None = Field(default=None,max_length=1000)
 
 
 class LogPermissionInput(BaseModel):
@@ -342,6 +346,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(403,"只接受本地插件连接")
         return auth[7:]
 
+    from .browser_capture_sites import install_routes as install_site_routes
+    install_site_routes(app, browser_capture, authorized, capture_credential)
+
     @app.get("/api/browser-capture",dependencies=[Depends(authorized)])
     def browser_capture_settings():
         return browser_capture.settings()
@@ -384,8 +391,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
 
     @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
     def browser_capture_sessions(limit: int = Query(30,ge=1,le=100),
-                                 offset: int = Query(0,ge=0)):
-        return browser_capture.recent(limit=limit,offset=offset)
+                                 offset: int = Query(0,ge=0), mode: Literal['manual','task'] | None = None):
+        return browser_capture.recent(limit=limit,offset=offset,mode=mode)
 
     @app.get("/api/browser-capture/sessions/{session_id}/events",dependencies=[Depends(authorized)])
     def browser_capture_events(session_id: str,limit: int = Query(100,ge=1,le=200),
@@ -518,6 +525,22 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         from .source_detection import detect_transcripts
         return detect_transcripts(payload.kind, payload.root)
 
+    @app.get('/api/sources/assistants')
+    def assistant_sources():
+        from .assistant_sources import assistant_rows
+        with db.connect() as con:
+            return assistant_rows(con)
+
+    @app.put('/api/sources/assistants/{tool}', dependencies=[Depends(authorized)])
+    def choose_assistant(tool: str, payload: AssistantSelection):
+        from .assistant_sources import assistant_rows, select_assistant
+        with db.connect() as con:
+            select_assistant(con, tool, payload.enabled)
+            selected = next(row for row in assistant_rows(con) if row['tool'] == tool)
+        if payload.enabled:
+            launch_scan()
+        return selected
+
     @app.post("/api/pick-folder", dependencies=[Depends(authorized)])
     def pick_folder():
         """Open a system-owned directory chooser; never silently select a path."""
@@ -632,7 +655,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 GROUP BY project_key ORDER BY name,project_key""")]
 
     @app.get("/api/knowledge")
-    def list_knowledge(status: str = "active", kind: str = "all", limit: int = Query(default=300, ge=1, le=1000), offset: int = Query(default=0,ge=0)):
+    def list_knowledge(status: str = "active", kind: str = "all", organization: Literal['all','article','material'] = 'all',
+                       limit: int = Query(default=300, ge=1, le=1000), offset: int = Query(default=0,ge=0)):
         conditions, params = [], []
         if status == "active":
             conditions.append("k.status!='archived'")
@@ -642,6 +666,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         if kind in KIND_LABELS:
             conditions.append("k.kind=?")
             params.append(kind)
+        if organization != 'all':
+            conditions.append('k.organization=?')
+            params.append(organization)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         with db.connect() as con:
             rows = [dict(r) for r in con.execute("SELECT k.* FROM knowledge k" + where + " ORDER BY k.needs_review DESC,k.updated_at DESC,k.id DESC LIMIT ? OFFSET ?", [*params,limit,offset])]
@@ -665,7 +692,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             return {'total':con.execute('SELECT count(*) FROM knowledge').fetchone()[0],
                     'draft':con.execute("SELECT count(*) FROM knowledge WHERE status='draft'").fetchone()[0],
-                    'archived':con.execute("SELECT count(*) FROM knowledge WHERE status='archived'").fetchone()[0]}
+                    'archived':con.execute("SELECT count(*) FROM knowledge WHERE status='archived'").fetchone()[0],
+                    'articles':con.execute("SELECT count(*) FROM knowledge WHERE organization='article'").fetchone()[0],
+                    'materials':con.execute("SELECT count(*) FROM knowledge WHERE organization='material'").fetchone()[0]}
 
     @app.get('/api/knowledge-item/{knowledge_id}')
     def get_knowledge(knowledge_id: int):
@@ -678,6 +707,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             result['rendered_body']=MarkdownIt('commonmark',{'html':False}).render(WIKILINK.sub(lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',result['body']))
             result['evidence']=[dict(e) for e in con.execute('''SELECT e.*,d.title document_title,d.project FROM knowledge_evidence e
                 JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(knowledge_id,))]
+            from .articles import detail_parts
+            result['parts'] = detail_parts(con, knowledge_id)
+            result['unavailable_reason'] = unavailable_reason(con, result)
+            result['share_unavailable_reason'] = unavailable_reason(con, result, sharing=True)
+            result['can_use'] = not result['unavailable_reason']
+            result['can_share'] = not result['share_unavailable_reason']
+            result['scope_label'] = scope_description(result)
             return result
 
     @app.post('/api/knowledge/reprocess',dependencies=[Depends(authorized)])
@@ -764,6 +800,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             con.execute("""UPDATE knowledge SET kind=?,title=?,body=?,status=?,version=version+1,
                 created_by='human',review_hold=0,updated_at=datetime('now') WHERE id=?""",
                         (payload.kind,payload.title,payload.body,payload.status,knowledge_id))
+            if payload.body != old['body']:
+                con.execute("UPDATE knowledge SET organization='article' WHERE id=?", (knowledge_id,))
             con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=?,attribution=? WHERE id=?',
                         (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],
                          'human' if payload.body!=old['body'] else old['attribution'],knowledge_id))
@@ -1192,18 +1230,20 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(503,'撤销尚未完成，请恢复连接后重试；原链接目前仍可能可用') from exc
 
     @app.get("/api/ai/jobs")
-    def ai_jobs():
+    def ai_jobs(source_id: int | None = Query(default=None, ge=1)):
+        where, parameters = (' WHERE d.source_id=?', [source_id]) if source_id is not None else ('', [])
         with db.connect() as con:
             return [dict(r) for r in con.execute("""SELECT j.id,j.document_id,j.state,j.attempts,j.error,
-                j.updated_at,j.next_run_at,d.title,d.project,s.name source_name
+                j.updated_at,j.next_run_at,d.title,d.project,d.source_id,s.name source_name
                 FROM ai_jobs j JOIN documents d ON d.id=j.document_id
-                JOIN sources s ON s.id=d.source_id
-                ORDER BY j.updated_at DESC,j.id DESC LIMIT 100""")]
+                JOIN sources s ON s.id=d.source_id""" + where +
+                ' ORDER BY j.updated_at DESC,j.id DESC LIMIT 100', parameters)]
 
     @app.post("/api/ai/jobs/retry", dependencies=[Depends(authorized)])
-    def retry_failed_jobs():
+    def retry_failed_jobs(source_id: int | None = Query(default=None, ge=1)):
+        where, parameters = (' AND document_id IN (SELECT id FROM documents WHERE source_id=?)', [source_id]) if source_id is not None else ('', [])
         with db.connect() as con:
-            updated = con.execute("UPDATE ai_jobs SET state='queued',attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now') WHERE state='error'")
+            updated = con.execute("UPDATE ai_jobs SET state='queued',attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now') WHERE state='error'" + where, parameters)
         knowledge_worker.schedule()
         return {"queued":updated.rowcount}
 
@@ -1346,7 +1386,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             if payload.knowledge_ids is not None:
                 allowed={r[0] for r in con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL)}
-                if not set(payload.knowledge_ids).issubset(allowed):
+                retained={r[0] for r in con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?', (twin_id,))}
+                if not set(payload.knowledge_ids).issubset(allowed | retained):
                     raise HTTPException(400,'包含不可用知识，请核对状态后重新保存')
             row = con.execute("UPDATE twins SET name=?,description=?,updated_at=datetime('now') WHERE id=?",
                               (payload.name.strip(),payload.description.strip(),twin_id))
@@ -1405,7 +1446,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         if payload.scope=='published':
             try:
                 pubid=publisher.public_id(twin_id)
-                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',{'question':payload.question,'project_key':payload.project_key})
+                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',payload.model_dump(exclude={'scope'}))
+            except HTTPError as exc:
+                if exc.code == 409:
+                    raise HTTPException(409, '已发布知识已更新，请开启新会话') from exc
+                raise HTTPException(503, '无法读取当前已发布版本，请检查分享服务') from exc
             except Exception as exc:
                 raise HTTPException(503,'无法读取当前已发布版本，请检查分享服务或先启用分享') from exc
         if not model_client.configured:
@@ -1419,15 +1464,15 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
                     WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0 LIMIT 3""",(r['id'],))]
-        if not rows:
-            return {"answer":"这个分身还没有被分配可使用的知识。","context_count":0,"citations":[]}
         # Every contributing source must still permit sending derived text to AI.
         with db.connect() as con:
             rows=[r for r in rows if not con.execute("""SELECT 1 FROM knowledge_evidence e
                 JOIN documents d ON d.id=e.document_id JOIN sources s ON s.id=d.source_id
                 WHERE e.knowledge_id=? AND s.allow_ai=0 LIMIT 1""",(r['id'],)).fetchone()]
+        context_revision, messages = prepare_conversation(payload, rows, 'local:' + str(twin_id))
         try:
-            result=answer_from_knowledge(model_client,payload.question,rows,project_key=payload.project_key)
+            result=answer_from_knowledge(model_client,payload.question,rows,project_key=payload.project_key,
+                                         messages=messages)
         except Exception as exc:
             raise HTTPException(502,"模型请求失败，请检查设置、服务额度或稍后重试") from exc
         # Recheck authorization after a slow model call.
@@ -1435,7 +1480,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             current={(r['id'],r['version']) for r in effective_notes(con,twin_id)}
         if not {(r['id'],r['version']) for r in rows}.issubset(current):
             raise HTTPException(409,'分身知识授权已更新，请重新提问')
-        return result
+        return {**result, 'context_revision': context_revision}
 
     @app.get('/api/backup')
     def backup():

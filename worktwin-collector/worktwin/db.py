@@ -228,26 +228,34 @@ class Database:
         if os.name == "posix":
             self.path.parent.chmod(0o700)
         with self.connect() as conn:
-            self._backup_before_continuous_upgrade(conn)
+            self._backup_before_upgrade(conn)
             conn.executescript(SCHEMA)
             self._migrate(conn)
             from .ingest import ensure_schema as ingest_schema
             from .artifacts import ensure_schema as artifact_schema
             ingest_schema(conn)
             artifact_schema(conn)
+            from .assistant_sources import migrate as migrate_assistants
+            from .articles import migrate as migrate_articles
+            from .twin_access import migrate_exclusions
+            migrate_exclusions(conn)
+            migrate_assistants(conn)
+            migrate_articles(conn)
             conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('continuous_evidence_v1','1')")
         if os.name == "posix":
             self.path.chmod(0o600)
 
-    def _backup_before_continuous_upgrade(self, conn: sqlite3.Connection) -> None:
-        """Keep the pre-upgrade database once, so the 1.2.1 app can be restored."""
+    def _backup_before_upgrade(self, conn: sqlite3.Connection) -> None:
+        """Keep one recovery point before the first migration of each format."""
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'sources' not in tables:
             return
-        if 'settings' in tables and conn.execute(
-                "SELECT 1 FROM settings WHERE key='continuous_evidence_v1'").fetchone():
+        continuous = 'settings' in tables and conn.execute(
+            "SELECT 1 FROM settings WHERE key='continuous_evidence_v1'").fetchone()
+        marker, version = ('topic_articles_v1', '1.4.0') if continuous else ('continuous_evidence_v1', '1.3.0')
+        if 'settings' in tables and conn.execute('SELECT 1 FROM settings WHERE key=?', (marker,)).fetchone():
             return
-        backup = self.path.with_name(self.path.name + '.pre-1.3.0.sqlite')
+        backup = self.path.with_name(self.path.name + '.pre-' + version + '.sqlite')
         if not backup.exists():
             with sqlite3.connect(backup) as destination:
                 conn.backup(destination)

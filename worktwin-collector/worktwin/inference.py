@@ -16,6 +16,7 @@ from urllib.request import Request
 from .knowledge import KIND_LABELS, visible_turns
 from .scope import low_value, source_time
 from .model_transport import model_urlopen
+from .articles import BODY_LIMIT
 
 
 class GatewayClient:
@@ -112,7 +113,7 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             "\"scope_detail\":\"具体适用对象/条件\",\"project_hint\":\"来源明确提及的业务项目名称，不确定则为空\",\"value_reason\":\"将来能用于回答什么工作问题\","
             "\"attribution\":\"user|assistant|document\",\"outcome\":\"none|reported|accepted\",\"requires_review\":true|false,"
             "\"quote\":\"来源原文\",\"context_quote\":\"可选的前文原文\",\"confirmation_quote\":\"可选的用户确认原文\"}]}。"
-            "最多5个主题，body是可单独阅读的中文Markdown，不要凭空扩展范围。"
+            "最多5个主题，body是可单独阅读的中文Markdown；同一件事中的事实、步骤、决策应组成一篇文章，不按类型拆篇。不要凭空扩展范围。"
             "quote 必须是所给文本里连续且原样的至少 8 个字符；不要编造、不足以确定时返回空数组。"
             + ("此内容来自普通文档，不得产出preference或用户验收。" if not transcript else "###用户与###AI标记表示真实公开发言者，必须遵守归因。")
         )
@@ -121,12 +122,14 @@ def extract_knowledge(content: str, *, transcript: bool, client: GatewayClient,
             {"role": "user", "content": '范围与已有主题（只供定位，不作为新证据）：' + json.dumps(
                 {'scope':scope or {},'existing':[{'topic':k.get('topic',''),'title':k['title'],'body':k['body'][:800]} for k in (existing or [])[:30]]},ensure_ascii=False)
                 + "\n<source>\n" + text + "\n</source>"},
-        ], max_tokens=2400)
+        ], max_tokens=12000)
         for item in _parse_items(answer)[:5]:
             kind = item.get("kind")
             quote = str(item.get("quote") or "").strip()
             title = str(item.get("title") or "").strip()[:130]
-            body = str(item.get("body") or "").strip()[:3500]
+            body = str(item.get("body") or "").strip()
+            if len(body) > BODY_LIMIT:
+                raise ValueError("主题文章超出编辑上限")
             topic = str(item.get('topic') or '').strip()[:100]
             detail = str(item.get('scope_detail') or '').strip()[:500]
             reason = str(item.get('value_reason') or '').strip()[:500]

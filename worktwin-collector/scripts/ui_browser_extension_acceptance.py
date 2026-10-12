@@ -12,7 +12,9 @@ import hmac
 import json
 import os
 import re
+import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -27,15 +29,14 @@ ROOT=Path(__file__).resolve().parents[1]
 ORIGIN="https://flow.example.com"
 TARGET="https://portal.example.com/approval"
 SECRET="worktwin-local-browser-acceptance-secret-"+("z"*20)
-BASE="http://127.0.0.1:8765"
 
 
-def signed(task="browser-e2e"):
-    nonce="unique_e2e_nonce_for_start_00001"
+def signed(task="browser-e2e",action="start"):
+    nonce="unique_e2e_nonce_"+task+"_"+action
     expires=str(int(time.time())+90)
     path="/api/worktwin/tasks/"+task+"/status"
-    words=["start",task,TARGET,nonce,expires,ORIGIN,path]
-    return {"action":"start","task_id":task,"target_url":TARGET,"nonce":nonce,
+    words=[action,task,TARGET,nonce,expires,ORIGIN,path]
+    return {"action":action,"task_id":task,"target_url":TARGET,"nonce":nonce,
             "expires_at":int(expires),"status_path":path,
             "signature":hmac.new(SECRET.encode(),"\n".join(words).encode(),
                                  hashlib.sha256).hexdigest()}
@@ -57,16 +58,23 @@ def eventually(fn,timeout=12,interval=.2):
 
 def events(path,session):
     with sqlite3.connect(path) as con:
-        return con.execute("""SELECT seq,kind,label FROM browser_capture_events
+        return con.execute("""SELECT seq,kind,label FROM browser_capture_session_events
             WHERE session_id=? ORDER BY seq""",(session,)).fetchall()
 
 
 def main():
     with tempfile.TemporaryDirectory(prefix="worktwin-browser-real-") as folder:
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+        base = f'http://127.0.0.1:{port}'
         work=Path(folder)
         app_data=work/"appdata"
         ext=work/"extension"
         shutil.copytree(ROOT/"worktwin"/"browser_extension",ext)
+        worker_file=ext/'service-worker.js'
+        worker_file.write_text(worker_file.read_text().replace(
+            'http://127.0.0.1:8765',base))
         manifest_path=ext/"manifest.json"
         manifest=json.loads(manifest_path.read_text(encoding="utf-8"))
         # The production extension requests permissions on first use. Only this
@@ -79,12 +87,35 @@ def main():
              "WORKTWIN_CAPTURE_FLOW_ORIGIN":ORIGIN,
              "WORKTWIN_CAPTURE_FLOW_SECRET":SECRET,
              "WORKTWIN_GATEWAY_URL":"","WORKTWIN_GATEWAY_TOKEN":""}
-        server=subprocess.Popen([sys.executable,"-m","worktwin","serve","--port","8765"],
+        identity=secrets.token_urlsafe(24)
+        env['WORKTWIN_ACCEPTANCE_ID']=identity
+        env['WORKTWIN_ACCEPTANCE_PORT']=str(port)
+        # Only this subprocess exposes the nonce and the isolated DB identity.
+        # The installed app has neither this route nor this temporary nonce.
+        server_code='''
+import os
+from pathlib import Path
+import uvicorn
+from worktwin.api import create_app
+from worktwin import __version__
+db_path=Path(os.environ['WORKTWIN_DATA_DIR'])/'worktwin.sqlite'
+app=create_app(db_path,start_worker=False)
+@app.get('/acceptance/identity')
+def identity():
+    return {'id':os.environ['WORKTWIN_ACCEPTANCE_ID'], 'database':str(db_path), 'version':__version__}
+uvicorn.run(app,host='127.0.0.1',port=int(os.environ['WORKTWIN_ACCEPTANCE_PORT']))
+'''
+        server=subprocess.Popen([sys.executable,'-c',server_code],
                                 cwd=ROOT,env=env,stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
         try:
-            with httpx.Client(base_url=BASE,trust_env=False,timeout=8) as client:
-                eventually(lambda:client.get("/api/health").status_code==200,timeout=18)
+            with httpx.Client(base_url=base,trust_env=False,timeout=8) as client:
+                eventually(lambda:server.poll() is None and client.get("/api/health").status_code==200,timeout=18)
+                assert server.poll() is None, 'Isolated acceptance server did not start'
+                from worktwin import __version__
+                assert client.get('/acceptance/identity').json()=={
+                    'id':identity,'database':str(app_data/'worktwin.sqlite'),'version':__version__}
+                assert client.get('/api/health').json()['version']==__version__
                 homepage=client.get("/").text
                 match=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',homepage)
                 assert match,homepage[:1000]
@@ -180,25 +211,45 @@ def main():
                         assert "新增审批规则" in data["summary"] and data["summary_status"]=="final",data
                         assert data["summary_source"]=="rule"
                         assert all(isinstance(n,int) for n in data["evidence_seq"]),data
-                        # Separate manual mode: the user explicitly enters
-                        # a site, then activates one matching browser tab.
-                        dashboard_page=browser.new_page()
-                        dashboard_page.goto(BASE,wait_until='domcontentloaded')
-                        dashboard_page.locator('button[data-page="sources"]').click()
-                        eventually(lambda:dashboard_page.locator('#browser-manual-site').count()>0)
-                        dashboard_page.locator('#browser-manual-site').fill('https://portal.example.com')
-                        dashboard_page.locator('#browser-manual-toggle').click()
-                        eventually(lambda:client.get('/api/browser-capture',headers=dashboard)
-                                   .json()['manual_enabled'],timeout=10)
-                        manual_sid=client.get('/api/browser-capture',
-                            headers=dashboard).json()['manual_session_id']
-                        target.bring_to_front()
+                        # Switching the workflow owner of an existing document
+                        # must not let the old worker session consume the click.
+                        target.goto(TARGET,wait_until='domcontentloaded')
+                        def launch(task_name,action='start'):
+                            return flow.evaluate('''args => new Promise(resolve => {
+                                chrome.runtime.sendMessage(args.id,
+                                  {type:'worktwin:task',envelope:args.envelope},resolve);
+                            })''',{'id':extension_id,'envelope':signed(task_name,action)})
+                        first=launch('switch-first')
+                        assert first['ok'],first
+                        first_sid=first['session_id']
+                        second=launch('switch-second')
+                        assert second['ok'],second
+                        second_sid=second['session_id']
+                        target.locator('#add').click()
+                        eventually(lambda:any('新增审批规则' in label for _,_,label in events(db,second_sid)))
+                        assert not events(db,first_sid),'old workflow consumed new workflow click'
+                        launch('switch-second','complete')
+                        # The whitelist has persistent intent, covering all matching
+                        # tabs. Signing a workflow still only owns its bound tab.
+                        added=client.post('/api/browser-capture/sites',headers=dashboard,
+                            json={'url':'https://portal.example.com'}).json()
+                        assert not added['manual_enabled']
+                        site_id=added['id']
+                        client.put(f'/api/browser-capture/sites/{site_id}',headers=dashboard,
+                            json={'enabled':True}).raise_for_status()
+                        worker.evaluate('heartbeat()')
+                        worker.evaluate("""async url => {
+                            const matches=(await chrome.tabs.query({})).filter(t=>t.url===url);
+                            const tab=matches.find(t=>t.openerTabId!==undefined);
+                            globalThis.acceptanceTabId=tab.id;
+                        }""",target.url)
+                        def current_manual():
+                            return worker.evaluate("""() => [...sessions.values()].find(s=>
+                                s.persistent && s.status==='capturing' &&
+                                s.tabId===globalThis.acceptanceTabId)?.id""")
+                        manual_sid=eventually(current_manual,timeout=18)
                         def manual_bound():
-                            with sqlite3.connect(db) as con:
-                                row=con.execute("""SELECT status FROM browser_capture_sessions
-                                    WHERE id=?""",(manual_sid,)).fetchone()
-                                return row and row[0]=='capturing'
-                        eventually(manual_bound,timeout=18)
+                            return current_manual()==manual_sid
                         target.locator('#add').click()
                         eventually(lambda:len(events(db,manual_sid))>=1,timeout=12)
                         # A normal dialog, dynamic same-site iframe, srcdoc,
@@ -223,7 +274,7 @@ def main():
                         inner.locator('#inner-save').wait_for()
                         # Wait for actual content script readiness, not merely the frame load.
                         eventually(lambda:worker.evaluate("""async () => {
-                            const s=[...sessions.values()].find(s=>s.manual&&s.status==='capturing');
+                            const s=[...sessions.values()].find(s=>s.persistent&&s.status==='capturing'&&s.tabId===globalThis.acceptanceTabId);
                             const frames=await chrome.webNavigation.getAllFrames({tabId:s.tabId});
                             const f=frames.find(f=>f.url.endsWith('/dialog-form'));
                             if(!f)return false;
@@ -234,7 +285,7 @@ def main():
                         inner.locator('#inner-save').click()
                         inline=target.frame_locator('#inline-frame')
                         eventually(lambda:worker.evaluate("""async () => {
-                            const s=[...sessions.values()].find(s=>s.manual&&s.status==='capturing');
+                            const s=[...sessions.values()].find(s=>s.persistent&&s.status==='capturing'&&s.tabId===globalThis.acceptanceTabId);
                             const frames=await chrome.webNavigation.getAllFrames({tabId:s.tabId});
                             const f=frames.find(f=>f.url==='about:srcdoc');
                             if(!f)return false;
@@ -252,77 +303,50 @@ def main():
                         assert 'PRIVATE_INPUT_VALUE' not in str(events(db,manual_sid))
                         target.evaluate("document.querySelector('#test-dialog').remove()")
                         assert manual_bound(),'embedded frame navigation stopped the parent session'
-                        count_before=len(events(db,manual_sid))
+                        first_interval=manual_sid
                         target.locator('#next').click()
-                        eventually(lambda:len(events(db,manual_sid))>count_before,timeout=12)
-                        eventually(manual_bound,timeout=12)
+                        manual_sid=eventually(lambda:(sid if (sid:=current_manual())!=first_interval else None),timeout=12)
                         target.locator('#save').click()
                         eventually(lambda:any('保存' in label for _,kind,label in
                                    events(db,manual_sid) if kind=='click'),timeout=12)
-                        assert manual_bound(),"manual mode stopped on same-site navigation"
-                        dashboard_page.bring_to_front()
-                        dashboard_page.locator('#browser-manual-toggle').click()
-                        eventually(lambda:not client.get('/api/browser-capture',
-                            headers=dashboard).json()['manual_enabled'],timeout=10)
-                        dashboard_page.locator('#browser-record-refresh').click()
-                        eventually(lambda:dashboard_page.locator(
-                            '[data-capture-session="'+manual_sid+'"]').count()==1,timeout=10)
-                        dashboard_page.locator('[data-capture-session="'+manual_sid+'"]').click()
-                        eventually(lambda:'完整操作时间线' in
-                            dashboard_page.locator('#overlay-root').inner_text(),timeout=10)
-                        assert '#1' in dashboard_page.locator('#overlay-root').inner_text()
-                        # Each manual site is summarized into one grounded
-                        # knowledge page, reached from the recording itself.
+                        assert client.get('/api/browser-capture/sites',headers=dashboard).json()[0]['manual_enabled']
+                        # Total pause keeps the pairing and site intent. Resume
+                        # attaches to the same document without recording its gap.
+                        client.put('/api/browser-capture',headers=dashboard,json={'enabled':False})
+                        worker.evaluate('heartbeat()')
+                        paused_count=len(events(db,manual_sid))
+                        target.locator('#add').click()
+                        time.sleep(.3)
+                        assert len(events(db,manual_sid))==paused_count
+                        assert client.get('/api/browser-capture',headers=dashboard).json()['extension_paired']
+                        client.put('/api/browser-capture',headers=dashboard,json={'enabled':True})
+                        worker.evaluate('heartbeat()')
+                        prior=manual_sid
+                        manual_sid=eventually(lambda:(sid if (sid:=current_manual())!=prior else None))
+                        target.locator('#add').click()
+                        eventually(lambda:any('新增审批规则' in label for _,_,label in events(db,manual_sid)))
+                        # Removing one site's current requests does not erase
+                        # its completed intervals or require re-pairing later.
+                        client.put(f'/api/browser-capture/sites/{site_id}',headers=dashboard,json={'enabled':False})
+                        worker.evaluate('heartbeat()')
+                        count_before=len(events(db,manual_sid))
+                        target.locator('#add').click()
+                        time.sleep(.3)
+                        assert len(events(db,manual_sid))==count_before
+                        assert len(events(db,session))==count,'personal events entered the finished workflow'
+                        report=client.post('/api/browser-capture/sessions/'+first_interval+'/summarize',headers=dashboard)
+                        assert report.status_code==200,report.text
                         def site_guide():
                             notes=client.get('/api/knowledge',headers=dashboard,
                                 params={'status':'all','limit':200}).json()
-                            matches=[n for n in notes if n['kind']=='process' and
-                                     n['project_key'].startswith('browser-site:')]
-                            return matches[0] if matches else None
+                            return next((n for n in notes if n['kind']=='process' and
+                                n['project_key'].startswith('browser-site:')),None)
                         guide=eventually(site_guide,timeout=15)
                         assert '新增审批规则' in guide['body'],guide
-                        dashboard_page.locator('#capture-open-guide').click()
-                        eventually(lambda:guide['title'] in dashboard_page.locator(
-                            '.drawer-title').inner_text(),timeout=10)
-                        # An existing revised article exposes a nonintrusive
-                        # log entry and local last-updated tip in its header.
-                        updated=client.put(f"/api/knowledge/{guide['id']}",
-                            headers=dashboard,json={'title':guide['title'],
-                              'body':guide['body']+'\\n\\n人工补充',
-                              'kind':'process','status':'confirmed'})
-                        assert updated.status_code==200,updated.text
-                        dashboard_page.locator('#drawer-close').click()
-                        dashboard_page.locator('[data-page="sources"]').click()
-                        eventually(lambda:dashboard_page.locator('#browser-manual-site').count()>0)
-                        dashboard_page.locator('[data-page="knowledge"]').click()
-                        dashboard_page.locator(f'[data-entry="{guide["id"]}"]').click()
-                        eventually(lambda:dashboard_page.locator(
-                            '#drawer-history-jump').count()==1,timeout=8)
-                        assert '更新于 ' in dashboard_page.locator(
-                            '.drawer-actions').inner_text()
-                        dashboard_page.locator('#drawer-history-jump').click()
-                        assert dashboard_page.locator('#knowledge-history').count()==1
-                        listing=client.get('/api/browser-capture/sessions',
-                            headers=dashboard).json()
-                        # Stop + restart on the same document (without a reload).
-                        worker.evaluate('heartbeat()')
-                        target.bring_to_front()
-                        restarted=client.put('/api/browser-capture/manual',headers=dashboard,
-                            json={'enabled':True,'url':'https://portal.example.com'}).json()['manual_session_id']
-                        worker.evaluate('heartbeat()')
-                        target.locator('#add').click()
-                        eventually(lambda:any('新增审批规则' in label for _,_,label in events(db,restarted)))
-                        client.put('/api/browser-capture/manual',headers=dashboard,json={'enabled':False})
-                        worker.evaluate('heartbeat()')
-                        assert any(x['id']==manual_sid and x['mode']=='manual'
-                                   for x in listing)
-                        timeline=client.get('/api/browser-capture/sessions/'
-                            +manual_sid+'/events',headers=dashboard).json()
-                        assert any(e['kind']=='navigation' for e in timeline),timeline
-                        assert all('secret=' not in e['location'] for e in timeline)
-                        print(json.dumps({"result":"PASS","extension":"MV3 Chromium",
-                            "events":count,"first_page_only":True,"no_unrelated_tabs":True,
-                            "summary":data["summary"]},ensure_ascii=False))
+                        print(json.dumps({'result':'PASS','extension':'MV3 Chromium',
+                            'legacy_task_first_page_only':True,'continuous_site_multi_tab':True,
+                            'same_origin_iframe_and_shadow':True,'cross_origin_iframe_excluded':True,
+                            'pairing_survives_pause':True,'site_history_preserved':True},ensure_ascii=False))
                     finally:
                         browser.close()
         finally:

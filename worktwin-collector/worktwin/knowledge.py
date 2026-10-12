@@ -6,6 +6,8 @@ import hashlib
 import re
 import sqlite3
 
+from .articles import evidence_items, source_parts, store_parts
+
 KIND_LABELS = {"fact": "事实", "decision": "决策", "process": "流程", "preference": "偏好"}
 PATTERNS = {
     "decision": re.compile(r"(决定|最终|结论|采用|选择|不采用|不做|舍弃|方案|权衡|取舍|优先选择|因此我们)", re.I),
@@ -101,10 +103,12 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
         item_project=item.get('project') if item.get('project_key') else metadata['project']
         # Scope de-duplication to project and kind. Two departments repeating
         # the same sentence must not silently share one knowledge entry.
-        digest_source = item_key + "\0" + permission_key(con,doc_id) + "\0" + item["kind"] + "\0" + item["quote"]
+        quotes_identity = "\0".join(sorted({part["quote"] for part in source_parts(item)}))
+        digest_source = item_key + "\0" + permission_key(con,doc_id) + "\0" + item["kind"] + "\0" + quotes_identity
         fingerprint = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
-        cursor = con.execute("INSERT OR IGNORE INTO knowledge(kind,title,body,created_by,source_bound,fingerprint) VALUES(?,?,?,?,1,?)",
-                             (item["kind"], item["title"][:130], item["body"], created_by, fingerprint))
+        cursor = con.execute("INSERT OR IGNORE INTO knowledge(kind,title,body,created_by,source_bound,fingerprint,organization) VALUES(?,?,?,?,1,?,?)",
+                             (item["kind"], item["title"][:130], item["body"], created_by, fingerprint,
+                              "article" if created_by=="enterprise_ai" else "material"))
         row = con.execute("SELECT id FROM knowledge WHERE fingerprint=?", (fingerprint,)).fetchone()
         if not row:
             continue
@@ -116,13 +120,15 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
                  item.get('scope_detail','仅适用于来源资料所描述的工作')[:500],item.get('quality','uncertain'),
                  item.get('value_reason','待核对可复用价值')[:500],item.get('attribution','user'),item.get('outcome','none'),
                  item.get('extraction_version',0),know_id))
-        for quote in dict.fromkeys([item['quote'],item.get('context_quote',''),item.get('confirmation_quote','')]):
+        for quote, occurred_at in evidence_items(item):
             if not quote or quote not in doc['content']:
                 continue
             part = next((r for r in rows if quote[:60] in r['text']),None)
             con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,chunk_id,quote,is_current,occurred_at) VALUES(?,?,?,?,1,?) "
                         "ON CONFLICT(knowledge_id,document_id,quote) DO UPDATE SET is_current=1,chunk_id=excluded.chunk_id,"
                         "occurred_at=COALESCE(excluded.occurred_at,knowledge_evidence.occurred_at)",
-                        (know_id,doc_id,part['id'] if part else None,quote[:1200],item.get('occurred_at') or None))
+                        (know_id,doc_id,part['id'] if part else None,quote[:1200],occurred_at or None))
+        if created_by == 'enterprise_ai':
+            store_parts(con, know_id, doc_id, item)
         added += int(cursor.rowcount > 0)
     return added

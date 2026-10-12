@@ -2,8 +2,8 @@
 const icon = n => `<svg aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const esc = x => String(x ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 const kindNames={fact:'业务知识',decision:'决策记录',process:'流程指引',preference:'个人偏好'};
-const titles={knowledge:'我的知识库',twins:'我的数字分身',sources:'信息采集',settings:'设置'};
-const state={page:'knowledge',knowledge:[],sources:[],twins:[],project:'all',kind:'all',query:'',twinId:null,modelReady:false,shareReady:false,proposals:[],settings:{},lifecycle:'active',chats:{},dirty:false,overlayDirty:false,scrollPosition:0};
+const titles={knowledge:'知识库',twins:'数字分身',sources:'知识来源',settings:'设置'};
+const state={page:'knowledge',knowledge:[],sources:[],twins:[],project:'all',kind:'all',query:'',twinId:null,modelReady:false,shareReady:false,proposals:[],settings:{},lifecycle:'active',chats:{},dirty:false,overlayDirty:false,scrollPosition:0,sourceTab:'folders',browserTab:'sites',twinTab:'grants'};
 const el=id=>document.getElementById(id);
 const content=el('page-content');
 let toastTimer;
@@ -28,7 +28,7 @@ function localUpdateTime(value){
       hour:'2-digit',minute:'2-digit',hour12:false});
 }
 function short(value,length=90){const s=String(value||'').replace(/\s+/g,' ').trim();return esc(s.length>length?s.slice(0,length)+'…':s)}
-function pageHeader(eyebrow,title,description,action=''){return `<div class="page-title-row"><div><div class="eyebrow">${esc(eyebrow)}</div><h1 class="page-title">${esc(title)}</h1><p class="page-caption">${esc(description)}</p></div>${action}</div>`}
+function pageHeader(eyebrow,title,description,action=''){return `<header class="page-title-row"><h1 class="page-title">${esc(title)}</h1><div class="page-actions">${action}</div></header>`}
 function emptyState(ico,title,description,action=''){return `<div class="empty-state"><div class="empty-graphic">${icon(ico)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`}
 async function api(path,options={}){
   const opts={method:options.method||'GET',headers:{'X-Worktwin-Token':window.__WORKTWIN_TOKEN__},...options};
@@ -38,7 +38,7 @@ async function api(path,options={}){
   }
   const response=await fetch('/api/'+path,opts);
   if((response.status===404||response.status===409&&path.startsWith('knowledge/'))&&opts.method!=='GET')offerRefresh('内容已变化或不存在，请刷新后重试；未保存的输入仍保留。');
-  if(!response.ok){let reason=`请求失败 (${response.status})`;try{const data=await response.json();reason=typeof data.detail==='string'?data.detail:JSON.stringify(data.detail)}catch{}throw new Error(reason)}
+  if(!response.ok){let reason=`请求失败 (${response.status})`;try{const data=await response.json();reason=typeof data.detail==='string'?data.detail:JSON.stringify(data.detail)}catch{}const error=new Error(reason);error.status=response.status;throw error}
   return response.json();
 }
 async function perform(fn,refresh){try{await fn();if(refresh)await go(refresh,true);return true}catch(e){notify('操作未完成：'+e.message);return false}}
@@ -86,96 +86,75 @@ const typeLabel={folder:'本地文件夹',codex:'Codex',claude:'Claude Code',cur
 function sourceName(s){const kind=sourceType(s);const legacy={folder:['工作文件','本地工作文件'],codex:['Codex 对话'],claude:['Claude Code 对话']};return legacy[kind]?.includes(s.name)?typeLabel[kind]:s.name}
 function sourceType(s){return s.adapter||s.kind}
 async function renderSources(){
-  const [sources,stats,jobs,capture]=await Promise.all([api('sources'),api('stats'),api('ai/jobs'),api('browser-capture')]);state.sources=sources;
-  const count=k=>sources.filter(s=>sourceType(s)===k).length;
-  const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark'],['cursor','Cursor CLI','导出的 JSONL 记录，不含 IDE 内部对话','book']];
-  content.innerHTML=pageHeader('INFORMATION SOURCES','信息采集','只采集你允许的工作资料。随时暂停，也可以彻底撤销授权。',`<button class="btn secondary" id="scan">${icon('refresh')} 立即检查更新</button> <button class="btn secondary" id="sources-refresh">刷新内容</button>`)+
-    `<div class="source-groups">${types.map(([kind,name,desc,ico])=>`<section class="card source-category" data-source-category="${kind}">
-      <div class="source-category-head"><div class="source-category-title">${icon(ico)}<div><b>${name}</b><small>${desc}</small></div></div>
-      <button class="btn secondary small" data-add-source="${kind}">${icon('plus')} ${count(kind)?'再添加':'授权采集'}</button></div>
-      ${sources.filter(src=>sourceType(src)===kind).map(sourceRow).join('')}
-      </section>`).join('')}</div>`+
-    `<div class="scan-status"><span>系统会自动检测文件变化 · 最近扫描：${esc(stats.last_scan)}</span><span>${stats.documents} 份已索引资料 · ${stats.ai_jobs.queued} 项待整理 · ${stats.ai_jobs.running} 项处理中 · ${stats.ai_jobs.error} 项失败</span></div>`+
-    '<div class="group-heading"><h2>浏览器行为采集</h2><span class="soft-caption">指定网站手动记录 / 企业任务触发</span></div>'+
-    '<div class="card" style="padding:20px;margin-bottom:18px">'+
-      '<div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div><b>浏览器操作</b><p class="soft-caption">手动指定网站并开启记录，或由可信流程平台自动触发。两类记录彼此独立。</p></div>'+
-      '<label class="permission-cell"><input class="toggle" id="browser-capture-enabled" type="checkbox" '+(capture.enabled?'checked':'')+'/> 手动启用</label></div>'+
-      '<div class="field-note">插件状态：'+(capture.extension_connected?'已连接':'未连接（无法据此区分未安装和未运行）')+
-      ' · 进行中任务：'+capture.active_tasks+' · 流程平台：'+(capture.flow_configured?'已配置':'尚未配置')+'</div>'+
-      `<div class="divider" style="margin:18px 0"></div><h3>手动记录指定网站</h3>
-      <p class="soft-caption">输入地址并开启，然后切换到对应的活动标签页。只记录这一标签页；同一网站内跳转继续记录，离开网站或手动结束立即停止。结束后按网站自动维护一篇个人操作手册，原始记录仍可单独查看。</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
-        <input id="browser-manual-site" style="min-width:240px;flex:1" placeholder="https://github.com" value="${esc(capture.manual_site||'')}" ${capture.manual_enabled?'disabled':''}/>
-        <button class="btn ${capture.manual_enabled?'secondary':''}" id="browser-manual-toggle">${capture.manual_enabled?'结束记录':'开始记录'}</button>
-      </div><p class="field-note">${capture.manual_enabled?'已开启：'+esc(capture.manual_site)+'，切换至目标网页开始记录':'支持 HTTPS 网站；本地测试也可用 http://localhost。'}</p>`+
-      '<label class="check-row" style="margin:12px 0"><input id="browser-capture-ai" type="checkbox" '+(capture.allow_ai?'checked':'')+' '+(capture.enabled?'':'disabled')+'/> <span>允许 AI 概括网页操作（独立授权）<small class="soft-caption">只发送脱敏操作事件到已配置模型；手动记录会更新个人网站手册，企业任务记录独立保存。</small></span></label>'+
-      '<button class="btn secondary small" id="browser-extension-guide">安装或连接浏览器插件</button> '+
-      '<button class="btn secondary small" id="browser-capture-history">查看操作记录</button> '+
-      '<button class="btn secondary small" id="browser-capture-refresh">刷新连接状态</button></div>'+
-    '<div class="group-heading"><h2>网页操作记录</h2><span class="soft-caption">历史操作会话与完整事件时间线</span></div><div class="card" id="browser-records">正在加载记录…</div>'+
-    `<div class="processing-panel"><h2>AI 整理状态</h2>${!state.modelReady?'<p>请先到设置完成模型配置。已授权的资料会保留在本机。</p><button class="btn secondary small" id="source-settings">去设置</button>':stats.ai_jobs.error?'<button class="btn secondary small" id="retry-ai">重试失败任务</button>':'<p class="soft-caption">后台自动处理，只需要关注失败或待核对的结果。</p>'}${jobs.filter(j=>j.state!=='done').slice(0,10).map(j=>`<div class="job-row"><span>${esc(j.title)}<small>${esc(j.source_name)}</small></span><span>${{queued:'等待整理',running:'正在整理',error:'整理失败'}[j.state]}${j.error?`<small>${esc(j.error)} · 可重试</small>`:''}</span></div>`).join('')}</div>`+
-    `<div class="status-note" style="margin-top:23px">${icon('shield')}<div><b>采集权限与 AI 处理权限分开控制。</b> 本地采集不会自动上传原始文件；只有启用“允许 AI 整理”的数据源，才会在定时任务中把相关文本发送给当前模型服务。停止采集保留本地知识；彻底移除会删除该来源及其派生知识。</div></div>`;
-  el('browser-capture-enabled').onchange=async e=>{
-    const previous=!e.target.checked;
-    try{
-      const updated=await api('browser-capture',{method:'PUT',body:{enabled:e.target.checked}});
-      await go('sources',true);
-      if(updated.enabled&&!updated.extension_connected)await browserExtensionGuide();
-    }catch(error){e.target.checked=previous;notify(error.message)}
-  };
-  el('browser-manual-toggle').onclick=async()=>{
-    const button=el('browser-manual-toggle');
-    await busy(button,async()=>{
-      try{
-        if(!capture.manual_enabled&&!capture.enabled){
-          await api('browser-capture',{method:'PUT',body:{enabled:true}});
-        }
-        const result=await api('browser-capture/manual',{method:'PUT',body:{
-          enabled:!capture.manual_enabled,url:el('browser-manual-site').value.trim()
-        }});
-        await go('sources',true);
-        notify(result.manual_enabled?'已开启手动记录，请切换到目标网站':'已结束手动记录');
-        if(result.manual_enabled&&!result.extension_connected)await browserExtensionGuide();
-      }catch(error){notify(error.message)}
-    });
-  };
-  el('browser-extension-guide').onclick=browserExtensionGuide;
-  el('browser-capture-history').onclick=browserCaptureHistory;
-  el('browser-capture-ai').onchange=async e=>{
-    const old=!e.target.checked;
-    try{
-      await api('browser-capture/ai',{method:'PUT',body:{allow_ai:e.target.checked}});
-      notify(e.target.checked?'已允许 AI 概括脱敏操作':'已关闭浏览器操作的 AI 分析');
-    }catch(error){e.target.checked=old;notify(error.message)}
-  };
-  el('sources-refresh').onclick=()=>go('sources',true);
-  el('browser-capture-refresh').onclick=()=>go('sources',true);
-  await renderBrowserRecords(0);
-  el('scan').onclick=()=>busy(el('scan'),async()=>{if(await perform(()=>api('scan',{method:'POST'}),'sources'))notify('已安排检查更新')});
-  el('source-settings')?.addEventListener('click',()=>go('settings'));
-  el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry',{method:'POST'}),'sources'))notify('失败任务已重新排队')}));
-  content.querySelectorAll('[data-add-source]').forEach(b=>b.onclick=()=>addSource(b.dataset.addSource));
-  content.querySelectorAll('[data-collect-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.collectToggle}/toggle`,{method:'POST'}),'sources'))b.checked=!b.checked}));
-  content.querySelectorAll('[data-ai-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.aiToggle}/ai`,{method:'PUT',body:{allow_ai:b.checked}}),'sources'))b.checked=!b.checked}));
-  content.querySelectorAll('[data-share-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.shareToggle}/share`,{method:'PUT',body:{allow_share:b.checked}}),'sources'))b.checked=!b.checked}));
-  content.querySelectorAll('[data-remove-source]').forEach(b=>b.onclick=async()=>{
-    const id=Number(b.dataset.removeSource);const row=state.sources.find(x=>x.id===id);
-    if(!confirm(`彻底移除「${row?sourceName(row):'数据源'}」？这会删除其索引、AI 提炼知识以及相关分身的知识授权，无法撤回。`))return;
-    await perform(()=>api(`sources/${id}`,{method:'DELETE'}),'sources');
-  });
-  if(window.__JOB_POLL__){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;}
-  if(stats.ai_jobs && (stats.ai_jobs.queued>0 || stats.ai_jobs.running>0)){
-    window.__JOB_POLL__=setInterval(async()=>{
-      if(state.page!=='sources'){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;return}
-      try{
-        const newStats=await api('stats');
-        if(newStats.ai_jobs.queued===0 && newStats.ai_jobs.running===0){
-          clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;
-          offerRefresh('AI 整理已完成，点击刷新查看结果。');
-        }
-      }catch{}
-    },3500);
+  const [sources,stats,jobs,capture]=await Promise.all([api('sources'),api('stats'),api('ai/jobs'),api('browser-capture')]);
+  state.sources=sources;
+  const actions=state.sourceTab==='folders'?`<button class="btn" id="add-folder">${icon('plus')} 添加文件夹</button>`:state.sourceTab==='browser'?`<button class="btn" id="add-website">${icon('plus')} 添加网站</button>`:'';
+  content.innerHTML=pageHeader('','知识来源','',actions)+`<div class="tabs source-tabs" role="tablist">${[['folders','文件夹'],['assistants','编程助手'],['browser','浏览器记录']].map(([key,name])=>`<button role="tab" aria-selected="${state.sourceTab===key}" class="${state.sourceTab===key?'active':''}" data-source-tab="${key}">${name}</button>`).join('')}</div><div id="source-content"></div>`;
+  content.querySelectorAll('[data-source-tab]').forEach(b=>b.onclick=()=>{state.sourceTab=b.dataset.sourceTab;go('sources',true)});
+  const pane=el('source-content');
+  if(state.sourceTab==='browser'){
+    pane.innerHTML=`<div class="section-toolbar"><span class="state-label ${capture.extension_connected?'':'grey'}">插件${capture.extension_connected?'已连接':'未连接'}</span><span class="muted">${capture.active_tasks} 个进行中任务</span><div class="toolbar-fill"></div><button class="btn secondary" id="browser-extension-guide">插件设置</button><button class="btn secondary" id="browser-flow-settings">流程平台设置</button></div><div class="tabs" role="tablist">${[['sites','网站白名单'],['tasks','平台任务'],['history','采集记录']].map(([key,name])=>`<button role="tab" aria-selected="${state.browserTab===key}" class="${state.browserTab===key?'active':''}" data-browser-tab="${key}">${name}</button>`).join('')}</div><div id="browser-sites"></div><div id="browser-records"></div>`;
+    content.querySelectorAll('[data-browser-tab]').forEach(b=>b.onclick=()=>{state.browserTab=b.dataset.browserTab;go('sources',true)});
+    el('browser-extension-guide').onclick=browserExtensionGuide;
+    el('browser-flow-settings').onclick=()=>dialog('流程平台设置',`<section class="settings-group"><h3>连接状态</h3><p>${capture.flow_configured?'已配置可信流程平台':'尚未配置可信流程平台'}</p></section><section class="settings-group"><h3>任务采集</h3><p>平台下发任务和网站范围，开始任务时开启采集，任务结束后停止该任务的记录。</p><p class="field-note">平台连接由部署配置 WORKTWIN_CAPTURE_FLOW_ORIGIN 与签名密钥管理。</p></section>`,`<button class="btn secondary" data-close>关闭</button>`);
+    el('add-website').onclick=addWebsite;
+    if(state.browserTab==='sites')await renderWebsiteList();
+    else await renderBrowserRecords(0);
+    return;
   }
+  const folders=sources.filter(s=>sourceType(s)==='folder');
+  pane.innerHTML=`<div class="section-toolbar"><span class="muted" id="source-count">${state.sourceTab==='folders'?folders.length+' 个文件夹':'按工具选择本机会话'}</span><div class="toolbar-fill"></div><button class="btn secondary" id="scan">${icon('refresh')} ${state.sourceTab==='assistants'?'检测并检查更新':'检查更新'}</button></div><div class="source-table" id="sources-list"></div><div class="scan-status"><span>最近检查 ${esc(stats.last_scan||'尚未检查')}</span><button class="info-link" id="show-processing">${stats.ai_jobs.running} 项整理中 · ${stats.ai_jobs.error} 项失败</button></div>`;
+  if(state.sourceTab==='folders'){
+    el('add-folder').onclick=()=>addSource();
+    el('sources-list').innerHTML=folders.length?`<div class="source-table-head"><span>文件夹</span><span>采集</span><span>AI 整理</span><span>状态</span><span></span></div>${folders.map(sourceRow).join('')}`:emptyState('folder','选择工作资料所在的文件夹','',`<button class="btn" id="empty-add-folder">添加文件夹</button>`);
+    el('empty-add-folder')?.addEventListener('click',()=>addSource());
+  }else{
+    const assistants=await api('sources/assistants');
+    el('sources-list').innerHTML=`<div class="source-table-head"><span>编程助手</span><span>采集</span><span>AI 整理</span><span>状态</span><span></span></div>${assistants.map(a=>`<div class="source-item"><div class="source-summary"><b>${esc(a.name)}</b><div class="source-path">${a.tool==='cursor'?'CLI 导出会话':'全部可识别会话'}</div></div><label class="permission-cell"><input type="checkbox" data-assistant="${a.tool}" aria-label="采集 ${esc(a.name)}" ${a.selected?'checked':''}></label><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(a.name)}" data-ai-toggle="${a.source_id||''}" ${a.allow_ai?'checked':''} ${a.source_id?'':'disabled'}></label><span class="source-state">${a.detected?a.document_count+' 份资料':a.selected?'等待会话记录':'尚未检测到记录'}${a.legacy_sources.length?`<small>保留 ${a.legacy_sources.length} 个原范围</small>`:''}</span><button class="icon-button" data-assistant-detail="${a.tool}" aria-label="${esc(a.name)} 来源设置">${icon('ellipsis')}</button></div>`).join('')}`;
+    pane.querySelectorAll('[data-assistant]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api('sources/assistants/'+b.dataset.assistant,{method:'PUT',body:{enabled:b.checked}}),'sources'))b.checked=!b.checked}));
+    pane.querySelectorAll('[data-assistant-detail]').forEach(b=>b.onclick=()=>assistantDetail(assistants.find(a=>a.tool===b.dataset.assistantDetail)));
+  }
+  bindSourceControls(pane);
+  el('scan').onclick=()=>busy(el('scan'),async()=>{if(await perform(()=>api('scan',{method:'POST'}),'sources'))notify('已安排检查更新')});
+  el('show-processing').onclick=()=>processingDetails(jobs);
+  if(stats.ai_jobs.queued||stats.ai_jobs.running)window.__JOB_POLL__=setInterval(async()=>{
+    const current=await api('stats');
+    if(!current.ai_jobs.queued&&!current.ai_jobs.running){clearInterval(window.__JOB_POLL__);window.__JOB_POLL__=null;offerRefresh('AI 整理已完成，刷新查看结果。')}
+  },3500);
+}
+function bindSourceControls(node){
+  node.querySelectorAll('[data-collect-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.collectToggle}/toggle`,{method:'POST'}),'sources'))b.checked=!b.checked}));
+  node.querySelectorAll('[data-ai-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.aiToggle}/ai`,{method:'PUT',body:{allow_ai:b.checked}}),'sources'))b.checked=!b.checked}));
+  node.querySelectorAll('[data-source-detail]').forEach(b=>b.onclick=()=>sourceDetail(state.sources.find(s=>s.id===Number(b.dataset.sourceDetail))));
+}
+function processingDetails(jobs,source=null){
+  const rows=jobs.filter(j=>j.state!=='done'&&(!source||j.source_id===source.id));
+  dialog(source?source.name+' · 整理任务':'整理任务',`${!state.modelReady?'<p>配置模型后可整理已授权资料。</p>':''}${rows.length?rows.map(j=>`<div class="job-row"><span>${esc(j.title)}<small>${esc(j.source_name)}</small></span><span>${{queued:'等待整理',running:'正在整理',error:'整理失败'}[j.state]}${j.error?`<small>${esc(j.error)}</small>`:''}</span></div>`).join(''):'<p class="muted">没有待处理任务</p>'}`,`<button class="btn secondary" data-close>关闭</button>${rows.some(j=>j.state==='error')?'<button class="btn" id="retry-ai">重试失败任务</button>':''}`,true);
+  el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry'+(source?'?source_id='+source.id:''),{method:'POST'}))){closeOverlay();await go('sources',true)}}));
+}
+function sourceDetail(s){
+  dialog(sourceName(s),`<section class="settings-group"><h3>采集范围</h3><p class="source-path">${s.collection_scope==='assistant'?(sourceType(s)==='cursor'?'自动识别本机 Cursor 目录中的 CLI JSONL 导出，不读取 IDE 对话':'此助手在本机的全部可识别会话'):esc(s.root)}</p><p>${s.document_count} 份资料${s.last_error?' · '+esc(s.last_error):''}</p></section><section class="settings-group"><h3>处理与分享</h3><label class="setting-row"><span>允许 AI 整理<small>相关文本发送到已配置的模型</small></span><input class="toggle" id="source-detail-ai" type="checkbox" ${s.allow_ai?'checked':''}></label><label class="setting-row"><span>允许分身分享</span><input class="toggle" id="source-detail-share" type="checkbox" ${s.allow_share?'checked':''}></label></section><section class="settings-group"><h3>整理与记录</h3><button class="btn secondary" id="source-jobs">整理任务</button> <button class="btn danger" id="source-remove">移除来源数据</button></section>`,`<button class="btn secondary" data-close>关闭</button>`);
+  el('source-detail-ai').onchange=async e=>{if(await perform(()=>api(`sources/${s.id}/ai`,{method:'PUT',body:{allow_ai:e.target.checked}}))){s.allow_ai=e.target.checked;await go('sources',true)}else e.target.checked=!e.target.checked};
+  el('source-detail-share').onchange=async e=>{if(await perform(()=>api(`sources/${s.id}/share`,{method:'PUT',body:{allow_share:e.target.checked}}))){s.allow_share=e.target.checked;notify('分享权限已更新')}else e.target.checked=!e.target.checked};
+  el('source-jobs').onclick=async()=>processingDetails(await api('ai/jobs?source_id='+s.id),s);
+  el('source-remove').onclick=async()=>{if(!confirm(`移除「${sourceName(s)}」的索引及派生知识？原始文件会保留。`))return;if(await perform(()=>api(`sources/${s.id}`,{method:'DELETE'}),'sources'))closeOverlay()};
+}
+function assistantDetail(a){
+  const legacy=a.legacy_sources.length?`<section class="settings-group"><h3>原范围记录</h3>${a.legacy_sources.map(source=>`<button class="btn secondary" data-legacy-source="${source.id}">${esc(source.name)} · ${source.document_count} 份</button>`).join('')}<p class="field-note">原范围记录仍保留，可分别管理与移除。</p></section>`:'';
+  if(a.source_id){sourceDetail(state.sources.find(s=>s.id===a.source_id));el('overlay-root').querySelector('.dialog-body').insertAdjacentHTML('beforeend',legacy)}
+  else dialog(a.name,`<section class="settings-group"><h3>采集范围</h3><p>${a.tool==='cursor'?'自动识别本机 Cursor 目录中的 CLI JSONL 导出，不读取 IDE 对话':'此助手在本机的全部可识别会话。'}</p><p class="muted">${a.detected?'已检测到会话，勾选后开始采集':'尚未检测到会话，可以先勾选并等待新记录'}</p></section>${legacy}`,`<button class="btn secondary" data-close>关闭</button>`);
+  el('overlay-root').querySelectorAll('[data-legacy-source]').forEach(b=>b.onclick=()=>sourceDetail(state.sources.find(s=>s.id===Number(b.dataset.legacySource))));
+}
+async function renderWebsiteList(){
+  const sites=await api('browser-capture/sites');
+  const labels={off:'未采集',paused:'采集已暂停',waiting_extension:'等待插件连接',waiting_page:'等待访问网站',capturing:'采集中'};
+  el('browser-sites').innerHTML=sites.length?`<div class="website-table"><div class="website-row table-head"><span>允许记录的网站</span><span>采集</span><span>状态</span><span></span></div>${sites.map(s=>`<div class="website-row"><span><b>${esc(s.origin)}</b><small>${s.manual_enabled?'人工开启 · 持续采集':s.task_requests?s.task_requests+' 个平台任务':'已加入白名单'}</small></span><label><input class="toggle" type="checkbox" aria-label="采集 ${esc(s.origin)}" data-website-toggle="${s.id}" ${s.enabled?'checked':''}></label><span>${labels[s.status]}</span><button class="icon-button" data-website-remove="${s.id}" aria-label="移除 ${esc(s.origin)}">${icon('trash')}</button></div>`).join('')}</div>`:emptyState('book','还没有允许记录的网站','添加网站后，可由人工或流程平台开启采集。');
+  el('browser-sites').querySelectorAll('[data-website-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`browser-capture/sites/${b.dataset.websiteToggle}`,{method:'PUT',body:{enabled:b.checked}}),'sources'))b.checked=!b.checked}));
+  el('browser-sites').querySelectorAll('[data-website-remove]').forEach(b=>b.onclick=async()=>{if(confirm('移除此网站并停止采集？历史记录会保留。'))await perform(()=>api(`browser-capture/sites/${b.dataset.websiteRemove}`,{method:'DELETE'}),'sources')});
+}
+function addWebsite(){
+  dialog('添加网站',`<div class="field"><label for="website-origin">网站地址</label><input id="website-origin" type="url" placeholder="https://example.com"><p class="field-note">仅限此网站，不包含其他子域名。添加后默认不采集。</p></div>`,`<button class="btn secondary" data-close>取消</button><button class="btn" id="save-website">添加</button>`);
+  el('save-website').onclick=()=>busy(el('save-website'),async()=>{if(await perform(()=>api('browser-capture/sites',{method:'POST',body:{url:el('website-origin').value.trim()}}))){closeOverlay();state.browserTab='sites';await go('sources',true)}});
 }
 let browserRecordsPage=0;
 const captureStatuses={armed:'等待目标网页',capturing:'记录中',completed:'已结束',
@@ -186,7 +165,7 @@ async function renderBrowserRecords(page=0){
   browserRecordsPage=page;
   const holder=el('browser-records');
   if(!holder)return;
-  const rows=await api('browser-capture/sessions?limit=20&offset='+(page*20));
+  const rows=await api('browser-capture/sessions?limit=20&offset='+(page*20)+(state.browserTab==='tasks'?'&mode=task':''));
   const reports=await Promise.all(rows.map(async row=>{
     const report=await api('browser-capture/sessions/'+encodeURIComponent(row.id)+'/summary');
     return {...row,report};
@@ -203,7 +182,7 @@ async function renderBrowserRecords(page=0){
     </section>`).join(''):'<p class="field-note">暂无网页操作记录。开始记录指定网站后，这里将展示每次采集的结果。</p>';
   holder.innerHTML+=`<div style="display:flex;gap:10px;margin-top:12px">
     ${page>0?'<button class="btn secondary small" id="browser-record-prev">上一页</button>':''}
-    ${reports.length===20?'<button class="btn secondary small" id="browser-record-next">下一页</button>':''}
+    ${rows.length===20?'<button class="btn secondary small" id="browser-record-next">下一页</button>':''}
     <button class="btn secondary small" id="browser-record-refresh">刷新记录</button></div>`;
   holder.querySelectorAll('[data-capture-session]').forEach(b=>b.onclick=()=>browserSessionDetails(b.dataset.captureSession));
   el('browser-record-prev')?.addEventListener('click',()=>renderBrowserRecords(page-1));
@@ -211,7 +190,8 @@ async function renderBrowserRecords(page=0){
   el('browser-record-refresh')?.addEventListener('click',()=>renderBrowserRecords(page));
 }
 async function browserCaptureHistory(){
-  if(state.page!=='sources')await go('sources',true);
+  state.sourceTab='browser';state.browserTab='history';
+  await go('sources',true);
   await renderBrowserRecords(browserRecordsPage);
   el('browser-records')?.scrollIntoView({behavior:'smooth',block:'start'});
 }
@@ -223,7 +203,7 @@ async function browserSessionDetails(sessionId,offset=0){
   ]);
   const kindNames={click:'点击',change:'修改',submit:'尝试提交',feedback:'页面提示',
     navigation:'页面导航',tab_closed:'关闭标签页'};
-  const body=`<p class="soft-caption">采集方式：${summary.task_id.startsWith('manual-')?'手动网站采集':'流程任务采集'} ·
+  const body=`<p class="soft-caption">采集方式：${summary.mode==='manual'?'手动网站采集':'流程任务采集'} ·
     ${esc(captureStatuses[summary.capture_status]||summary.capture_status)} · ${summary.event_count} 条事件</p>
     <section class="source-reference"><h3>本次操作摘要</h3>
       <p>${esc(summary.summary||'尚未生成操作摘要')}</p>
@@ -259,132 +239,64 @@ async function browserSessionDetails(sessionId,offset=0){
 
 async function browserExtensionGuide(){
   const info=await api('browser-capture');
-  dialog('浏览器采集插件', '<p>请先下载 WorkTwin 浏览器插件，并在 Chrome 或 Edge 的扩展管理页启用「开发者模式」后加载解压目录。当前尚未发布浏览器商店版本。</p>'+
-    '<p>插件不是由桌面应用直接扫描浏览器安装目录识别的。只有插件成功与本机 WorkTwin 握手后，才显示「已连接」。</p>'+
-    '<p>连接方法：点击 Chrome 地址栏右侧的拼图图标 → WorkTwin，粘贴配对码并连接。开始记录后，在目标网站再次打开插件，点击「授权本次采集网站」。显示「记录」后再进行操作。</p>'+
-    '<button class="btn secondary" id="browser-extension-download">下载插件 ZIP</button> '+
-    '<button class="btn secondary" id="browser-extension-pair">生成配对码</button>'+
-    '<p id="browser-extension-code" class="field-note">请在插件弹窗中输入 WorkTwin 生成的配对码。</p>'+
-    '<p class="field-note">只有流程任务触发模式需要配置企业流程平台域名与签名密钥。手动网站采集无需流程平台。</p>');
+  dialog('浏览器插件',`<section class="settings-group"><h3>采集控制</h3><label class="setting-row"><span>浏览器采集<small>关闭后暂停记录，保留网站设置和配对</small></span><input class="toggle" id="browser-capture-enabled" type="checkbox" ${info.enabled?'checked':''}></label></section><section class="settings-group"><h3>安装与连接</h3><dl class="detail-list"><dt>连接状态</dt><dd>${info.extension_connected?'已连接':'未连接'}</dd></dl><div class="button-row"><button class="btn secondary" id="browser-extension-download">下载插件</button><button class="btn secondary" id="browser-extension-pair">生成配对码</button><button class="btn secondary" id="browser-extension-unpair">解除配对</button></div><p id="browser-extension-code" class="field-note"></p><details><summary>安装说明</summary><ol class="setup-steps"><li>在 Chrome 或 Edge 扩展管理页启用开发者模式，加载解压后的插件目录。</li><li>在插件中输入配对码，连接本机 WorkTwin。</li><li>在目标网站打开插件，授予该网站访问权限。</li></ol></details></section><section class="settings-group"><h3>AI 整理</h3><label class="setting-row"><span>允许 AI 整理操作记录<small>仅发送脱敏后的操作记录</small></span><input class="toggle" id="browser-capture-ai" type="checkbox" ${info.allow_ai?'checked':''}></label></section>`,`<button class="btn secondary" data-close>关闭</button>`,true);
+  el('browser-capture-enabled').onchange=e=>busy(e.target,async()=>{if(await perform(()=>api('browser-capture',{method:'PUT',body:{enabled:e.target.checked}})))await go('sources',true);else e.target.checked=!e.target.checked});
+  el('browser-capture-ai').onchange=e=>busy(e.target,async()=>{if(!await perform(()=>api('browser-capture/ai',{method:'PUT',body:{allow_ai:e.target.checked}})))e.target.checked=!e.target.checked});
   el('browser-extension-download').onclick=()=>downloadFile('browser-capture/extension','WorkTwin-Browser-Extension.zip');
-  el('browser-extension-pair').onclick=async()=>{
-    try{
-      if(!info.enabled){notify('请先启用浏览器行为采集');return}
-      const r=await api('browser-capture/pairing',{method:'POST'});
-      const node=el('browser-extension-code');
-      node.textContent='配对码（5 分钟有效）：'+r.code;
-      node.style.userSelect='text';
-    }catch(e){notify(e.message)}
-  };
+  el('browser-extension-pair').onclick=()=>busy(el('browser-extension-pair'),async()=>{try{const r=await api('browser-capture/pairing',{method:'POST'});el('browser-extension-code').textContent='配对码（5 分钟有效）：'+r.code}catch(e){notify(e.message)}});
+  el('browser-extension-unpair').onclick=async()=>{if(confirm('解除插件配对并停止当前采集？网站和历史记录会保留。')&&await perform(()=>api('browser-capture/unpair',{method:'POST'}))){await browserExtensionGuide();await go('sources',true)}};
 }
 
-function sourceRow(s){const kind=sourceType(s),name=sourceName(s);return `<div class="source-item"><div class="source-summary"><div class="source-name">${esc(name)} <span class="state-label ${s.enabled?'':'grey'}">${s.enabled?'采集中':'已暂停'}</span></div><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div><div class="source-caption"><span class="soft-caption">${esc(typeLabel[kind]||'工作资料')} · ${s.document_count} 份资料</span>${s.last_error?`<span class="state-label danger">${esc(s.last_error)}</span>`:''}</div></div>
-  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}/> 允许采集</label>
-  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}/> 允许 AI 整理</label>
-  <label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许分身分享 ${esc(name)}" data-share-toggle="${s.id}" ${s.allow_share?'checked':''}/> 允许分身分享</label>
-  <button class="icon-button" title="撤销来源并清除知识" aria-label="删除 ${esc(name)}" data-remove-source="${s.id}">${icon('trash')}</button></div>`}
-async function addSource(initial='folder'){
-  dialog('添加信息来源',`<div class="choice-tabs">${[['folder','本地文件夹'],['codex','Codex'],['claude','Claude Code'],['cursor','Cursor CLI']].map(([type,name])=>`<button class="choice-tab" data-type="${type}">${name}</button>`).join('')}</div>
-    <div class="field"><label for="new-source-name">数据源名称</label><input id="new-source-name" autocomplete="off"/></div>
-    <div id="source-location"></div>
-    <label class="check-row"><input id="new-source-ai" type="checkbox"/> <span><b>允许 AI 自动整理这些资料</b><br/>内容将发送到当前配置的模型服务；不勾选则只在本地建立索引。</span></label>
-    <p class="permission-note" id="source-permission-note"></p>`,
-    `<button class="btn secondary" data-close>取消</button><button class="btn" id="save-source">授权并开始采集</button>`);
-  let kind=initial,selection=0;
-  function pathField(label){return `<div class="field"><label for="new-source-path">${label}</label><div style="display:flex;gap:9px"><input id="new-source-path" autocomplete="off" spellcheck="false"/><button class="btn secondary" id="browse-folder" type="button">选择…</button></div></div>`}
-  async function detect(root){
-    const current=selection,type=kind;
-    el('save-source').disabled=true;
-    el('source-detection').textContent='正在检测会话记录…';
-    try{
-      const found=await api('sources/detect',{method:'POST',body:{kind:type,root:root||null}});
-      if(current!==selection||!el('source-detection'))return;
-      el('new-source-path').value=found.root;
-      el('source-detection').innerHTML=found.recognized?
-        `<b>已检测到 ${esc(typeLabel[type])} 会话记录</b><p class="field-note">检查的 ${found.inspected} 份文件中有 ${found.recognized} 份格式匹配。启用后将持续采集历史及新增会话。</p><p class="source-path">${esc(found.root)}</p>`:
-        `<b>尚未检测到可读取的会话记录</b><p class="field-note">${type==='cursor'?'当前支持 Cursor CLI 的 stream-json 导出文件，不支持 IDE 内部历史。请在下方选择导出记录的位置。':'请先在这台电脑上使用该助手完成一次会话；自定义安装位置可在高级设置中指定。'}</p>${found.unreadable?'<p class="field-note">部分文件无法读取，请检查本机访问权限。</p>':''}`;
-      el('save-source').disabled=!found.recognized;
-    }catch(e){if(current===selection&&el('source-detection'))el('source-detection').textContent=e.message;}
-  }
-  async function choose(type){
-    kind=type;selection++;el('new-source-name').value=typeLabel[type];
-    const assistant=type!=='folder';
-    el('source-location').innerHTML=assistant?
-      `<section id="source-detection" role="status"></section><details ${type==='cursor'?'open':''}><summary>高级设置：自定义会话记录位置</summary>${pathField('会话记录位置')}<button class="btn secondary small" id="detect-source">重新检测</button></details>`:
-      pathField('授权文件夹');
-    el('save-source').disabled=assistant;
-    el('save-source').textContent=assistant?'启用会话采集':'授权并开始采集';
-    el('source-permission-note').textContent=assistant?'只解析该助手的会话记录格式，不会将这个目录中的普通文档作为会话。会话中提到的项目文件不会自动获得采集权限。':'仅采集你选择的目录及其子目录。可以随时暂停或撤销授权。';
-    el('overlay-root').querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type));
-    el('browse-folder').onclick=async()=>{try{const result=await api('pick-folder',{method:'POST'});el('new-source-path').value=result.path;if(assistant)await detect(result.path)}catch(e){notify(e.message)}};
-    if(assistant){
-      el('new-source-path').oninput=()=>{selection++;el('save-source').disabled=true};
-      el('detect-source').onclick=()=>detect(el('new-source-path').value.trim());
-      await detect();
-    }
-  }
-  el('overlay-root').querySelectorAll('[data-type]').forEach(x=>x.onclick=()=>choose(x.dataset.type));
-  el('save-source').onclick=()=>busy(el('save-source'),async()=>{
-    const body={name:el('new-source-name').value.trim(),root:el('new-source-path').value.trim(),kind,allow_ai:el('new-source-ai').checked,validate_transcript:kind!=='folder'};
-    if(!body.name||!body.root){notify('请填写名称并确认资料位置');return}
-    try{await api('sources',{method:'POST',body});closeOverlay();notify('已启用，首次采集将在后台开始');go('sources',true)}catch(e){notify(e.message)}
-  });
-  await choose(initial);
+function sourceRow(s){const name=sourceName(s);return `<div class="source-item"><div class="source-summary"><b>${esc(name)}</b><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div></div><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}></label><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}></label><span class="source-state">${s.last_error?`<span class="state-label warn">${esc(s.last_error)}</span>`:s.document_count+' 份资料'}</span><button class="icon-button" data-source-detail="${s.id}" aria-label="${esc(name)} 来源设置">${icon('ellipsis')}</button></div>`}
+async function addSource(){
+  dialog('添加文件夹',`<div class="field"><label>文件夹</label><div class="folder-picker"><span id="new-source-path">尚未选择</span><button class="btn secondary" id="browse-folder">选择文件夹</button></div></div><div class="field"><label for="new-source-name">名称</label><input id="new-source-name" maxlength="90" placeholder="选择文件夹后自动填写"></div><p class="field-note">添加后开始采集；AI 整理与分享可在来源设置中开启。</p>`,`<button class="btn secondary" data-close>取消</button><button class="btn" id="save-source" disabled>添加</button>`);
+  let folder='';
+  el('browse-folder').onclick=()=>busy(el('browse-folder'),async()=>{try{const result=await api('pick-folder',{method:'POST'});if(!result.path)return;folder=result.path;el('new-source-path').textContent=folder;if(!el('new-source-name').value.trim())el('new-source-name').value=folder.split(/[\\/]/).filter(Boolean).pop();el('save-source').disabled=false}catch(e){notify(e.message)}});
+  el('save-source').onclick=()=>busy(el('save-source'),async()=>{const name=el('new-source-name').value.trim()||folder.split(/[\\/]/).filter(Boolean).pop();if(await perform(()=>api('sources',{method:'POST',body:{name,root:folder,kind:'folder',allow_ai:false}}))){closeOverlay();notify('已添加文件夹');await go('sources',true)}});
 }
 
 // Knowledge: Notion-like collection sidebar + page list + editable document pane.
-function visibleKnowledge(){return state.knowledge.filter(k=>state.lifecycle==='archived'?k.status==='archived':state.lifecycle==='draft'?k.status==='draft':state.lifecycle==='confirmed'?k.status==='confirmed':state.lifecycle==='review'?k.needs_review:state.lifecycle==='disabled'?k.quality==='noise':k.status!=='archived'&&k.quality!=='noise')}
+function visibleKnowledge(){return state.knowledge.filter(k=>k.organization==='article').filter(k=>state.lifecycle==='archived'?k.status==='archived':state.lifecycle==='confirmed'?k.can_use:state.lifecycle==='review'?!k.can_use&&k.status!=='archived'&&k.quality!=='noise':state.lifecycle==='disabled'?k.quality==='noise':true)}
 function entryProject(k){return k.scope==='global'?'跨项目通用':k.project||k.evidence?.find(x=>x.project)?.project||'范围待核对'}
 const scopeNames={project:'项目内',session:'本次讨论',global:'跨项目通用',unknown:'范围待核对'};
 const outcomeNames={none:'',reported:'报告完成，尚未核实',supported:'已有验证依据',accepted:'用户已验收'};
 function availableToTwin(k){return !!k.can_use}
-async function loadKnowledge(){let rows=[],offset=0;while(true){const batch=await api(`knowledge?status=all&limit=1000&offset=${offset}`);rows.push(...batch);if(batch.length<1000)break;offset+=batch.length}return rows}
+async function loadKnowledge(organization=''){let rows=[],offset=0;while(true){const batch=await api(`knowledge?status=all&limit=1000&offset=${offset}${organization?'&organization='+organization:''}`);rows.push(...batch);if(batch.length<1000)break;offset+=batch.length}return rows}
 async function renderKnowledge(){
-  [state.knowledge,state.proposals]=await Promise.all([loadKnowledge(),api('knowledge/proposals')]);
-  const visible=visibleKnowledge(),projects=[...new Set(visible.map(entryProject))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
-  if(state.project!=='all'&&state.project!=='reviews'&&!projects.includes(state.project))state.project='all';
-  content.innerHTML=pageHeader('KNOWLEDGE LIBRARY','我的知识库','按项目和主题整理工作知识，保留适用范围、当前结论和原始依据。',`<button class="btn secondary" id="create-knowledge">${icon('plus')} 新建知识</button> <button class="btn secondary" id="knowledge-refresh">刷新内容</button>`)+
-    `<div class="library-shell"><aside class="library-sidebar"><h3>知识空间</h3>
-    <button class="library-choice ${state.project==='all'?'active':''}" data-project="all">${icon('book')} <span class="truncate">全部知识</span><span class="count">${visible.length}</span></button>
-    <button class="library-choice ${state.project==='reviews'?'active':''}" data-project="reviews">${icon('alert')} <span class="truncate">待核对更新</span><span class="count">${state.proposals.length}</span></button>
-    <h3 style="margin-top:24px">项目与分类</h3>${projects.map((name,index)=>`<button class="library-choice ${state.project===name?'active':''}" data-project-index="${index}">${icon('folder')}<span class="truncate">${esc(name)}</span><span class="count">${visible.filter(k=>entryProject(k)===name).length}</span></button>`).join('')}</aside>
-    <div class="library-main"><div class="library-toolbar"><div class="search-bar">${icon('search')} <input type="search" id="knowledge-search" aria-label="搜索知识" placeholder="搜索知识标题或正文…" value="${esc(state.query)}"/></div><span class="knowledge-count" id="knowledge-count"></span></div>
-    <div class="lifecycle-filters">${[['active','全部知识'],['draft','待整理'],['review','需处理'],['confirmed','已生效'],['disabled','已停用'],['archived','已归档']].map(([v,n])=>`<button class="filter-button ${state.lifecycle===v?'active':''}" data-lifecycle="${v}">${n}</button>`).join('')}</div><div class="filters">${[['all','全部'],['fact','知识'],['decision','决策'],['process','流程'],['preference','个人偏好']].map(([type,name])=>`<button class="filter-button ${state.kind===type?'active':''}" data-filter="${type}">${name}</button>`).join('')}</div><div class="knowledge-maintenance"><button class="btn secondary small" id="reprocess-knowledge">重新整理现有资料</button><span class="field-note">仅处理已允许 AI 使用的资料；待核对资料保留供复核；被替代结论只进入变更历史，不参与回答。</span></div><div id="knowledge-list"></div></div></div>`;
-  content.querySelectorAll('[data-project]').forEach(x=>x.onclick=()=>{state.project=x.dataset.project;renderKnowledgeList()});
-  content.querySelectorAll('[data-project-index]').forEach(x=>x.onclick=()=>{state.project=projects[Number(x.dataset.projectIndex)];renderKnowledgeList()});
-  content.querySelectorAll('[data-lifecycle]').forEach(x=>x.onclick=()=>{state.lifecycle=x.dataset.lifecycle;go('knowledge',true)});
-  content.querySelectorAll('[data-filter]').forEach(x=>x.onclick=()=>{state.kind=x.dataset.filter;renderKnowledgeList()});
+  const [articles,materials,proposals]=await Promise.all([loadKnowledge('article'),loadKnowledge('material'),api('knowledge/proposals')]);state.knowledge=[...articles,...materials];state.proposals=proposals;
+  const projects=[...new Set(articles.map(entryProject))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
+  if(!projects.includes(state.project))state.project='all';
+  content.innerHTML=pageHeader('','知识库','',`<button class="btn" id="create-knowledge">${icon('plus')} 新建知识</button><details class="action-menu"><summary class="icon-button" aria-label="知识库更多操作">${icon('ellipsis')}</summary><div><button id="knowledge-refresh">刷新内容</button><button id="reprocess-knowledge">重新整理资料</button><button id="library-export">导出 Markdown</button></div></details>`)+`<div class="tabs lifecycle-filters" role="tablist">${[['active','全部'],['confirmed','可用'],['review','待处理'],['archived','已归档'],['disabled','已停用']].map(([value,label])=>`<button role="tab" aria-selected="${state.lifecycle===value}" class="${state.lifecycle===value?'active':''}" data-lifecycle="${value}">${label}</button>`).join('')}</div><div class="library-toolbar"><div class="search-bar">${icon('search')}<input type="search" id="knowledge-search" aria-label="搜索主题文章" placeholder="搜索主题文章" value="${esc(state.query)}"></div><select id="knowledge-project" aria-label="筛选项目"><option value="all">全部项目</option>${projects.map(name=>`<option ${state.project===name?'selected':''}>${esc(name)}</option>`).join('')}</select><select id="knowledge-kind" aria-label="筛选类型">${[['all','全部类型'],['fact','知识'],['decision','决策'],['process','流程'],['preference','个人偏好']].map(([key,label])=>`<option value="${key}" ${state.kind===key?'selected':''}>${label}</option>`).join('')}</select><div class="toolbar-fill"></div><button class="btn secondary small" id="pending-materials">待整理 ${materials.length}</button><button class="btn secondary small" id="knowledge-proposals">更新建议 ${proposals.length}</button></div><div id="knowledge-list"></div><div class="table-count" id="knowledge-count"></div>`;
+  content.querySelectorAll('[data-lifecycle]').forEach(b=>b.onclick=()=>{state.lifecycle=b.dataset.lifecycle;renderKnowledgeList();content.querySelectorAll('[data-lifecycle]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-selected',String(x===b))})});
   el('knowledge-search').oninput=e=>{state.query=e.target.value;renderKnowledgeList()};
+  el('knowledge-project').onchange=e=>{state.project=e.target.value;renderKnowledgeList()};
+  el('knowledge-kind').onchange=e=>{state.kind=e.target.value;renderKnowledgeList()};
   el('knowledge-refresh').onclick=()=>go('knowledge',true);
   el('create-knowledge').onclick=()=>openKnowledge(null);
-  el('reprocess-knowledge').onclick=()=>busy(el('reprocess-knowledge'),async()=>{if(!confirm('用当前模型重新整理所有已授权资料？这会产生模型调用费用，已核实结论仍需按更新规则处理；被替代正文仅保存在历史中。'))return;const r=await api('knowledge/reprocess',{method:'POST'});notify(`已安排 ${r.queued} 份资料重新整理`)});
-  const automatic=document.createElement('p');automatic.className='field-note';
-  automatic.textContent=state.settings.knowledge_automation?.ready?'AI 自动维护已开启：授权资料中的新知识、明确补充和有证据的最新结论无需逐条确认；项目不明时先保留在当前会话。':'连接模型并授权数据源后，知识会自动持续整理。';
-  content.querySelector('.knowledge-maintenance').appendChild(automatic);
+  el('library-export').onclick=()=>downloadFile('export-wiki','WorkTwin-Wiki.zip');
+  el('reprocess-knowledge').onclick=()=>busy(el('reprocess-knowledge'),async()=>{if(!confirm('使用当前模型重新整理全部已授权资料？这会产生模型调用费用。'))return;const r=await api('knowledge/reprocess',{method:'POST'});notify(`已安排 ${r.queued} 份资料重新整理`)});
+  el('pending-materials').onclick=()=>{
+    dialog('待整理',materials.length?`<div class="pending-list">${materials.map(k=>`<button class="knowledge-row" data-pending-entry="${k.id}"><span class="knowledge-info"><b>${esc(k.title)}</b><small>${esc(entryProject(k))} · ${esc(k.unavailable_reason||'待归并为主题文章')}</small></span>${icon('chevron')}</button>`).join('')}</div>`:'<p class="muted">没有待整理材料</p>',`<button class="btn secondary" data-close>关闭</button>`,true);
+    el('overlay-root').querySelectorAll('[data-pending-entry]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.pendingEntry)));
+  };
+  el('knowledge-proposals').onclick=()=>{
+    dialog('更新建议',proposals.length?proposals.map(p=>`<button class="knowledge-row" data-proposal="${p.id}"><span class="knowledge-info"><b>${esc(p.previous_title)}</b><small>${esc(p.reason)}</small></span>${icon('chevron')}</button>`).join(''):'<p class="muted">没有待核对的更新</p>',`<button class="btn secondary" data-close>关闭</button>`,true);
+    el('overlay-root').querySelectorAll('[data-proposal]').forEach(b=>b.onclick=()=>openProposal(Number(b.dataset.proposal)));
+  };
   renderKnowledgeList();
-  if(state.scrollPosition){
-    const main=document.querySelector('.main-area');
-    if(main)requestAnimationFrame(()=>{main.scrollTop=state.scrollPosition});
-  }
+  if(state.scrollPosition)requestAnimationFrame(()=>document.querySelector('.main-area').scrollTop=state.scrollPosition);
 }
+function knowledgeStatus(k){return k.status==='archived'?['已归档','grey']:k.quality==='noise'?['已停用','grey']:k.can_use?['可用','']:['待处理','warn']}
 function renderKnowledgeList(){
-  const entries=visibleKnowledge().filter(k=>(state.project==='all'||entryProject(k)===state.project)&&(state.kind==='all'||k.kind===state.kind))
-    .filter(k=>(k.title+' '+k.body+' '+entryProject(k)).toLowerCase().includes(state.query.toLowerCase()));
-  content.querySelectorAll('.library-choice').forEach(x=>x.classList.toggle('active',x.dataset.project!==undefined?state.project===x.dataset.project:x.dataset.projectIndex!==undefined&&state.project===x.querySelector('.truncate')?.textContent));
-  content.querySelectorAll('.filter-button').forEach(x=>x.classList.toggle('active',state.kind===x.dataset.filter));
-  if(state.project==='reviews'){
-    el('knowledge-count').textContent=`${state.proposals.length} 项`;
-    el('knowledge-list').innerHTML=state.proposals.length?`<div class="knowledge-list">${state.proposals.map(p=>`<button class="knowledge-row" data-proposal="${p.id}"><span class="page-icon">${icon('alert')}</span><span class="knowledge-info"><div class="knowledge-title">${esc(p.previous_title)}</div><div class="knowledge-preview">${esc(p.origin==='curation'?'定期知识养护':{enrich:'建议补充知识',replace:'发现新版本结论',conflict:'发现可能矛盾的结论'}[p.action])} · ${short(p.reason,100)}</div><div class="knowledge-meta">${esc(p.project)} · ${esc(p.source_title)}</div></span><span class="state-label warn">待确认</span>${icon('chevron')}</button>`).join('')}</div>`:emptyState('check','暂无待核对的知识更新','当新资料与现有知识有关联或冲突时，会在这里等待你确认。');
-    el('knowledge-list').querySelectorAll('[data-proposal]').forEach(x=>x.onclick=()=>openProposal(Number(x.dataset.proposal)));
-    return;
-  }
-  el('knowledge-count').textContent=`${entries.length} 篇`;
-  el('knowledge-list').innerHTML=entries.length?`<div class="knowledge-list">${entries.map(k=>`<button class="knowledge-row" data-entry="${k.id}"><span class="page-icon">${icon(k.kind==='process'?'file':k.kind==='decision'?'check':'book')}</span><span class="knowledge-info"><div class="knowledge-title">${esc(k.title)}</div><div class="knowledge-preview">${short(k.body,150)}</div><div class="knowledge-meta">${esc(entryProject(k))} · ${esc(scopeNames[k.scope]||'范围待核对')} · ${esc(k.topic||kindNames[k.kind])} · 更新于 ${formatTime(k.updated_at)}</div></span>${k.quality==='noise'?`<span class="state-label grey">已停用</span>`:k.scope==='unknown'?`<span class="state-label warn">范围待核对</span>`:k.needs_review?`<span class="state-label warn">待核对</span>`:k.status==='draft'?`<span class="state-label grey">待确认</span>`:k.status==='archived'?`<span class="state-label grey">已归档</span>`:''}<span class="arrow-right">${icon('chevron')}</span></button>`).join('')}</div>`:
-    emptyState('book',state.query?'没有匹配的知识':'这里还没有知识',state.query?'尝试更短的关键词。':state.knowledge.length?'目前没有符合筛选条件的知识。':state.modelReady?'添加工作资料并允许 AI 整理后，知识会自动出现在这里。':'先选择个人版或企业版并完成模型连接，再授权一份工作资料。',!state.knowledge.length?`<button class="btn secondary small" id="goto-sources">前往信息采集 ${icon('arrow')}</button><button class="btn secondary small" id="goto-settings">${state.modelReady?'查看模型设置':'配置模型或加入企业'}</button>`:'');
-  el('goto-settings')?.addEventListener('click',()=>go('settings'));
-  el('goto-sources')?.addEventListener('click',()=>go('sources'));
-  el('knowledge-list').querySelectorAll('[data-entry]').forEach(x=>x.onclick=()=>openKnowledge(Number(x.dataset.entry)));
+  const entries=visibleKnowledge().filter(k=>(state.project==='all'||entryProject(k)===state.project)&&(state.kind==='all'||k.kind===state.kind)).filter(k=>(k.title+' '+k.body+' '+entryProject(k)).toLowerCase().includes(state.query.toLowerCase()));
+  const filtered=state.query||state.project!=='all'||state.kind!=='all'||state.lifecycle!=='active';
+  el('knowledge-count').textContent=`共 ${entries.length} 篇`;
+  el('knowledge-list').innerHTML=entries.length?`<div class="knowledge-table"><div class="knowledge-row table-head"><span>主题文章</span><span>适用范围</span><span>状态</span><span>更新时间</span></div>${entries.map(k=>{const [label,color]=knowledgeStatus(k);return `<button class="knowledge-row" data-entry="${k.id}"><span class="knowledge-info"><b>${esc(k.title)}</b><small>${esc(kindNames[k.kind])}</small></span><span>${esc(entryProject(k))}</span><span><i class="state-label ${color}">${label}</i></span><time>${esc(localUpdateTime(k.updated_at))}</time></button>`}).join('')}</div>`:emptyState('book',filtered?'没有符合筛选的文章':'还没有整理好的主题文章',filtered?'':state.knowledge.some(k=>k.organization==='material')?'已有材料可从“待整理”查看。':'连接知识来源后，文章会在这里持续更新。',filtered?'<button class="btn secondary" id="clear-knowledge-filters">清除筛选</button>':'<button class="btn secondary" id="connect-knowledge-source">连接来源</button>');
+  el('knowledge-list').querySelectorAll('[data-entry]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.entry)));
+  el('clear-knowledge-filters')?.addEventListener('click',()=>{state.query='';state.project='all';state.kind='all';state.lifecycle='active';go('knowledge',true)});
+  el('connect-knowledge-source')?.addEventListener('click',()=>go('sources',true));
 }
+
 async function openProposal(id){
   const p=state.proposals.find(x=>x.id===id);if(!p)return;
   const actionLabel=p.origin==='curation'?'知识养护建议':({enrich:'补充旧知识',replace:'替换为最新结论',conflict:'处理知识冲突'}[p.action]||'更新知识');
@@ -416,7 +328,7 @@ async function openKnowledge(id){
       k=fresh;
     }catch(e){offerRefresh('这篇知识已不存在或暂时无法读取，请刷新内容。');return;}
   }
-  el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="知识详情"><div class="drawer-top"><small>我的知识库 / ${esc(k?entryProject(k):'新知识')}</small><div class="drawer-actions">${k&&k.version>1?`<button class="btn secondary small" id="drawer-history-jump">变更日志</button><span class="soft-caption" style="white-space:nowrap">更新于 ${esc(localUpdateTime(k.updated_at))}</span>`:''}<button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></div><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
+  el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="${esc(k?.title||'新建知识')}"><header class="drawer-top"><h2>${esc(k?.title||'新建知识')}</h2><div class="drawer-actions">${k?`<button class="icon-button" id="drawer-history-jump" aria-label="变更日志" title="变更日志">${icon('history')}</button><span id="knowledge-more"></span>`:''}<button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></header><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
   el('drawer-mask').onclick=e=>{if(e.target.id==='drawer-mask')closeDrawer()};el('drawer-close').onclick=closeDrawer;
   document.addEventListener('keydown',onEscape);
   const details=el('drawer-inner'),footer=el('drawer-bottom');
@@ -424,22 +336,22 @@ async function openKnowledge(id){
   const sources=k?.evidence||[];
   const relations=k?await api(`knowledge/${k.id}/relations`):null;
   const versions=k?await api(`knowledge/${k.id}/history`):[];
-  function linkedSection(){if(!relations)return '';const groups=[['文中链接',relations.outgoing],['提到这篇的知识',relations.backlinks],['同一份资料的其他知识',relations.same_source]];return `<section class="source-reference"><h3>关联知识</h3>${groups.filter(([_,rows])=>rows.length).map(([name,rows])=>`<p class="soft-caption">${name}</p>${rows.map(r=>`<button class="info-link relation-link" data-open-knowledge="${r.id}">${esc(r.title)} ${icon('arrow')}</button>`).join('')}`).join('')||'<p class="soft-caption">暂无已确认的关联。编辑时可用 [[K编号|显示名称]] 添加链接。</p>'}${relations.unresolved_ids.length?'<p class="field-note">部分链接已失效或知识需要复核。</p>':''}</section>`}
-  function historySection(){return versions.length?`<section class="source-reference" id="knowledge-history"><h3>变更历史</h3><p class="field-note">选择历史版本，将其内容复制为新的当前版本。原版本历史仍会保留，当前项目归属和来源权限不变。</p>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${formatTime(v.changed_at)} · ${esc(v.title)}</summary><div class="proposal-body">${esc(v.body)}</div><button class="btn secondary small" data-restore-version="${v.version}">回退至 v${v.version}</button></details>`).join('')}</section>`:''}
-  function referenceRows(){return sources.length?`<section class="source-reference"><h3>来源依据 <span class="soft-caption">${sources.length} 条</span></h3>${sources.map((e,i)=>`<div class="reference-row"><div class="ref-title">${icon('file')} ${esc(e.document_title)}</div><div class="ref-quote">${short(e.quote,550)}</div>${!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':e.superseded?'<span class="state-label grey">旧版历史引用</span>':`<button data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`}</div>`).join('')}</section>`:''}
-  function view(){details.innerHTML=`<div class="drawer-category"><span class="page-icon">${icon('book')}</span> ${esc(kindNames[k?.kind]||'个人知识')}</div><h1 class="drawer-title">${esc(k?.title||'新知识')}</h1><div class="drawer-meta">${k?.needs_review?'<span class="state-label warn">原始依据待核实</span>':k?.status==='confirmed'?(k?.created_by==='enterprise_ai'?'<span class="state-label">AI 自动生效</span>':'<span class="state-label">已人工确认</span>'):k?.status==='archived'?'<span class="state-label grey">已归档</span>':'<span class="state-label grey">待确认</span>'}<span>${esc(entryProject(k||{evidence:[]}))}</span><span>${k?'版本 '+k.version:''}</span></div><section class="knowledge-scope"><b>适用范围</b><p>${esc(scopeNames[k?.scope]||'范围待核对')} · ${esc(k?.scope_detail||'请核对该要求适用于哪个项目、对象或条件')}</p><b>主题</b><p>${esc(k?.topic||'待核对')}</p>${k?.quality_reason?`<p class="field-note">${esc(k.quality_reason)}</p>`:''}${k?.outcome!=='none'&&outcomeNames[k?.outcome]?`<span class="state-label warn">${esc(outcomeNames[k.outcome])}</span>`:''}</section><div class="drawer-body markdown-body">${k?.rendered_body||esc(k?.body||'')}</div>${referenceRows()}${linkedSection()}${historySection()}`;
-    footer.innerHTML=`${k?.status==='archived'?'<button class="btn secondary" id="restore-entry">恢复为待确认</button>':k?'<button class="btn secondary" id="archive-entry">归档知识</button>':''}${k&&(k.kind==='preference'||k.status==='archived')?'<button class="btn danger" id="delete-entry">彻底删除</button>':''}${k&&k.status==='draft'&&k.scope!=='unknown'&&k.quality==='useful'?'<button class="btn secondary" id="confirm-entry">确认内容</button>':''}${k&&k.quality!=='noise'?'<button class="btn secondary" id="disable-entry">停用知识</button>':''}<button class="btn" id="edit-entry">${icon('file')} 编辑内容</button>`;
+  function linkedSection(){if(!relations)return '';const groups=[['文中链接',relations.outgoing],['提到这篇的知识',relations.backlinks],['同一份资料的其他知识',relations.same_source]];return `<details class="source-reference"><summary>关联文章</summary>${groups.filter(([_,rows])=>rows.length).map(([name,rows])=>`<h4>${name}</h4>${rows.map(r=>`<button class="info-link relation-link" data-open-knowledge="${r.id}">${esc(r.title)} ${icon('arrow')}</button>`).join('')}`).join('')||'<p class="muted">暂无关联文章</p>'}${relations.unresolved_ids.length?'<p class="field-note">部分链接已失效或需要复核。</p>':''}</details>`}
+  function historyView(){
+    if(state.overlayDirty){notify('请先保存或取消编辑');return}
+    details.innerHTML=`<h3>变更日志</h3><div class="history-version"><b>v${k.version} · 当前版本</b><p class="field-note">${esc(localUpdateTime(k.updated_at))}</p></div>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${esc(localUpdateTime(v.changed_at))}</summary><h4>${esc(v.title)}</h4><div class="proposal-body">${esc(v.body)}</div><button class="btn secondary small" data-restore-version="${v.version}">回退至此版本</button></details>`).join('')}`;
+    footer.innerHTML='<button class="btn secondary" id="history-back">返回正文</button>';
+    el('history-back').onclick=view;
     details.querySelectorAll('[data-restore-version]').forEach(b=>b.onclick=()=>busy(b,async()=>{
       const version=Number(b.dataset.restoreVersion);
-      if(!confirm(`回退至 v${version}？该版本将被复制为新的当前版本，原有变更历史不会删除。`))return;
-      try{
-        const r=await api(`knowledge/${k.id}/versions/${version}/restore`,{method:'POST'});
-        closeOverlay(true);
-        notify(`已回退至 v${version}，创建新版本 v${r.version}`);
-        await go('knowledge',true);
-        await openKnowledge(k.id);
-      }catch(e){notify(e.message)}
+      if(!confirm(`回退至 v${version}？该内容将保存为新版本。`))return;
+      if(await perform(()=>api(`knowledge/${k.id}/versions/${version}/restore`,{method:'POST'}))){closeOverlay(true);await go('knowledge',true);await openKnowledge(k.id)}
     }));
+  }
+  function referenceRows(){return `<details class="source-reference"><summary>来源依据 <span class="muted">${sources.length} 条</span></summary>${sources.length?sources.map((e,i)=>`<div class="reference-row"><b>${esc(e.document_title)}</b><blockquote>${esc(e.quote)}</blockquote>${!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':e.superseded?'<span class="state-label grey">旧版历史引用</span>':`<button class="info-link" data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`}</div>`).join(''):'<p class="muted">人工创建</p>'}${k?.parts?.length?`<details class="article-parts"><summary>查看文章各部分依据</summary>${k.parts.map(part=>`<div class="reference-row"><b>${esc(part.title)}</b><p>${esc(part.body)}</p><blockquote>${esc(part.quote)}</blockquote>${part.document_id?`<button class="info-link" data-read-source="${part.document_id}">查看原始资料</button>`:''}</div>`).join('')}</details>`:''}</details>`}
+  function view(){const [label,color]=knowledgeStatus(k);details.innerHTML=`<div class="drawer-meta"><span class="state-label ${color}">${label}</span><span>${esc(kindNames[k.kind])}</span><span>${esc(entryProject(k))}</span><span>v${k.version}</span><time>${esc(localUpdateTime(k.updated_at))}</time></div>${!k.can_use&&k.unavailable_reason?`<p class="status-note warn">${esc(k.unavailable_reason)}</p>`:''}${k.scope_detail?`<p class="article-condition">${esc(k.scope_detail)}</p>`:''}<article class="drawer-body markdown-body">${k.rendered_body||esc(k.body)}</article>${referenceRows()}${linkedSection()}`;
+    footer.innerHTML='<button class="btn" id="edit-entry">编辑</button>';
+    el('knowledge-more').innerHTML=`<details class="action-menu"><summary class="icon-button" aria-label="知识操作">${icon('ellipsis')}</summary><div>${k.status==='archived'?'<button id="restore-entry">恢复为待确认</button>':'<button id="archive-entry">归档</button>'}${k.kind==='preference'||k.status==='archived'?'<button id="delete-entry">彻底删除</button>':''}${k.status==='draft'&&k.scope!=='unknown'&&k.quality==='useful'?'<button id="confirm-entry">确认内容</button>':''}${k.quality!=='noise'?'<button id="disable-entry">停用</button>':''}</div></details>`;
     details.querySelectorAll('[data-open-knowledge]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.openKnowledge)));
     details.querySelectorAll('.markdown-body a[href^="#knowledge-"]').forEach(a=>a.onclick=e=>{e.preventDefault();openKnowledge(Number(a.getAttribute('href').slice(11)))});
     el('edit-entry').onclick=edit;
@@ -454,7 +366,13 @@ async function openKnowledge(id){
     if(!title.trim()||!body.trim()){notify('标题和正文不能为空');return}
     try{const payload={title:title.trim(),body:body.trim(),kind,status,...metadata,...(k?{expected_version:k.version}:{})};await api(k?`knowledge/${k.id}`:'knowledge',{method:k?'PUT':'POST',body:payload});closeOverlay(true);notify('知识已保存');await go('knowledge',true)}catch(e){notify(e.message)}
   }
-  function edit(){details.innerHTML=`<div class="drawer-category">编辑知识文档</div><div class="field" style="margin-top:20px"><input id="edit-k-title" class="edit-title" maxlength="130" value="${esc(originalTitle)}" placeholder="知识标题"/></div><div class="field"><label for="edit-k-kind">知识类型</label><select id="edit-k-kind">${[['fact','业务知识'],['decision','决策记录'],['process','流程指引'],['preference','个人偏好']].map(([id,name])=>`<option value="${id}" ${k?.kind===id?'selected':''}>${name}</option>`).join('')}</select></div><div class="field"><label for="edit-k-scope">适用范围</label><select id="edit-k-scope">${Object.entries(scopeNames).map(([id,name])=>`<option value="${id}" ${(k?.scope||'global')===id?'selected':''}>${esc(name)}</option>`).join('')}</select><div class="field-note">局部要求只适用于所属项目或本次讨论。仅明确通用的规则选择“跨项目通用”。</div></div><div class="field"><label for="edit-k-project">所属项目 / 讨论名称</label><input id="edit-k-project" maxlength="200" value="${esc(k?.project||'')}" placeholder="如：Mingo 提示词库"/></div><div class="field"><label for="edit-k-topic">主题</label><input id="edit-k-topic" maxlength="100" value="${esc(k?.topic||k?.title||'')}" placeholder="如：提示词交付规范"/></div><div class="field"><label for="edit-k-scope-detail">具体适用对象与条件</label><input id="edit-k-scope-detail" maxlength="500" value="${esc(k?.scope_detail||(!k?'跨项目适用的人工知识':''))}" placeholder="如：仅用于 Mingo 提示词的正式交付版本"/></div><div class="field"><label for="edit-k-quality">内容是否有可复用价值</label><select id="edit-k-quality"><option value="useful" ${k?.quality==='useful'||!k?'selected':''}>有明确价值，可以使用</option><option value="uncertain" ${k?.quality==='uncertain'?'selected':''}>待核对，暂不使用</option><option value="noise" ${k?.quality==='noise'?'selected':''}>低价值，停用</option></select></div><div class="field"><label for="edit-k-body">知识正文</label><textarea id="edit-k-body" class="edit-body" spellcheck="false" placeholder="在这里写下知识内容；支持 Markdown；知识链接写作 [[K编号|显示名称]]。">${esc(originalBody)}</textarea></div><label class="check-row"><input id="edit-k-confirmed" type="checkbox" ${k?.status==='confirmed'||!k?'checked':''}/> <span>标记为内容已核对</span></label>${referenceRows()}`;
+  function edit(){details.innerHTML=`<div class="drawer-category">编辑知识文档</div><div class="field" style="margin-top:20px"><input id="edit-k-title" class="edit-title" maxlength="130" value="${esc(originalTitle)}" placeholder="知识标题"/></div><div class="field"><label for="edit-k-kind">知识类型</label><select id="edit-k-kind">${[['fact','业务知识'],['decision','决策记录'],['process','流程指引'],['preference','个人偏好']].map(([id,name])=>`<option value="${id}" ${k?.kind===id?'selected':''}>${name}</option>`).join('')}</select></div><div class="field"><label for="edit-k-scope">适用范围</label><select id="edit-k-scope">${Object.entries(scopeNames).map(([id,name])=>`<option value="${id}" ${(k?.scope||'global')===id?'selected':''}>${esc(name)}</option>`).join('')}</select><div class="field-note">局部要求只适用于所属项目或本次讨论。仅明确通用的规则选择“跨项目通用”。</div></div><div class="field"><label for="edit-k-project">所属项目 / 讨论名称</label><input id="edit-k-project" maxlength="200" value="${esc(k?.project||'')}" placeholder="如：Mingo 提示词库"/></div><div class="field"><label for="edit-k-topic">主题</label><input id="edit-k-topic" maxlength="100" value="${esc(k?.topic||k?.title||'')}" placeholder="如：提示词交付规范"/></div><div class="field"><label for="edit-k-scope-detail">具体适用对象与条件</label><input id="edit-k-scope-detail" maxlength="500" value="${esc(k?.scope_detail||(!k?'跨项目适用的人工知识':''))}" placeholder="如：仅用于 Mingo 提示词的正式交付版本"/></div><div class="field"><label for="edit-k-quality">内容是否有可复用价值</label><select id="edit-k-quality"><option value="useful" ${k?.quality==='useful'||!k?'selected':''}>有明确价值，可以使用</option><option value="uncertain" ${k?.quality==='uncertain'?'selected':''}>待核对，暂不使用</option><option value="noise" ${k?.quality==='noise'?'selected':''}>低价值，停用</option></select></div><div class="field"><label for="edit-k-body">知识正文</label><textarea id="edit-k-body" class="edit-body" spellcheck="false" placeholder="在这里写下知识内容；支持 Markdown；知识链接写作 [[K编号|显示名称]]。">${esc(originalBody)}</textarea></div><label class="check-row"><input id="edit-k-confirmed" type="checkbox" ${k?.status==='confirmed'?'checked':''}/> <span>标记为内容已核对</span></label>${referenceRows()}`;
+    const bodyField=el('edit-k-body').closest('.field');
+    details.insertBefore(bodyField,el('edit-k-kind').closest('.field'));
+    const metadata=document.createElement('details');metadata.className='edit-metadata';metadata.innerHTML='<summary>范围与属性</summary>';
+    bodyField.after(metadata);
+    ['edit-k-kind','edit-k-scope','edit-k-project','edit-k-topic','edit-k-scope-detail','edit-k-quality'].forEach(id=>metadata.append(el(id).closest('.field')));
+    el('edit-k-body').maxLength=50000;
     footer.innerHTML=`<button class="btn secondary" id="cancel-edit">取消</button><button class="btn" id="save-entry">保存知识 <span class="kbd-hint">⌘S / Ctrl+S</span></button>`;
     ['edit-k-title','edit-k-body','edit-k-kind','edit-k-confirmed','edit-k-scope','edit-k-project','edit-k-topic','edit-k-scope-detail','edit-k-quality'].forEach(id=>{el(id).addEventListener('input',()=>state.overlayDirty=true);el(id).addEventListener('change',()=>state.overlayDirty=true)});
     el('cancel-edit').onclick=()=>{if(state.overlayDirty&&!confirm('放弃尚未保存的修改？'))return;state.overlayDirty=false;k?view():closeDrawer()};
@@ -463,10 +381,7 @@ async function openKnowledge(id){
     details.querySelectorAll('[data-read-source]').forEach(x=>x.onclick=()=>showDocument(Number(x.dataset.readSource)));
   }
   if(k)view();else edit();
-  el('drawer-history-jump')?.addEventListener('click',()=>{
-    if(!el('knowledge-history'))view();
-    el('knowledge-history')?.scrollIntoView({behavior:'smooth',block:'start'});
-  });
+  el('drawer-history-jump')?.addEventListener('click',historyView);
 }
 async function showDocument(id){
   try{
@@ -505,7 +420,7 @@ async function renderTwins(){
   state.twins=await api('twins');
   if(state.twinId && !state.twins.some(t=>t.id===state.twinId))state.twinId=null;
   if(state.twinId){await renderTwinEditor(state.twinId);return}
-  content.innerHTML=pageHeader('DIGITAL TWINS','我的数字分身','为不同协作者创建分身，按项目或来源授权一次，后续新知识自动继承。',`<button class="btn" id="add-twin">${icon('plus')} 创建数字分身</button>`)+
+  content.innerHTML=pageHeader('DIGITAL TWINS','数字分身','为不同协作者创建分身，按项目或来源授权一次，后续新知识自动继承。',`<button class="btn" id="add-twin">${icon('plus')} 创建数字分身</button>`)+
     (state.twins.length?`<div class="twin-cards">${state.twins.map((t,i)=>`<button class="twin-card" data-twin="${t.id}"><div class="twin-icon">${icon('user')}</div><div class="twin-title">${esc(t.name)}</div><div class="twin-description">${esc(t.description||'只基于你指定的知识提供回答。')}</div><div class="twin-bottom"><span>${t.knowledge_count} 篇可使用知识</span><span>配置分身 ${icon('arrow')}</span></div></button>`).join('')}</div>`:
     emptyState('users','还没有创建数字分身','创建第一个分身，并从你的知识库勾选它能够使用的内容。',`<button class="btn" id="empty-add-twin">创建第一个分身</button>`));
   el('add-twin')?.addEventListener('click',createTwin);
@@ -513,7 +428,7 @@ async function renderTwins(){
   content.querySelectorAll('[data-twin]').forEach(x=>x.onclick=()=>{state.twinId=Number(x.dataset.twin);go('twins',true)});
 }
 function createTwin(){
-  dialog('创建数字分身',`<div class="field"><label for="twin-name">分身名称</label><input id="twin-name" placeholder="例如：项目交接助手" maxlength="90" autofocus/></div><div class="field"><label for="twin-desc">给它一个用途（可选）</label><textarea id="twin-desc" rows="3" maxlength="500" placeholder="例如：回答关于项目方案、历史决策和操作方法的问题"></textarea></div><div class="permission-note">创建后可选择项目或来源进行长期授权；新知识也会自动继承。仍支持逐条选择和排除。</div>`,
+  dialog('创建数字分身',`<div class="field"><label for="twin-name">分身名称</label><input id="twin-name" placeholder="例如：项目交接助手" maxlength="90" autofocus/></div><div class="field"><label for="twin-desc">给它一个用途（可选）</label><textarea id="twin-desc" rows="3" maxlength="500" placeholder="例如：回答关于项目方案、历史决策和操作方法的问题"></textarea></div><div class="permission-note">创建后选择它可以使用的知识。</div>`,
     `<button class="btn secondary" data-close>取消</button><button class="btn" id="submit-twin">创建并选择知识</button>`);
   el('submit-twin').onclick=async()=>{
     const name=el('twin-name').value.trim();if(!name){notify('请输入分身名称');return}
@@ -521,124 +436,69 @@ function createTwin(){
   };
 }
 async function renderTwinEditor(id){
-  const [t,knowledge,grantOptions]=await Promise.all([api(`twins/${id}`),loadKnowledge(),api('twin-grant-options')]);
+  const [t,knowledge,grantOptions,preview]=await Promise.all([api(`twins/${id}`),loadKnowledge(),api('twin-grant-options'),api(`twins/${id}/preview`)]);
   state.knowledge=knowledge;
-  const eligible=state.knowledge.filter(k=>k.status!=='archived').sort((a,b)=>entryProject(a).localeCompare(entryProject(b),'zh-CN'));
-  const selected=new Set(t.knowledge_ids);
-  const originalRules=t.grants||[];
-  const allowProjects=new Set(originalRules.filter(g=>g.subject_type==='project'&&g.effect==='allow').map(g=>g.subject_key));
-  const allowSources=new Set(originalRules.filter(g=>g.subject_type==='source'&&g.effect==='allow').map(g=>g.subject_key));
-  let allowGlobal=originalRules.some(g=>g.subject_type==='global'&&g.effect==='allow');
-  const excludedNotes=new Set(originalRules.filter(g=>g.effect==='deny'&&g.subject_type==='knowledge').map(g=>g.subject_key));
-  const preservedRules=originalRules.filter(g=>(g.effect==='deny'&&g.subject_type!=='knowledge')||
-    (g.effect==='allow'&&g.subject_type==='knowledge'));
-  const preview=await api(`twins/${id}/preview`);
+  const eligible=knowledge.filter(k=>k.status!=='archived'||t.knowledge_ids.includes(k.id));
   const effective=new Set(preview.knowledge.filter(k=>!k.local_reason).map(k=>k.id));
+  const selected=new Set(t.knowledge_ids),rules=t.grants||[];
+  const projects=new Set(rules.filter(g=>g.subject_type==='project'&&g.effect==='allow').map(g=>g.subject_key));
+  const sources=new Set(rules.filter(g=>g.subject_type==='source'&&g.effect==='allow').map(g=>g.subject_key));
+  const explicitRules=rules.filter(g=>g.subject_type==='knowledge'&&g.effect==='allow');
+  let allowGlobal=rules.some(g=>g.subject_type==='global'&&g.effect==='allow'),filter='all';
   const groups=[...new Set(eligible.map(entryProject))];
-  content.innerHTML=`<div class="back-row"><button id="twins-back">← 返回数字分身</button><span>/</span><strong>${esc(t.name)}</strong></div>`+
-    pageHeader('DIGITAL TWIN','配置 '+t.name,'只使用已生效、来源有效且由你授权的知识。')+
-    `<div class="status-note">已保存授权 ${preview.selected_count} 篇 · 可用于本地问答 ${preview.usable_count} 篇 · 可发布 ${preview.publishable_count} 篇${preview.knowledge.some(k=>k.share_reason)?`<details><summary>查看不能发布的原因</summary>${preview.knowledge.filter(k=>k.share_reason).map(k=>`<p>${esc(k.title)}：${esc(k.share_reason)}</p>`).join('')}</details>`:''}</div>`+
-    `<div class="twin-editor"><div class="twin-settings"><h2>基本信息</h2><div class="field"><label for="twin-edit-name">名称</label><input id="twin-edit-name" value="${esc(t.name)}" maxlength="90"/></div><div class="field"><label for="twin-edit-desc">使用场景</label><textarea id="twin-edit-desc" maxlength="500" rows="4">${esc(t.description)}</textarea></div><button class="btn secondary small" id="save-twin-info">保存分身配置</button>
-    <div class="divider"></div><h2>知识自动继承</h2><label class="check-row"><input id="twin-auto" type="checkbox" ${t.knowledge_mode==='dynamic'?'checked':''}/> <span>自动继承已授权项目与来源的新知识</span></label><p class="field-note">授权范围只在当前数字分身内生效；原始资料授权和远程分享权限仍单独检查。</p><div id="twin-rule-editor"><p class="soft-caption">授权项目</p><div class="selection-rule-list">${grantOptions.projects.map(p=>`<label class="check-row"><input type="checkbox" data-grant-project="${esc(p.project_key)}" ${allowProjects.has(p.project_key)?'checked':''}/><span>${esc(p.name)} · ${p.knowledge_count} 篇</span></label>`).join('')||'<p class="field-note">暂无可选项目，可先授权来源。</p>'}</div><p class="soft-caption">授权来源</p><div class="selection-rule-list">${grantOptions.sources.filter(src=>src.enabled&&src.allow_ai).map(src=>`<label class="check-row"><input type="checkbox" data-grant-source="${src.id}" ${allowSources.has(String(src.id))?'checked':''}/><span>${esc(src.name)}</span></label>`).join('')||'<p class="field-note">暂无允许 AI 整理的来源。</p>'}</div><label class="check-row"><input type="checkbox" id="twin-allow-global" ${allowGlobal?'checked':''}/> <span>包含跨项目通用知识</span></label></div><div class="divider"></div><h2>分身试问</h2><p class="soft-caption">仅依据右侧已保存的知识回答，不会读取未授权的原始文件。</p><label class="field-note" for="ask-scope">试问范围</label><select id="ask-scope"><option value="local">本地已保存授权</option><option value="published" ${state.shareReady?'':'disabled'}>服务端已发布版本</option></select><div class="field" style="margin-top:12px"><label for="ask-project">所属项目 / 讨论范围</label><select id="ask-project"><option value="">自动识别；范围不明时只用通用知识</option>${[...new Map(eligible.filter(k=>effective.has(k.id)&&k.project_key&&k.scope!=='global').map(k=>[k.project_key,k])).values()].map(k=>`<option value="${esc(k.project_key)}">${esc(entryProject(k))} · ${esc(scopeNames[k.scope])}</option>`).join('')}</select></div><div class="chat-composer"><input class="text-input" id="twin-question" placeholder="问它一个真实工作问题…"/><button class="btn small" id="twin-ask" ${state.modelReady?'':'disabled'}>${icon('arrow')}</button></div>${state.modelReady?'':'<p class="field-note">模型尚未配置，请前往设置完成连接。</p>'}<div id="twin-answer"></div><div class="divider"></div><h2>分享给协作者</h2><div id="sharing-panel">正在读取分享状态…</div><div class="divider"></div><button class="btn danger small" id="delete-twin">删除这个分身</button></div>
-    <div class="selection-panel"><div class="selection-head"><b>可使用的知识</b><span class="soft-caption" id="selected-count">已单独授权 ${selected.size} 篇</span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索并勾选知识…"/></div><div class="selection-filter-bar"><button type="button" class="selection-filter-btn active" data-twin-filter="all">全部</button><button type="button" class="selection-filter-btn" data-twin-filter="selected">仅已选 (${selected.size})</button><button type="button" class="selection-filter-btn" data-twin-filter="unselected">仅未选</button></div></div><div class="selection-list" id="selection-list"></div><div class="selection-footer"><span class="soft-caption">名称、用途和知识授权一起保存</span><button class="btn" id="save-selections">${icon('check')} 保存授权</button></div></div></div>`;
-  el('twins-back').onclick=()=>{if(!confirmDiscard())return;state.dirty=false;state.twinId=null;go('twins',true)};
-  let twinFilter='all';
-  function updateCounts(){
-    el('selected-count').textContent=`已选择 ${selected.size} 篇`;
-    content.querySelectorAll('[data-twin-filter="selected"]').forEach(b=>{b.textContent=`仅已选 (${selected.size})`});
-  }
+  const chat=state.chats[id]||={turns:[],scope:'local',project:'',revision:null};
+  content.innerHTML=`<button class="info-link back-link" id="twins-back">← 数字分身</button>`+pageHeader('',t.name,'')+`<div class="twin-workspace"><div class="tabs" role="tablist">${[['grants','知识授权'],['chat','试问'],['sharing','分享与访问'],['info','基本信息']].map(([key,name])=>`<button role="tab" data-twin-tab="${key}">${name}</button>`).join('')}</div><section data-twin-panel="grants">${t.grants_migrated?'<p class="status-note">已保留原可用知识，改为逐条选择。</p>':''}<div class="section-toolbar"><select id="twin-mode" aria-label="授权方式"><option value="dynamic" ${t.knowledge_mode==='dynamic'?'selected':''}>自动跟随授权</option><option value="manual" ${t.knowledge_mode==='manual'?'selected':''}>逐条选择知识</option></select><span class="muted">已保存授权 ${preview.selected_count} 篇 · 当前可用 ${preview.usable_count} 篇</span></div><section id="twin-rule-editor"><h3>授权范围</h3><div class="grant-grid"><section><h4>项目</h4>${grantOptions.projects.map(p=>`<label class="check-row"><input type="checkbox" data-grant-project="${esc(p.project_key)}" ${projects.has(p.project_key)?'checked':''}><span>${esc(p.name)}<small>${p.knowledge_count} 篇知识</small></span></label>`).join('')||'<p class="muted">暂无项目</p>'}</section><section><h4>来源</h4>${grantOptions.sources.filter(s=>s.allow_ai).map(s=>`<label class="check-row"><input type="checkbox" data-grant-source="${s.id}" ${sources.has(String(s.id))?'checked':''}>${esc(s.name)}</label>`).join('')||'<p class="muted">暂无可选来源</p>'}</section></div><label class="check-row"><input type="checkbox" id="twin-allow-global" ${allowGlobal?'checked':''}>包含跨项目通用知识</label></section><section class="selection-panel"><div class="selection-head"><b>单条知识</b><span class="muted" id="selected-count"></span></div><div class="selection-search"><div class="search-bar">${icon('search')}<input type="search" id="twin-search" placeholder="搜索知识"></div><div class="selection-filter-bar">${[['all','全部'],['selected','已选'],['unselected','未选']].map(([key,name])=>`<button class="selection-filter-btn ${key==='all'?'active':''}" data-twin-filter="${key}">${name}</button>`).join('')}</div></div><div class="selection-list" id="selection-list"></div></section></section><section data-twin-panel="chat" class="chat-panel"><div class="chat-toolbar"><select id="ask-scope" aria-label="试问版本"><option value="local">本地已保存授权</option><option value="published" ${state.shareReady?'':'disabled'}>服务端已发布版本</option></select><select id="ask-project" aria-label="试问范围"><option value="">自动判断范围</option>${[...new Map(eligible.filter(k=>effective.has(k.id)&&k.project_key&&k.scope!=='global').map(k=>[k.project_key,k])).values()].map(k=>`<option value="${esc(k.project_key)}">${esc(entryProject(k))}</option>`).join('')}</select><button class="btn secondary small" id="new-conversation">新会话</button></div><div class="chat-messages" id="twin-answer" role="log" aria-live="polite"></div><button class="new-message-link" id="chat-new-messages" hidden>查看新消息 ↓</button><div class="chat-composer"><textarea class="text-input" id="twin-question" rows="2" maxlength="500" placeholder="继续提问…" aria-label="消息"></textarea><button class="btn" id="twin-ask">发送</button></div><p id="chat-status" class="field-note"></p></section><section data-twin-panel="sharing"><section class="settings-group"><h3>分享链接</h3><div id="sharing-panel">正在读取分享状态…</div></section><section class="settings-group" id="mcp-panel"></section></section><section data-twin-panel="info"><div class="field"><label for="twin-edit-name">名称</label><input id="twin-edit-name" value="${esc(t.name)}" maxlength="90"></div><div class="field"><label for="twin-edit-desc">用途</label><textarea id="twin-edit-desc" maxlength="500" rows="3">${esc(t.description)}</textarea></div><button class="btn danger" id="delete-twin">删除分身</button></section><footer class="twin-footer"><button class="btn secondary" id="twin-done">完成</button><button class="btn" id="save-selections">保存配置</button></footer></div>`;
+  const editor=content.querySelector('.twin-workspace');
+  function back(){if(!confirmDiscard())return;state.dirty=false;state.twinId=null;go('twins',true)}
+  el('twins-back').onclick=back;el('twin-done').onclick=back;
+  function showTab(key){state.twinTab=key;content.querySelectorAll('[data-twin-tab]').forEach(b=>{const active=b.dataset.twinTab===key;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active))});content.querySelectorAll('[data-twin-panel]').forEach(p=>p.hidden=p.dataset.twinPanel!==key);content.querySelector('.twin-footer').hidden=key==='chat';if(key==='chat')requestAnimationFrame(scrollChat)}
+  content.querySelectorAll('[data-twin-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.twinTab));
+  function counts(){el('selected-count').textContent=`已选择 ${selected.size} 篇`}
   function renderSelection(){
-    const q=el('twin-search').value.toLowerCase().trim();
-    el('selection-list').innerHTML=eligible.length?groups.map(project=>{
-      const list=eligible.filter(k=>entryProject(k)===project &&(k.title+' '+k.body).toLowerCase().includes(q))
-        .filter(k=>twinFilter==='all'?true:twinFilter==='selected'?selected.has(k.id):!selected.has(k.id));
-      if(!list.length)return '';
-      return `<div class="selection-group"><span>${esc(project)} · ${list.length} 篇</span><div class="selection-group-actions"><button type="button" data-select-all="${esc(project)}">全选本组</button><button type="button" data-deselect-all="${esc(project)}">取消</button></div></div>${list.map(k=>`<label class="selection-row"><input type="checkbox" data-select-entry="${k.id}" ${selected.has(k.id)?'checked':''} ${availableToTwin(k)?'':'disabled'}/><span>${esc(k.title)}${!availableToTwin(k)?`<small class="field-note">${esc(k.unavailable_reason)}</small>`:k.share_unavailable_reason?`<small class="field-note">仅本地使用：${esc(k.share_unavailable_reason)}</small>`:''}<button class="info-link" type="button" data-inspect-note="${k.id}">查看知识与原因</button> · <button class="info-link" type="button" data-exclude-note="${k.id}">${excludedNotes.has(String(k.id))?'取消排除':'排除此知识'}</button></span></label>`).join('')}`;
-    }).join(''):emptyState('book','暂无可分配知识','请先在知识库生成或创建知识。');
-    el('selection-list').querySelectorAll('[data-select-entry]').forEach(b=>b.onchange=()=>{const v=Number(b.dataset.selectEntry);if(b.checked)selected.add(v);else selected.delete(v);state.dirty=true;updateCounts()});
-    el('selection-list').querySelectorAll('[data-inspect-note]').forEach(b=>b.onclick=e=>{e.preventDefault();e.stopPropagation();openKnowledge(Number(b.dataset.inspectNote))});
-    el('selection-list').querySelectorAll('[data-exclude-note]').forEach(b=>b.onclick=e=>{
-      e.preventDefault();e.stopPropagation();
-      const id=b.dataset.excludeNote;
-      if(excludedNotes.has(id))excludedNotes.delete(id);else excludedNotes.add(id);
-      state.dirty=true;renderSelection();
-    });
-    el('selection-list').querySelectorAll('[data-select-all]').forEach(b=>b.onclick=e=>{
-      e.preventDefault();
-      const p=b.dataset.selectAll;
-      eligible.filter(k=>entryProject(k)===p && availableToTwin(k)).forEach(k=>selected.add(k.id));
-      state.dirty=true;updateCounts();renderSelection();
-    });
-    el('selection-list').querySelectorAll('[data-deselect-all]').forEach(b=>b.onclick=e=>{
-      e.preventDefault();
-      const p=b.dataset.deselectAll;
-      eligible.filter(k=>entryProject(k)===p).forEach(k=>selected.delete(k.id));
-      state.dirty=true;updateCounts();renderSelection();
-    });
+    const q=el('twin-search').value.toLowerCase();
+    el('selection-list').innerHTML=groups.map(project=>{const rows=eligible.filter(k=>entryProject(k)===project&&(k.title+' '+k.body).toLowerCase().includes(q)&&(filter==='all'||(filter==='selected'?selected.has(k.id):!selected.has(k.id))));return rows.length?`<div class="selection-group"><span>${esc(project)}</span><span class="selection-group-actions"><button data-select-all="${esc(project)}">全选</button><button data-deselect-all="${esc(project)}">取消</button></span></div>${rows.map(k=>`<div class="selection-row"><input type="checkbox" aria-label="授权 ${esc(k.title)}" data-select-entry="${k.id}" ${selected.has(k.id)?'checked':''} ${availableToTwin(k)||selected.has(k.id)?'':'disabled'}><span>${esc(k.title)}${!availableToTwin(k)?`<small>${esc(k.unavailable_reason)}</small>`:''}</span><button class="info-link" data-inspect-note="${k.id}">查看</button></div>`).join('')}`:''}).join('')||'<p class="empty-copy">暂无符合条件的知识</p>';
+    el('selection-list').querySelectorAll('[data-select-entry]').forEach(b=>b.onchange=()=>{b.checked?selected.add(Number(b.dataset.selectEntry)):selected.delete(Number(b.dataset.selectEntry));state.dirty=true;counts()});
+    el('selection-list').querySelectorAll('[data-inspect-note]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.inspectNote)));
+    for(const [attr,add] of [['selectAll',true],['deselectAll',false]])el('selection-list').querySelectorAll(add?'[data-select-all]':'[data-deselect-all]').forEach(b=>b.onclick=()=>{eligible.filter(k=>entryProject(k)===b.dataset[attr]&&(!add||availableToTwin(k))).forEach(k=>add?selected.add(k.id):selected.delete(k.id));state.dirty=true;renderSelection();counts()});
   }
-  content.querySelectorAll('[data-twin-filter]').forEach(b=>b.onclick=()=>{
-    twinFilter=b.dataset.twinFilter;
-    content.querySelectorAll('[data-twin-filter]').forEach(x=>x.classList.toggle('active',x===b));
-    renderSelection();
-  });
-  el('twin-search').oninput=renderSelection;renderSelection();
-  content.querySelectorAll('[data-grant-project]').forEach(box=>box.onchange=()=>{
-    if(box.checked)allowProjects.add(box.dataset.grantProject);else allowProjects.delete(box.dataset.grantProject);
-    state.dirty=true;
-  });
-  content.querySelectorAll('[data-grant-source]').forEach(box=>box.onchange=()=>{
-    if(box.checked)allowSources.add(box.dataset.grantSource);else allowSources.delete(box.dataset.grantSource);
-    state.dirty=true;
-  });
-  el('twin-allow-global').onchange=()=>{allowGlobal=el('twin-allow-global').checked;state.dirty=true};
-  el('twin-auto').onchange=()=>{state.dirty=true};
-  async function saveTwin(button){
-    if(button.disabled)return;
-    const form=content.querySelector('.twin-editor');
-    const controls=[...form.querySelectorAll('#twin-edit-name,#twin-edit-desc,#twin-search,[data-select-entry],[data-select-all],[data-deselect-all],[data-twin-filter],[data-grant-project],[data-grant-source],#twin-auto,#twin-allow-global,#save-twin-info,#save-selections')];
-    const disabled=controls.map(control=>control.disabled);
-    controls.forEach(control=>control.disabled=true);
-    try{
-    const name=el('twin-edit-name').value.trim();if(!name){notify('名称不能为空');return}
-    const valid=[...selected].filter(v=>availableToTwin(eligible.find(k=>k.id===v)||{}));
-    const grants=[...preservedRules,
-      ...[...excludedNotes].map(key=>({subject_type:'knowledge',subject_key:key,effect:'deny'})),
-      ...[...allowProjects].map(key=>({subject_type:'project',subject_key:key,effect:'allow'})),
-      ...[...allowSources].map(key=>({subject_type:'source',subject_key:key,effect:'allow'})),
-      ...(allowGlobal?[{subject_type:'global',subject_key:'*',effect:'allow'}]:[])];
-    if(await perform(()=>api(`twins/${id}`,{method:'PUT',body:{name,
-        description:el('twin-edit-desc').value,knowledge_ids:valid,
-        knowledge_mode:el('twin-auto').checked?'dynamic':'manual',grants}}),null)){
-      if(!form.isConnected)return;
-      state.dirty=false;notify(`分身信息和 ${valid.length} 篇知识授权已保存${valid.length<selected.size?'；不可用知识已移出授权':''}`);await go('twins',true)
-    }
-    }finally{controls.forEach((control,index)=>{if(control.isConnected)control.disabled=disabled[index]})}
-  }
-  el('save-selections').onclick=()=>saveTwin(el('save-selections'));
-  el('save-twin-info').onclick=()=>saveTwin(el('save-twin-info'));
+  el('twin-search').oninput=renderSelection;
+  content.querySelectorAll('[data-twin-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.twinFilter;content.querySelectorAll('[data-twin-filter]').forEach(x=>x.classList.toggle('active',x===b));renderSelection()});
+  content.querySelectorAll('[data-grant-project]').forEach(b=>b.onchange=()=>{b.checked?projects.add(b.dataset.grantProject):projects.delete(b.dataset.grantProject);state.dirty=true});
+  content.querySelectorAll('[data-grant-source]').forEach(b=>b.onchange=()=>{b.checked?sources.add(b.dataset.grantSource):sources.delete(b.dataset.grantSource);state.dirty=true});
+  el('twin-allow-global').onchange=e=>{allowGlobal=e.target.checked;state.dirty=true};
+  function mode(){el('twin-rule-editor').hidden=el('twin-mode').value!=='dynamic'}
+  el('twin-mode').onchange=()=>{if(el('twin-mode').value==='manual'&&t.knowledge_mode==='dynamic'){preview.knowledge.filter(k=>!k.local_reason).forEach(k=>selected.add(k.id));renderSelection();counts()}mode();state.dirty=true};mode();counts();renderSelection();
   watchChanges(el('twin-edit-name'));watchChanges(el('twin-edit-desc'));
-  el('delete-twin').onclick=()=>busy(el('delete-twin'),async()=>{if(!confirm('删除这个数字分身并停止其分享？知识库会保留。'))return;if(await perform(()=>api(`twins/${id}`,{method:'DELETE'}),null)){state.dirty=false;state.twinId=null;await go('twins',true)}});
-  el('ask-scope').onchange=()=>{el('twin-ask').disabled=el('ask-scope').value==='published'?!state.shareReady:!state.modelReady};
-  function renderChat(){el('twin-answer').innerHTML=(state.chats[id]||[]).map(turn=>`<div class="chat-question">${esc(turn.question)} <small>${turn.scope==='published'?'已发布版本':'本地授权'}</small></div>`+(turn.loading?`<div class="chat-loading"><div class="chat-loading-dots"><span></span><span></span><span></span></div><span>正在检索并提炼授权知识…</span></div>`:`<div class="chat-output">${esc(turn.answer)}</div><div class="citation-links">${turn.citations.map(c=>`<button class="info-link" data-citation="${c.knowledge_id}">[K${c.knowledge_id}] ${esc(c.title)}</button>`).join('')}</div>`)).join('');el('twin-answer').querySelectorAll('[data-citation]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.citation)))}
-  renderChat();
-  el('twin-question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();el('twin-ask').click()}});
-  el('twin-ask').onclick=()=>busy(el('twin-ask'),async()=>{
-    const question=el('twin-question').value.trim();if(question.length<2){notify('请至少输入两个字');return}
-    if(state.dirty){notify('请先保存名称、用途和知识授权，再试问');return}
-    const scope=el('ask-scope').value;const turn={question,scope,answer:'',citations:[],loading:true};(state.chats[id]||=[]).push(turn);renderChat();
-    try{const r=await api(`twins/${id}/ask`,{method:'POST',body:{question,scope,project_key:el('ask-project').value||null}});turn.answer=r.answer;turn.citations=r.citations;turn.loading=false;el('twin-question').value=''}catch(e){turn.answer=e.message;turn.loading=false}renderChat();
+  el('save-selections').onclick=()=>busy(el('save-selections'),async()=>{
+    const name=el('twin-edit-name').value.trim();if(!name){notify('名称不能为空');return}
+    const inputs=[...editor.querySelectorAll('input,textarea,select')];inputs.forEach(input=>input.dataset.wasDisabled=String(input.disabled));inputs.forEach(input=>input.disabled=true);
+    const grants=el('twin-mode').value==='dynamic'?[...explicitRules,...[...projects].map(key=>({subject_type:'project',subject_key:key,effect:'allow'})),...[...sources].map(key=>({subject_type:'source',subject_key:key,effect:'allow'})),...(allowGlobal?[{subject_type:'global',subject_key:'*',effect:'allow'}]:[])]:[];
+    if(await perform(()=>api(`twins/${id}`,{method:'PUT',body:{name,description:el('twin-edit-desc').value,knowledge_ids:[...selected],knowledge_mode:el('twin-mode').value,grants}}))){state.dirty=false;chat.turns=[];chat.revision=null;notify('配置已保存');await go('twins',true)}
+    if(editor.isConnected)inputs.forEach(input=>input.disabled=input.dataset.wasDisabled==='true');
   });
-  // Bind editing controls before loading optional remote sharing information.
-  const mcpPanel=document.createElement('section');mcpPanel.id='mcp-panel';mcpPanel.className='source-reference';
-  el('sharing-panel').parentElement.insertBefore(mcpPanel,el('sharing-panel').previousElementSibling);
-  await renderMcp(id);
-  await renderSharing(id);
+  el('delete-twin').onclick=()=>busy(el('delete-twin'),async()=>{if(confirm('删除分身并停止分享？知识库会保留。')&&await perform(()=>api(`twins/${id}`,{method:'DELETE'}))){state.dirty=false;state.twinId=null;delete state.chats[id];await go('twins',true)}});
+  function scrollChat(){const list=el('twin-answer');list.scrollTop=list.scrollHeight;el('chat-new-messages').hidden=true}
+  function renderChat(force=false){if(!editor.isConnected)return;updateChatStatus();const pending=chat.turns.some(turn=>turn.loading);['ask-scope','ask-project','new-conversation'].forEach(key=>el(key).disabled=pending);if(chat.retryQuestion&&!el('twin-question').value){el('twin-question').value=chat.retryQuestion;delete chat.retryQuestion}const list=el('twin-answer'),nearBottom=list.scrollHeight-list.scrollTop-list.clientHeight<72;list.innerHTML=chat.turns.length?chat.turns.map(turn=>`<div class="chat-message user"><span class="chat-avatar">你</span><div>${esc(turn.question)}</div></div><div class="chat-message assistant"><span class="chat-avatar">W</span><div>${turn.loading?'<span class="chat-loading">正在回答…</span>':`<div class="chat-text">${esc(turn.answer)}</div>${turn.citations.length?`<div class="citation-links">${turn.citations.map(c=>`<button class="info-link" data-citation="${c.knowledge_id}">[K${c.knowledge_id}] ${esc(c.title)}</button>`).join('')}</div>`:''}`}</div></div>`).join(''):'<div class="chat-empty">向分身提问，验证它如何使用已授权知识。</div>';list.querySelectorAll('[data-citation]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.citation)));if(force||nearBottom)scrollChat();else el('chat-new-messages').hidden=false}
+  function resetChat(){chat.turns=[];chat.revision=null;chat.scope=el('ask-scope').value;chat.project=el('ask-project').value;renderChat(true);updateChatStatus()}
+  function updateChatStatus(){const ready=chat.scope==='published'?state.shareReady:state.modelReady;el('twin-ask').disabled=!ready||chat.turns.some(turn=>turn.loading);el('chat-status').textContent=ready?'Enter 发送 · Shift+Enter 换行':'请先配置'+(chat.scope==='published'?'分享服务':'模型')}
+  el('ask-scope').value=chat.scope;el('ask-project').value=chat.project;
+  el('new-conversation').onclick=resetChat;el('ask-scope').onchange=resetChat;el('ask-project').onchange=resetChat;el('chat-new-messages').onclick=scrollChat;
+  el('twin-question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();el('twin-ask').click()}};
+  el('twin-ask').onclick=()=>busy(el('twin-ask'),async()=>{
+    if(state.dirty){notify('请先保存配置，再开始试问');return}
+    const question=el('twin-question').value.trim();if(question.length<2){notify('请至少输入两个字');return}
+    const messages=chat.turns.filter(turn=>!turn.error).flatMap(turn=>[{role:'user',content:turn.question},{role:'assistant',content:turn.answer}]).slice(-20);
+    const turn={question,answer:'',citations:[],loading:true};chat.turns.push(turn);el('twin-question').value='';renderChat(true);
+    try{const result=await api(`twins/${id}/ask`,{method:'POST',body:{question,scope:chat.scope,project_key:chat.project||null,messages,context_revision:chat.revision}});turn.answer=result.answer;turn.citations=result.citations;chat.revision=result.context_revision}catch(e){turn.answer=e.message;turn.error=true;if(e.status===409){chat.turns=[];chat.revision=null;notify('知识或授权已更新，已开启新会话');chat.retryQuestion=question}}finally{turn.loading=false;chat.render()}
+  });
+  chat.render=renderChat;renderChat();showTab(state.twinTab);
+  await Promise.all([renderMcp(id),renderSharing(id)]);
 }
 
 async function renderMcp(id){
   const panel=el('mcp-panel');if(!panel)return;
   const info=await api(`twins/${id}/mcp`);
-  panel.innerHTML=`<h2>连接其他 AI（MCP）</h2><p class="field-note">其他 AI 只能读取这个分身已保存授权中的有效知识和必要引用。未勾选的知识不会提供。仅用于本机，WorkTwin 需保持运行。</p><p>${info.enabled?'已启用':'尚未启用'}</p><button class="btn secondary small" id="generate-mcp">${info.enabled?'更新连接凭据':'启用并获取连接配置'}</button>${info.enabled?'<button class="btn danger small" id="disable-mcp">关闭 MCP</button><div class="field"><label><input type="checkbox" id="allow-mcp-logs" '+(info.allow_logs?'checked':'')+'/> 单独允许读取完整来源日志</label><p class="field-note">默认只提供必要引用。开启后，其他 AI 可读取授权知识引用的整份来源资料或会话，可能包含其他讨论内容。</p></div>':''}`;
+  panel.innerHTML=`<h2>连接其他 AI（MCP）</h2><p class="field-note">其他 AI 可读取此分身的授权知识。连接时需保持 WorkTwin 运行。</p><p>${info.enabled?'已启用':'尚未启用'}</p><button class="btn secondary small" id="generate-mcp">${info.enabled?'更新连接凭据':'启用并获取连接配置'}</button>${info.enabled?'<button class="btn danger small" id="disable-mcp">关闭 MCP</button><div class="field"><label><input type="checkbox" id="allow-mcp-logs" '+(info.allow_logs?'checked':'')+'/> 单独允许读取完整来源日志</label><p class="field-note">默认只提供必要引用。开启后，其他 AI 可读取授权知识引用的整份来源资料或会话，可能包含其他讨论内容。</p></div>':''}`;
   el('generate-mcp').onclick=()=>busy(el('generate-mcp'),async()=>{
     if(state.dirty){notify('请先保存分身的知识授权');return}
     if(info.enabled&&!confirm('更新后，原来的 MCP 连接凭据立即失效，需要重新连接。继续吗？'))return;
@@ -661,7 +521,7 @@ async function openConnection(sharing=false){
 async function renderSharing(id){
   const panel=el('sharing-panel');if(!panel)return;
   const info=await api(`twins/${id}/sharing`);
-  panel.innerHTML=`<p class="field-note">只发布已确认且来源允许分享的知识。持有链接的人可以访问；发布后电脑关闭仍可使用。</p>${info.error?`<p class="state-label warn">${esc(info.error)}</p><button class="btn secondary small" id="sync-sharing">重试同步</button>`:''}`+
+  panel.innerHTML=`<p class="field-note">链接持有人可访问已发布知识。</p>${info.error?`<p class="state-label warn">${esc(info.error)}</p><button class="btn secondary small" id="sync-sharing">重试同步</button>`:''}`+
     (!info.configured?'<button class="btn secondary small" id="share-connect">连接企业服务</button>':!info.enabled?'<button class="btn secondary small" id="publish-twin">启用分享</button>':`<button class="btn secondary small" id="new-share">创建访问链接</button><button class="btn secondary small" id="unpublish-twin">停止全部分享</button><div>${info.grants.map(g=>`<div class="share-row"><span>${esc(g.recipient)}<small> ${g.revoked?'已撤销':g.expires_at*1000<Date.now()?'已到期':'有效至 '+new Date(g.expires_at*1000).toLocaleDateString()}</small></span>${!g.revoked?`<button class="info-link" data-revoke-share="${esc(g.id)}">撤销</button>`:''}</div>`).join('')}</div>`);
   el('share-connect')?.addEventListener('click',()=>openConnection(state.settings.edition==='personal'));
   el('sync-sharing')?.addEventListener('click',()=>busy(el('sync-sharing'),async()=>{const r=await api('sharing/sync',{method:'POST'});notify(r.state==='synced'?'同步完成':r.detail);await renderSharing(id)}));
@@ -703,18 +563,18 @@ async function renderSettings(){
   await refreshConnection();const info=state.settings;
   content.innerHTML=pageHeader('SETTINGS','设置','个人版使用你自己的模型；企业版使用企业统一分配的模型。')+
     `<section class="settings-section"><h2>使用版本</h2><div class="edition-options">${[['personal','个人版','自己配置模型服务和 API Key'],['enterprise','企业版','使用企业服务地址和企业 Token']].map(([value,name,desc])=>`<button class="edition-option ${info.edition===value?'active':''}" data-edition="${value}"><b>${name}</b><span>${desc}</span></button>`).join('')}</div><p class="field-note">切换版本不会移动或上传你的资料。已有分享时需要先停止分享并确认同步完成。</p></section>`+
-    (info.edition==='personal'?`<section class="settings-section"><h2>模型设置</h2><p class="soft-caption">支持 OpenAI Chat Completions 兼容服务。地址和模型名称由你的模型服务商提供。</p><div class="field"><label for="personal-url">模型服务地址</label><input id="personal-url" value="${esc(info.personal_base_url||'')}" placeholder="例如 https://api.openai.com/v1"/><div class="field-note">填写服务商提供的接口根地址，不要填写 /chat/completions。DeepSeek 填 https://api.deepseek.com，模型名称填 deepseek-flash。</div></div><div class="field"><label for="personal-model">模型名称</label><input list="personal-model-options" id="personal-model" value="${esc(info.personal_model||'')}" placeholder="填写服务商提供的模型名称"/></div><div class="field"><label for="personal-key">API Key</label><input id="personal-key" type="password" autocomplete="off" placeholder="${info.has_personal_key?'已安全保存，留空保留原密钥':'填写你自己的模型密钥'}"/><div class="field-note">保存在${esc(info.secret_storage)}中，不会出现在知识导出里。</div></div><div class="model-discovery"><button class="btn secondary small" id="personal-list-models">获取可用模型</button><span class="field-note" id="personal-list-result">填写地址与 API Key 后可获取；也可以直接填写模型名称。</span><datalist id="personal-model-options"></datalist></div><button class="btn" id="save-personal-model">测试连接并保存</button> <button class="btn secondary" id="test-model" ${info.enterprise_model_ready?'':'disabled'}>测试当前模型</button><p id="settings-result" aria-live="polite">${esc(info.model_error||({connected:'模型已连接，可以开始 AI 整理和分身问答',configured:'已保存配置，尚未验证本次启动的模型连接',not_configured:'尚未配置模型，资料仍可本地采集和编辑',error:'模型调用失败，请检查设置'}[info.model_status]||''))}</p></section><section class="settings-section"><h2>远程分享服务</h2><p>本地使用不需要配置。远程分享需要持续运行的服务，接收者使用服务端模型。</p><button class="btn secondary" id="personal-share-connect">${info.cloud_sync?'更改分享服务':'连接分享服务'}</button></section>`:
-    `<section class="settings-section"><h2>企业连接</h2><p>向管理员获取企业服务地址和企业 Token。员工不需要模型供应商的 API Key。</p><p>${info.enterprise_url?'当前服务：'+esc(info.enterprise_url):'尚未连接企业服务'}</p><button class="btn" id="settings-enterprise-connect">${info.enterprise_url?'重新连接企业服务':'连接企业服务'}</button> <button class="btn secondary" id="test-model" ${info.enterprise_model_ready?'':'disabled'}>测试企业模型</button><p id="settings-result" aria-live="polite">${esc(info.model_error||({connected:'模型调用已验证',configured:'企业凭据已配置，请测试实际模型调用',not_configured:'请先连接企业服务'}[info.model_status]||''))}</p></section>${info.enterprise_role==='admin'?'<section class="settings-section" id="admin-section"><h2>管理员设置</h2><p>正在读取企业模型与员工授权…</p></section>':''}`)+
-    `<section class="settings-section"><h2>项目归属判断模型（可选）</h2><p class="soft-caption">项目名称与工作单元由主模型提取；候选项目间的匹配判断可交给 Jev 或兼容 Chat Completions 的高速模型。未配置时自动沿用主模型。判断模型不会更改知识来源或分身权限。</p>`+
-    (info.edition==='personal'?`<div class="field"><label for="decision-provider">判断模型</label><select id="decision-provider"><option value="main" ${info.decision_model?.provider==='main'?'selected':''}>沿用主模型（默认）</option><option value="jev" ${info.decision_model?.provider==='jev'?'selected':''}>Jev · SystemOne 决策接口</option><option value="chat" ${info.decision_model?.provider==='chat'?'selected':''}>其他 Chat Completions 模型</option></select></div><div id="decision-specific"><div class="field"><label for="decision-url">判断模型服务地址</label><input id="decision-url" value="${esc(info.decision_model?.base_url||'')}" placeholder="例如 https://api.typesafe.ai"/></div><div class="field"><label for="decision-model-name">判断模型名称</label><input id="decision-model-name" value="${esc(info.decision_model?.model||'')}" placeholder="Jev: jev-latest"/></div><div class="field"><label for="decision-key">判断模型 API Key</label><input type="password" autocomplete="off" id="decision-key" placeholder="${info.decision_model?.has_key?'已加密保存，留空则保留原值':'填写判断模型的 API Key'}"/></div></div><button class="btn secondary" id="save-decision-model">测试并保存判断模型</button><p class="field-note" id="decision-status"></p>`:
-    `<p class="field-note">${info.enterprise_role==='admin'?'企业管理员可在下方统一配置判断模型；员工只使用企业提供的服务，不接触 API Key。':'判断模型由企业管理员统一配置；当前员工不需要额外设置。'}</p>`)+
+    (info.edition==='personal'?`<section class="settings-section" id="primary-model-settings"><h2>模型配置</h2><p class="soft-caption">支持 OpenAI Chat Completions 兼容服务。地址和模型名称由你的模型服务商提供。</p><div class="field"><label for="personal-url">模型服务地址</label><input id="personal-url" value="${esc(info.personal_base_url||'')}" placeholder="例如 https://api.openai.com/v1"/><div class="field-note">填写服务商提供的接口根地址。</div></div><div class="field"><label for="personal-model">模型名称</label><input list="personal-model-options" id="personal-model" value="${esc(info.personal_model||'')}" placeholder="填写服务商提供的模型名称"/></div><div class="field"><label for="personal-key">API Key</label><input id="personal-key" type="password" autocomplete="off" placeholder="${info.has_personal_key?'已安全保存，留空保留原密钥':'填写你自己的模型密钥'}"/><div class="field-note">保存在${esc(info.secret_storage)}中，不会出现在知识导出里。</div></div><div class="model-discovery"><button class="btn secondary small" id="personal-list-models">获取可用模型</button><span class="field-note" id="personal-list-result">也可以直接填写模型名称。</span><datalist id="personal-model-options"></datalist></div><button class="btn" id="save-personal-model">测试连接并保存</button> <button class="btn secondary" id="test-model" ${info.enterprise_model_ready?'':'disabled'}>测试当前模型</button><p id="settings-result" aria-live="polite">${esc(info.model_error||({connected:'模型已连接',configured:'已保存配置，尚未验证本次启动的模型连接',not_configured:'尚未配置模型',error:'模型调用失败，请检查设置'}[info.model_status]||''))}</p></section><section class="settings-section"><h2>远程分享服务</h2><p>本地使用不需要配置。远程分享需要持续运行的服务，接收者使用服务端模型。</p><button class="btn secondary" id="personal-share-connect">${info.cloud_sync?'更改分享服务':'连接分享服务'}</button></section>`:
+    `<section class="settings-section" id="primary-model-settings"><h2>模型配置</h2><p>向管理员获取企业服务地址和企业 Token。员工不需要模型供应商的 API Key。</p><p>${info.enterprise_url?'当前服务：'+esc(info.enterprise_url):'尚未连接企业服务'}</p><button class="btn" id="settings-enterprise-connect">${info.enterprise_url?'重新连接企业服务':'连接企业服务'}</button> <button class="btn secondary" id="test-model" ${info.enterprise_model_ready?'':'disabled'}>测试企业模型</button><p id="settings-result" aria-live="polite">${esc(info.model_error||({connected:'模型调用已验证',configured:'企业凭据已配置，请测试实际模型调用',not_configured:'请先连接企业服务'}[info.model_status]||''))}</p></section>${info.enterprise_role==='admin'?'<section class="settings-section" id="admin-section"><h2>管理员设置</h2><p>正在读取企业模型与员工授权…</p></section>':''}`)+
+    `<section class="settings-group" id="decision-model-settings"><h3>决策与路由模型</h3><p class="field-note">用轻量模型判断项目归属和匹配关系，减少主模型调用成本。知识整理与回答仍使用主模型。</p>`+
+    (info.edition==='personal'?`<div class="field"><label for="decision-provider">模型选择</label><select id="decision-provider"><option value="main" ${info.decision_model?.provider==='main'?'selected':''}>沿用主模型（默认）</option><option value="jev" ${info.decision_model?.provider==='jev'?'selected':''}>Jev · SystemOne 决策接口</option><option value="chat" ${info.decision_model?.provider==='chat'?'selected':''}>其他 Chat Completions 模型</option></select></div><div id="decision-specific"><div class="field"><label for="decision-url">服务地址</label><input id="decision-url" value="${esc(info.decision_model?.base_url||'')}" placeholder="例如 https://api.typesafe.ai"/></div><div class="field"><label for="decision-model-name">模型名称</label><input id="decision-model-name" value="${esc(info.decision_model?.model||'')}" placeholder="Jev: jev-latest"/></div><div class="field"><label for="decision-key">API Key</label><input type="password" autocomplete="off" id="decision-key" placeholder="${info.decision_model?.has_key?'已加密保存，留空则保留原值':'填写此模型的 API Key'}"/></div></div><button class="btn secondary" id="save-decision-model">测试并保存</button><p class="field-note" id="decision-status"></p>`:
+    `<p class="field-note">${info.enterprise_role==='admin'?'企业管理员可在下方统一配置决策与路由模型；员工只使用企业提供的服务，不接触 API Key。':'决策与路由模型由企业管理员统一配置；当前员工不需要额外设置。'}</p>`)+
     `</section>`+
-    `<section class="settings-section"><h2>开始使用</h2><ol class="setup-steps"><li>完成模型设置或企业连接</li><li>在信息采集中授权一份工作资料，并允许 AI 整理</li><li>知识自动整理、生效，可随时查看证据与纠正</li><li>创建分身、勾选已确认知识，再试问</li></ol><button class="btn secondary" id="settings-sources">前往信息采集</button></section><section class="settings-section"><h2>导出与备份</h2><p>Wiki 导出适合阅读与迁移；数据备份用于恢复本机知识、来源和配置，不包含模型密钥或企业 Token。</p><button class="btn secondary" id="export-wiki">导出 Markdown Wiki</button> <button class="btn secondary" id="backup-data">下载数据备份</button><p class="field-note" id="data-path"></p></section>`;
+    `<section class="settings-section"><h2>导出与备份</h2><p>Wiki 导出适合阅读与迁移；数据备份用于恢复本机知识、来源和配置，不包含模型密钥或企业 Token。</p><button class="btn secondary" id="export-wiki">导出 Markdown Wiki</button> <button class="btn secondary" id="backup-data">下载数据备份</button><p class="field-note" id="data-path"></p></section>`;
   content.querySelectorAll('[data-edition]').forEach(b=>b.onclick=async()=>{if(b.dataset.edition===info.edition)return;if(!confirmDiscard())return;await busy(b,async()=>{if(await perform(()=>api('edition',{method:'PUT',body:{edition:b.dataset.edition}}),null)){state.dirty=false;await go('settings',true)}})});
   el('settings-enterprise-connect')?.addEventListener('click',()=>openConnection());
   el('personal-share-connect')?.addEventListener('click',()=>openConnection(true));
   if(el('personal-list-models'))attachModelList('personal','model/personal/models');
-  el('settings-sources').onclick=()=>go('sources');
+  el('primary-model-settings').append(el('decision-model-settings'));
   ['personal-url','personal-model','personal-key'].forEach(n=>{if(el(n))watchChanges(el(n))});
   if(el('decision-provider')){
     const updateDecision=()=>{
@@ -729,14 +589,14 @@ async function renderSettings(){
     el('decision-provider').onchange=()=>{updateDecision();state.dirty=true};
     el('save-decision-model').onclick=()=>busy(el('save-decision-model'),async()=>{
       const provider=el('decision-provider').value;
-      el('decision-status').textContent=provider==='main'?'正在恢复主模型…':'正在测试专用判断模型…';
+      el('decision-status').textContent=provider==='main'?'正在恢复主模型…':'正在测试决策与路由模型…';
       try{
         await api('model/decision',{method:'PUT',body:{provider,
           base_url:provider==='main'?'':el('decision-url').value.trim(),
           model:provider==='main'?'':el('decision-model-name').value.trim(),
           api_key:provider==='main'?'':el('decision-key').value.trim()}});
         state.dirty=false;await go('settings',true);
-        notify(provider==='main'?'项目判断已恢复使用主模型':'项目判断模型已保存');
+        notify(provider==='main'?'项目判断已恢复使用主模型':'决策与路由模型已保存');
       }catch(e){el('decision-status').textContent=e.message}
     });
   }
@@ -756,17 +616,17 @@ async function renderAdminSettings(){
   const panel=el('admin-section');if(!panel)return;
   try{
     const info=await api('admin/settings');
-    panel.innerHTML=`<h2>管理员设置</h2><p>只有管理员可以配置企业模型、调用限额及员工 Token。</p><div class="field"><label for="admin-url">企业模型服务地址</label><input id="admin-url" value="${esc(info.base_url)}"/></div><div class="field"><label for="admin-model">默认模型名称</label><input list="admin-model-options" id="admin-model" value="${esc(info.model)}"/></div><div class="field"><label for="admin-key">模型 API Key</label><input id="admin-key" type="password" autocomplete="off" placeholder="${info.has_api_key?'已保存，留空保留原密钥':'填写企业的模型 API Key'}"/><div class="field-note">密钥保存在企业服务端，员工无法读取。</div></div><div class="model-discovery"><button class="btn secondary small" id="admin-list-models">获取企业可用模型</button><span class="field-note" id="admin-list-result">也可以直接填写供应商提供的模型名称。</span><datalist id="admin-model-options"></datalist></div><div class="limit-fields">${[['daily_calls','每天最多调用次数'],['daily_tokens','每天最多 Token 数'],['minute_calls','每人每分钟最多调用次数']].map(([id,label])=>`<div class="field"><label for="admin-${id}">${label}</label><input id="admin-${id}" type="number" min="1" value="${info[id]}"/></div>`).join('')}</div><button class="btn" id="save-admin-model">测试连接并保存企业配置</button><p id="admin-result" aria-live="polite"></p><div class="divider"></div><h3>专用判断模型（可选）</h3><p class="field-note">仅处理项目身份、冲突等快速决策；员工端无需 API Key，主模型仍负责生成正文。</p><div class="field"><label for="admin-decision-provider">判断模型</label><select id="admin-decision-provider"><option value="main" ${info.decision_provider==='main'?'selected':''}>沿用主模型</option><option value="jev" ${info.decision_provider==='jev'?'selected':''}>Jev · SystemOne</option><option value="chat" ${info.decision_provider==='chat'?'selected':''}>Chat Completions</option></select></div><div class="field"><label for="admin-decision-url">服务地址</label><input id="admin-decision-url" value="${esc(info.decision_url||'')}" placeholder="https://api.typesafe.ai"/></div><div class="field"><label for="admin-decision-model">模型</label><input id="admin-decision-model" value="${esc(info.decision_model||'')}" placeholder="jev-latest"/></div><div class="field"><label for="admin-decision-key">API Key</label><input type="password" id="admin-decision-key" autocomplete="off" placeholder="${info.decision_has_key?'已保存，留空保留原密钥':'输入企业判断模型密钥'}"/></div><button class="btn secondary" id="save-admin-decision">测试并保存判断模型</button><p class="field-note" id="admin-decision-status"></p><div class="divider"></div><h3>员工 Token</h3><p class="field-note">新增或重新分配会生成新的 Token。撤销员工 Token 时，其已有分享链接也会停用。</p><div class="field"><label for="employee-identity">员工标识</label><input id="employee-identity" placeholder="例如 employee-a 或员工邮箱"/></div><button class="btn secondary" id="issue-employee">生成员工 Token</button><div id="issued-token"></div><div class="employee-list">${info.employees.map(e=>`<div class="job-row"><span>${esc(e.identity)}</span><span>${e.enabled?'有效':'已撤销'}</span>${e.enabled?`<button class="btn danger small" data-revoke-employee="${esc(e.identity)}">撤销</button>`:''}</div>`).join('')}</div>`;
+    panel.innerHTML=`<h2>管理员设置</h2><p>只有管理员可以配置企业模型、调用限额及员工 Token。</p><div class="field"><label for="admin-url">企业模型服务地址</label><input id="admin-url" value="${esc(info.base_url)}"/></div><div class="field"><label for="admin-model">默认模型名称</label><input list="admin-model-options" id="admin-model" value="${esc(info.model)}"/></div><div class="field"><label for="admin-key">模型 API Key</label><input id="admin-key" type="password" autocomplete="off" placeholder="${info.has_api_key?'已保存，留空保留原密钥':'填写企业的模型 API Key'}"/><div class="field-note">密钥保存在企业服务端，员工无法读取。</div></div><div class="model-discovery"><button class="btn secondary small" id="admin-list-models">获取企业可用模型</button><span class="field-note" id="admin-list-result">也可以直接填写供应商提供的模型名称。</span><datalist id="admin-model-options"></datalist></div><div class="limit-fields">${[['daily_calls','每天最多调用次数'],['daily_tokens','每天最多 Token 数'],['minute_calls','每人每分钟最多调用次数']].map(([id,label])=>`<div class="field"><label for="admin-${id}">${label}</label><input id="admin-${id}" type="number" min="1" value="${info[id]}"/></div>`).join('')}</div><button class="btn" id="save-admin-model">测试连接并保存企业配置</button><p id="admin-result" aria-live="polite"></p><div class="divider"></div><h3>决策与路由模型</h3><p class="field-note">仅处理项目身份、冲突等快速决策；员工端无需 API Key，主模型仍负责生成正文。</p><div class="field"><label for="admin-decision-provider">模型选择</label><select id="admin-decision-provider"><option value="main" ${info.decision_provider==='main'?'selected':''}>沿用主模型</option><option value="jev" ${info.decision_provider==='jev'?'selected':''}>Jev · SystemOne</option><option value="chat" ${info.decision_provider==='chat'?'selected':''}>Chat Completions</option></select></div><div class="field"><label for="admin-decision-url">服务地址</label><input id="admin-decision-url" value="${esc(info.decision_url||'')}" placeholder="https://api.typesafe.ai"/></div><div class="field"><label for="admin-decision-model">模型</label><input id="admin-decision-model" value="${esc(info.decision_model||'')}" placeholder="jev-latest"/></div><div class="field"><label for="admin-decision-key">API Key</label><input type="password" id="admin-decision-key" autocomplete="off" placeholder="${info.decision_has_key?'已保存，留空保留原密钥':'输入此模型的 API Key'}"/></div><button class="btn secondary" id="save-admin-decision">测试并保存</button><p class="field-note" id="admin-decision-status"></p><div class="divider"></div><h3>员工 Token</h3><p class="field-note">新增或重新分配会生成新的 Token。撤销员工 Token 时，其已有分享链接也会停用。</p><div class="field"><label for="employee-identity">员工标识</label><input id="employee-identity" placeholder="例如 employee-a 或员工邮箱"/></div><button class="btn secondary" id="issue-employee">生成员工 Token</button><div id="issued-token"></div><div class="employee-list">${info.employees.map(e=>`<div class="job-row"><span>${esc(e.identity)}</span><span>${e.enabled?'有效':'已撤销'}</span>${e.enabled?`<button class="btn danger small" data-revoke-employee="${esc(e.identity)}">撤销</button>`:''}</div>`).join('')}</div>`;
     attachModelList('admin','admin/models');
     ['admin-decision-provider','admin-decision-url','admin-decision-model','admin-decision-key'].forEach(id=>watchChanges(el(id)));
     el('save-admin-decision').onclick=()=>busy(el('save-admin-decision'),async()=>{
       const provider=el('admin-decision-provider').value;
-      el('admin-decision-status').textContent=provider==='main'?'正在恢复主模型…':'正在连接判断模型…';
+      el('admin-decision-status').textContent=provider==='main'?'正在恢复主模型…':'正在连接决策与路由模型…';
       try{await api('admin/decision-model',{method:'PUT',body:{
         provider,base_url:provider==='main'?'':el('admin-decision-url').value.trim(),
         model:provider==='main'?'':el('admin-decision-model').value.trim(),
         api_key:provider==='main'?'':el('admin-decision-key').value.trim()}});
-        state.dirty=false;await renderAdminSettings();notify('企业判断模型已保存');
+        state.dirty=false;await renderAdminSettings();notify('企业决策与路由模型已保存');
       }catch(e){el('admin-decision-status').textContent=e.message}
     });
     ['admin-url','admin-model','admin-key','admin-daily_calls','admin-daily_tokens','admin-minute_calls'].forEach(n=>watchChanges(el(n)));

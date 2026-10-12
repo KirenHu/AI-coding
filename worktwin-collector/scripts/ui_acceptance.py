@@ -47,6 +47,8 @@ def main():
         try:
             for _ in range(80):
                 try:
+                    if server.poll() is not None:
+                        raise RuntimeError('Isolated test server exited')
                     if httpx.get(url + '/api/health', timeout=.7, trust_env=False).status_code == 200:
                         break
                 except httpx.HTTPError:
@@ -60,6 +62,8 @@ def main():
                 html = re.sub(r'<script defer src="/assets/app\.js(?:\?[^"]*)?"></script>', '', html)
 
                 def backend(path, options):
+                    if path=='/api/pick-folder':
+                        return {'status':200,'body':json.dumps({'path':str(work.parent)})}
                     if not str(path).startswith('/api/'):
                         raise RuntimeError('Only local WorkTwin API may be bridged')
                     resp = client.request(options.get('method', 'GET'), str(path),
@@ -86,12 +90,12 @@ def main():
                         page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text(encoding='utf-8'))
                         page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text(encoding='utf-8'))
                         expect(page.locator('.main-nav .nav-link')).to_have_count(3)
-                        expect(page.get_by_role('heading', name='我的知识库')).to_be_visible()
+                        expect(page.get_by_role('heading', name='知识库')).to_be_visible()
                         page.locator('[data-page=sources]').click()
-                        page.get_by_role('button', name='授权采集').first.click()
+                        page.locator('#add-folder').click()
+                        page.locator('#browse-folder').click()
                         page.locator('#new-source-name').fill('产品文档')
-                        page.locator('#new-source-path').fill(str(work.parent))
-                        page.get_by_role('button', name='授权并开始采集').click()
+                        page.locator('#save-source').click()
                         expect(page.get_by_text('产品文档').first).to_be_visible()
                         # Verify collection actually reached the real SQLite database.
                         headers = {'X-Worktwin-Token': re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', html).group(1)}
@@ -104,7 +108,9 @@ def main():
                         page.locator('[data-page=knowledge]').click()
                         page.get_by_role('button', name='新建知识').click()
                         page.locator('#edit-k-title').fill('为什么审批采用工作流节点')
+                        page.locator('.edit-metadata > summary').click()
                         page.locator('#edit-k-kind').select_option('decision')
+                        page.locator('#edit-k-confirmed').check()
                         page.locator('#edit-k-body').fill('复用现有工作流路由能力，避免独立系统重复维护。')
                         page.get_by_role('button', name='保存知识').click()
                         expect(page.get_by_text('为什么审批采用工作流节点').first).to_be_visible(timeout=15000)
@@ -118,10 +124,10 @@ def main():
                         page.get_by_role('button', name='创建并选择知识').click()
                         expect(page.get_by_text('为什么审批采用工作流节点').first).to_be_visible()
                         page.locator('[data-select-entry]').first.check()
-                        page.get_by_role('button', name='保存授权').click()
+                        page.get_by_role('button', name='保存配置').click()
                         # Wait for the saved editor to reload, rather than accepting
                         # the optimistic selection label while PUT is still pending.
-                        expect(page.locator('.status-note').first).to_contain_text('已保存授权 1 篇', timeout=15000)
+                        expect(page.locator('.section-toolbar')).to_contain_text('已保存授权 1 篇', timeout=15000)
                         expect(page.locator('#save-selections')).to_be_enabled()
                         expect(page.locator('[data-select-entry]').first).to_be_checked()
                         screenshot = Path(os.environ.get('WORKTWIN_UI_SCREENSHOT', str(state/'preview.png')))

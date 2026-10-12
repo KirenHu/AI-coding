@@ -16,12 +16,12 @@ from .model_transport import chat_payload, model_urlopen
 
 class Message(BaseModel):
     role: str = Field(pattern='^(system|user|assistant)$')
-    content: str = Field(max_length=80000)
+    content: str = Field(max_length=128000)
 
 
 class ChatRequest(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=100)
-    max_tokens: int = Field(default=1800, ge=1, le=5000)
+    max_tokens: int = Field(default=1800, ge=1, le=12000)
     temperature: float = Field(default=0.1, ge=0, le=1)
 
 
@@ -64,7 +64,7 @@ class ProviderService:
             raise HTTPException(503,'企业模型尚未配置，请联系管理员')
         messages = [m.model_dump() for m in body.messages]
         chars = sum(len(m['content']) for m in messages)
-        if chars > 80000:
+        if chars > 128000:
             raise HTTPException(413, '模型请求文本过长')
         reserved = chars * 3 + body.max_tokens
         actor_hash = hashlib.sha256(actor.encode()).hexdigest()

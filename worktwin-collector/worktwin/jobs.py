@@ -19,6 +19,7 @@ from .automation import activate_new, apply_additions, model_signature
 from .autonomy import apply_safe_replacements
 from .ingest import pending_batch, ack_batch
 from .artifacts import work_context, context_for_model
+from .articles import organize_batch
 
 
 class KnowledgeWorker:
@@ -163,6 +164,8 @@ class KnowledgeWorker:
             links=plan_work_units(items,document,known_projects,self.decision_router)
             for item,link in zip(items,links):
                 item.update({k:link[k] for k in ('scope','project_key','project')})
+            source_items = items
+            items = organize_batch(leased_client, source_items)
             # Existing articles are retrieved by work-unit identity, not the
             # containing file's directory. Cross-source AI grants revalidate.
             with self.db.connect() as con:
@@ -197,7 +200,7 @@ class KnowledgeWorker:
                 fresh = [item for i,item in enumerate(items) if i not in plan]
                 n = store_candidates(con, job["document_id"], [], fresh,
                                      created_by="enterprise_ai")
-                apply_assignments(con,job['document_id'],items,links)
+                apply_assignments(con,job['document_id'],source_items,links)
                 automatic=(apply_additions(con,job['document_id'],self.client)+apply_safe_replacements(con,job['document_id'])+activate_new(con,job['document_id'],fresh,self.client)
                            if model_identity==model_signature(self.client) else 0)
                 has_more = batch and current['captured_seq'] > batch['through_seq']

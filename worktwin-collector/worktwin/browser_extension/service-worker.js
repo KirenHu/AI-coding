@@ -7,7 +7,7 @@ const sessions=new Map(); // sid -> {tabId,documentId,page,flowTab,seq,status}
 const recent=new Map();   // tabId -> last navigation metadata, NOT DOM content
 const pendingSite=new Map();
 const eventQueues=new Map();
-let manualSyncRunning=null;
+let siteSyncRunning=null;
 const ready=chrome.storage.session.get("captureSessions").then(({captureSessions})=>{
   for(const item of captureSessions||[]){
     if(item && item.id && item.status!=="completed")sessions.set(item.id,item);
@@ -37,65 +37,103 @@ async function call(path,body){
   if(!r.ok)throw Error(data.detail||("HTTP "+r.status));
   return data;
 }
+async function stopIfUnused(tabId){
+  if(tabId===undefined)return;
+  if([...sessions.values()].some(s=>s.tabId===tabId&&s.status==="capturing"))return;
+  await chrome.tabs.sendMessage(tabId,{type:"capture:stop"}).catch(()=>{});
+}
+async function stopRecording(){
+  const tabs=new Set();
+  for(const s of sessions.values())if(["armed","capturing"].includes(s.status)){
+    s.status="paused";
+    if(s.tabId!==undefined)tabs.add(s.tabId);
+  }
+  for(const tabId of tabs)await chrome.tabs.sendMessage(tabId,{type:"capture:stop"}).catch(()=>{});
+  pendingSite.clear();
+  await persist();
+  chrome.action.setBadgeText({text:""});
+}
 async function heartbeat(){
   try{
     await ready;
     if(!await token())return false;
-    await call("/capture/heartbeat");
-    const watched=[...sessions.values()].filter(s=>["armed","capturing"].includes(s.status));
+    const connection=await call("/capture/heartbeat");
+    if(!connection.enabled){await stopRecording();return true;}
+    const watched=[...sessions.values()].filter(s=>
+      ["armed","capturing","paused","transport_error"].includes(s.status));
     if(watched.length){
-      const result=await call("/capture/sessions/status",
-        {session_ids:watched.map(s=>s.id)});
+      const result=await call("/capture/sessions/status",{session_ids:watched.map(s=>s.id)});
       for(const s of watched){
         const live=result.sessions?.[s.id];
-        if(live!=="armed"&&live!=="capturing"){
-          s.status=live||"not_found";
-          pendingSite.delete(s.id);
-          if(s.tabId!==undefined){
-            await chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
-          }
-        }
+        s.status=live||"not_found";
+        if(!["armed","capturing"].includes(s.status))pendingSite.delete(s.id);
       }
+      for(const s of watched)await stopIfUnused(s.tabId);
       await persist();
-      if(watched.some(s=>!["armed","capturing"].includes(s.status))){
-        chrome.action.setBadgeText({text:""});
+    }
+    await syncSites();
+    for(const s of sessions.values())if(s.status==="capturing"&&!s.persistent)await inject(s);
+    for(const s of sessions.values())if(s.status==="armed"&&!s.manual){
+      for(const info of recent.values())await tryBind(s,info);
+    }
+    return true;
+  }catch{
+    await stopRecording();
+    return false;
+  }
+}
+async function bindSite(row,tab){
+  const frame=await chrome.webNavigation.getFrame({tabId:tab.id,frameId:0}).catch(()=>null);
+  if(!frame?.documentId||site(frame.url)!==row.origin)return;
+  const granted=await chrome.permissions.contains({origins:[row.origin+"/*"]});
+  if(!granted){
+    for(const s of sessions.values())if(s.persistent&&s.siteId===row.id&&s.status==="capturing"){
+      await closeSite(s,"connection_lost");
+    }
+    pendingSite.set("site-"+row.id,{origin:row.origin,siteId:row.id});
+    chrome.action.setBadgeText({text:"授权"});
+    return;
+  }
+  const existing=[...sessions.values()].find(s=>s.persistent&&s.status==="capturing"&&
+    s.siteId===row.id&&s.tabId===tab.id&&s.documentId===frame.documentId);
+  if(existing){await inject(existing);return;}
+  const result=await call("/capture/sites/bind",{site_id:row.id,tab_id:tab.id,
+    document_id:frame.documentId,current_url:frame.url});
+  const s={id:result.session_id,page:row.origin,manual:true,persistent:true,siteId:row.id,
+    status:"capturing",seq:result.last_seq,tabId:tab.id,documentId:frame.documentId};
+  sessions.set(s.id,s);
+  pendingSite.delete("site-"+row.id);
+  await inject(s);
+}
+async function closeSite(s,reason){
+  await eventQueues.get(s.tabId);
+  s.status=reason;
+  await call("/capture/sites/close",{session_id:s.id,reason});
+  await stopIfUnused(s.tabId);
+}
+async function syncSites(){
+  if(siteSyncRunning)return siteSyncRunning;
+  siteSyncRunning=(async()=>{
+    if(!await token())return;
+    const remote=await call("/capture/sites/current");
+    if(!remote.enabled){await stopRecording();return;}
+    const allowed=remote.sites.filter(row=>row.manual_enabled);
+    const tabs=await chrome.tabs.query({});
+    for(const old of sessions.values()){
+      if(!old.persistent||old.status!=="capturing")continue;
+      const tab=tabs.find(t=>t.id===old.tabId);
+      if(!allowed.some(r=>r.id===old.siteId)||!tab||site(tab.url||"")!==old.page){
+        await closeSite(old,tab?"navigation_stopped":"tab_closed");
       }
     }
-    await syncManual();
-    return true;
-  }catch{return false}
-}
-async function syncManual(){
-  if(manualSyncRunning)return manualSyncRunning;
-  manualSyncRunning=(async()=>{
-    if(!await token())return;
-    const remote=await call("/capture/manual/current");
-    for(const old of sessions.values()){
-      if(!old.manual||old.id===remote.session_id)continue;
-      // An already stopped session must not stop a later recording in this tab.
-      if(!["armed","capturing"].includes(old.status))continue;
-      old.status="completed";
-      pendingSite.delete(old.id);
-      if(old.tabId!==undefined)await chrome.tabs.sendMessage(old.tabId,{type:"capture:stop"}).catch(()=>{});
-    }
-    if(!remote.enabled){await persist();return;}
-    let s=sessions.get(remote.session_id);
-    if(!s){
-      s={id:remote.session_id,page:remote.site,manual:true,status:remote.status,
-         seq:remote.last_seq||0,tabId:remote.tab_id,documentId:remote.document_id};
-      sessions.set(s.id,s);
+    for(const row of allowed){
+      for(const tab of tabs)if(Number.isInteger(tab.id)&&site(tab.url||"")===row.origin){
+        await bindSite(row,tab);
+      }
     }
     await persist();
-    if(s.status==="capturing")return;
-    const active=await chrome.tabs.query({active:true,lastFocusedWindow:true});
-    for(const tab of active){
-      if(Number.isInteger(tab.id)&&site(tab.url||"")===remote.site){
-        await tryBind(s,{tabId:tab.id,url:tab.url}).catch(()=>{});
-        break;
-      }
-    }
   })();
-  try{return await manualSyncRunning}finally{manualSyncRunning=null}
+  try{return await siteSyncRunning}finally{siteSyncRunning=null}
 }
 async function status(){
   const connected=await heartbeat();
@@ -140,6 +178,10 @@ async function tryBind(session,details){
     session_id:session.id,tab_id:details.tabId,
     document_id:details.documentId,current_url:details.url
   });
+  for(const old of sessions.values())if(!old.manual&&old.id!==session.id&&
+      old.tabId===details.tabId&&old.status==="capturing"){
+    old.status="navigation_stopped";
+  }
   session.status="capturing";
   session.tabId=details.tabId;session.documentId=details.documentId;
   sessions.set(session.id,session);
@@ -193,14 +235,14 @@ async function begin(envelope,sender){
   if(envelope.action==="complete"){
     for(const s of sessions.values())if((answer.session_ids||[]).includes(s.id)){
       s.status="completed";pendingSite.delete(s.id);
-      if(s.tabId!==undefined)chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
+      if(s.tabId!==undefined)stopIfUnused(s.tabId);
     }
     chrome.action.setBadgeText({text:""});
     await persist();
     return answer;
   }
   const s={id:answer.session_id,page:answer.target_page,flowTab:flowTabId,
-    status:"armed",seq:0};
+    status:answer.status,seq:0};
   sessions.set(s.id,s);
   await persist();
   // Navigation may already have committed while WorkTwin verified the signal.
@@ -215,25 +257,31 @@ async function begin(envelope,sender){
 
 function enqueueEvent(s,kind,label,currentUrl,documentId){
   if(s.status!=="capturing")return Promise.resolve({ok:false});
-  const previous=eventQueues.get(s.id)||Promise.resolve();
+  const previous=eventQueues.get(s.tabId)||Promise.resolve();
   const next=previous.catch(()=>{}).then(async()=>{
     if(s.status!=="capturing")return;
     const seq=s.seq+1;
-    const answer=await call("/capture/event",{
+    const tasks=s.persistent?[...sessions.values()].filter(t=>!t.manual&&
+      t.status==="capturing"&&t.tabId===s.tabId&&t.documentId===s.documentId).map(t=>t.id):[];
+    const answer=await call(s.persistent?"/capture/sites/event":"/capture/event",{
       session_id:s.id,seq,kind,tab_id:s.tabId,
       document_id:documentId||s.documentId,
-      current_url:currentUrl,label:label||""
+      current_url:currentUrl,label:label||"",
+      ...(s.persistent?{task_session_ids:tasks}:{}),
     });
+    for(const [id,seq] of Object.entries(answer.task_sequences||{})){
+      const task=sessions.get(id);if(task)task.seq=seq;
+    }
     s.seq=answer.ack;
     await persist();
     if(answer.status==="navigation_stopped"||answer.status==="tab_closed"){
       s.status=answer.status;
       await persist();
-      chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});
+      stopIfUnused(s.tabId);
       chrome.action.setBadgeText({text:""});
     }
-  }).catch(()=>{s.status="transport_error";persist().catch(()=>{});if(s.tabId!==undefined)chrome.tabs.sendMessage(s.tabId,{type:"capture:stop"}).catch(()=>{});chrome.action.setBadgeText({text:"!"})});
-  eventQueues.set(s.id,next);
+  }).catch(()=>{s.status="transport_error";persist().catch(()=>{});if(s.tabId!==undefined)stopIfUnused(s.tabId);chrome.action.setBadgeText({text:"!"})});
+  eventQueues.set(s.tabId,next);
   // A content script is acknowledged only after SQLite accepted the event.
   // Do not report success for an event merely queued in a volatile worker.
   return next.then(()=>({ok:s.status==="capturing"}));
@@ -256,16 +304,19 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     return true;
   }
   if(message?.type==="capture:retry"){
-    ready.then(()=>Promise.all([...pendingSite.values()].map(x=>tryBind(x.session,x.details))))
+    ready.then(async()=>{await syncSites();await Promise.all([...pendingSite.values()].filter(x=>x.session).map(x=>tryBind(x.session,x.details)));})
       .then(()=>reply({ok:true})).catch(e=>reply({ok:false,error:e.message}));
     return true;
   }
   if(message?.type==="capture:event" && sender?.tab?.id){
     ready.then(async()=>{
-    const s=[...sessions.values()].find(x=>
-      x.status==="capturing" && x.tabId===sender.tab.id);
+    const currentFrames=await chrome.webNavigation.getAllFrames({tabId:sender.tab.id});
+    const currentTop=currentFrames.find(frame=>frame.frameId===0);
+    const candidates=[...sessions.values()].filter(x=>x.status==="capturing"&&
+      x.tabId===sender.tab.id&&x.documentId===currentTop?.documentId);
+    const s=candidates.find(x=>x.persistent)||candidates[0];
     if(s && ["click","change","submit","feedback"].includes(message.kind)){
-      const frames=captureFrames(s,await chrome.webNavigation.getAllFrames({tabId:s.tabId}));
+      const frames=captureFrames(s,currentFrames);
       const top=frames.find(f=>f.frameId===0);
       const frame=frames.find(f=>f.frameId===sender.frameId);
       if(frame?.documentId!==sender.documentId){reply({ok:false});return;}
@@ -319,7 +370,7 @@ async function manualNavigation(s,details){
   await persist();
   await inject(s);
 }
-chrome.tabs.onActivated.addListener(()=>ready.then(syncManual).catch(()=>{}));
+chrome.tabs.onActivated.addListener(()=>ready.then(syncSites).catch(()=>{}));
 chrome.webNavigation.onCommitted.addListener(details=>{
   if(details.frameId!==0){
     ready.then(()=>{
@@ -342,14 +393,17 @@ chrome.webNavigation.onCommitted.addListener(details=>{
       // Even same URL reload creates a new document: stop at first committed
       // navigation. Never attach to the replacement document.
       if(details.documentId!==s.documentId){
-        if(s.manual)manualNavigation(s,info).catch(()=>{});
+        if(s.persistent){
+          closeSite(s,"navigation_stopped").then(syncSites).catch(()=>{});
+        }else if(s.manual)manualNavigation(s,info).catch(()=>{});
         else enqueueEvent(s,"navigation","",details.url,s.documentId);
       }
     }else if(s.status==="armed"){
-      if(s.manual)syncManual().catch(()=>{});
+      if(s.manual)syncSites().catch(()=>{});
       else tryBind(s,info).catch(()=>{});
     }
   }
+  syncSites().catch(()=>{});
   });
 });
 chrome.webNavigation.onHistoryStateUpdated.addListener(details=>{
@@ -378,7 +432,8 @@ chrome.webNavigation.onReferenceFragmentUpdated.addListener(details=>{
 chrome.tabs.onRemoved.addListener(tabId=>{
   ready.then(()=>{
   for(const s of sessions.values())if(s.status==="capturing"&&s.tabId===tabId){
-    enqueueEvent(s,"tab_closed","",s.page,s.documentId);
+    if(s.persistent)closeSite(s,"tab_closed").catch(()=>{});
+    else enqueueEvent(s,"tab_closed","",s.page,s.documentId);
   }
   recent.delete(tabId);
   });
@@ -387,3 +442,6 @@ chrome.alarms.create("capture-heartbeat",{periodInMinutes:0.5});
 chrome.alarms.onAlarm.addListener(alarm=>{
   if(alarm.name==="capture-heartbeat")heartbeat().catch(()=>{});
 });
+
+chrome.runtime.onStartup.addListener(()=>heartbeat());
+chrome.permissions.onRemoved.addListener(()=>stopRecording().then(heartbeat));

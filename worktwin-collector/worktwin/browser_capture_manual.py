@@ -18,7 +18,7 @@ def manual_site(value: str) -> str:
         raw='https://'+raw
     try:
         url=urlsplit(raw)
-        host=(url.hostname or '').lower()
+        host=(url.hostname or '').encode('idna').decode('ascii').lower()
         if not host or url.username or url.password or url.scheme not in ('https','http'):
             raise ValueError()
         if url.scheme=='http' and host not in ('127.0.0.1','localhost'):
@@ -28,8 +28,9 @@ def manual_site(value: str) -> str:
         port=url.port
         if port is not None and not 1<=port<=65535:
             raise ValueError()
-        return f"{url.scheme}://{host}"+(f":{port}" if port else '')
-    except ValueError:
+        default_port = 443 if url.scheme == 'https' else 80
+        return f"{url.scheme}://{host}"+(f":{port}" if port and port != default_port else '')
+    except (ValueError, UnicodeError):
         raise HTTPException(400,'请输入 HTTPS 网站地址；本地测试可使用 http://localhost')
 
 

@@ -13,7 +13,7 @@ import time
 from fastapi import HTTPException
 
 TERMINAL = {"completed","cancelled","navigation_stopped","tab_closed",
-            "expired","status_unavailable","disabled"}
+            "expired","status_unavailable","disabled","connection_lost"}
 
 
 def actions_from_events(rows):
@@ -119,7 +119,7 @@ class BrowserSummaryService:
             if not s:
                 raise HTTPException(404,"浏览器采集会话不存在")
             row=con.execute("SELECT * FROM browser_capture_summaries WHERE session_id=?",(sid,)).fetchone()
-        return {"session_id":sid,"task_id":s["task_id"],"capture_status":s["status"],
+        return {"session_id":sid,"task_id":s["task_id"],"mode":s["mode"],"capture_status":s["status"],
                 "event_count":s["event_count"],"summary":row["summary"] if row else "",
                 "evidence_seq":json.loads(row["evidence_json"]) if row else [],
                 "summary_status":row["status"] if row else "pending",
@@ -131,7 +131,7 @@ class BrowserSummaryService:
             s=con.execute("SELECT * FROM browser_capture_sessions WHERE id=?",(sid,)).fetchone()
             if not s:
                 raise HTTPException(404,"采集会话不存在")
-            rows=[dict(r) for r in con.execute("""SELECT seq,kind,label FROM browser_capture_events
+            rows=[dict(r) for r in con.execute("""SELECT seq,kind,label FROM browser_capture_session_events
                 WHERE session_id=? ORDER BY seq""",(sid,))]
             previous=con.execute("SELECT * FROM browser_capture_summaries WHERE session_id=?",(sid,)).fetchone()
             if not force and previous and previous["event_seq"]>=s["last_seq"] and (

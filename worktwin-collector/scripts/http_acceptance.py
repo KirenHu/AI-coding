@@ -54,7 +54,7 @@ def main():
                 h = {'X-Worktwin-Token': token}
                 assert client.get('/api/documents').status_code == 403
                 assert client.get('/api/documents', headers=h).status_code == 200
-                assert '我的数字分身' in html
+                assert all(name in html for name in ('知识库', '数字分身', '知识来源'))
                 assert client.get('/', headers={'Host': 'attacker.invalid'}).status_code == 400
                 added = client.post('/api/sources', headers=h, json={'name': '项目资料', 'root': str(docs), 'kind': 'folder'})
                 assert added.status_code == 200, added.text

@@ -164,6 +164,8 @@ class Collector:
         root = Path(src["root"])
         kind = src.get("adapter") or src["kind"]
         if not root.is_dir():
+            if src.get('collection_scope') == 'assistant':
+                return counts  # A selected tool can wait for its first local session.
             with self.db.connect() as con:
                 con.execute("UPDATE sources SET last_error=? WHERE id=?", ("目录不可访问或已移除", src["id"]))
             counts["errors"] += 1
@@ -181,6 +183,10 @@ class Collector:
                 stat = path.stat()
                 previous = existing.get(key)
                 if kind in TRANSCRIPT_ADAPTERS:
+                    if previous is None:
+                        from .source_detection import recognizes_file
+                        if not recognizes_file(kind, path):
+                            continue
                     with self.db.connect() as con:
                         result = collect_transcript(con, path, src, previous, stat)
                     if result["state"]:

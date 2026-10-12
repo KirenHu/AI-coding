@@ -23,6 +23,7 @@ from .browser_capture_status import (
     MAX_STATUS_FAILURES, TASK_STATUS_TTL_SECONDS, validate_status_path,
 )
 from .browser_capture_manual import ManualCapture, manual_site, manual_page
+from .browser_capture_sites import SiteCapture, migrate as migrate_sites
 
 SESSION_TTL_SECONDS = 8 * 60 * 60
 PAIR_TTL_SECONDS = 5 * 60
@@ -63,7 +64,7 @@ def valid_label(value: object) -> str:
     return value
 
 
-class BrowserCapture(ManualCapture):
+class BrowserCapture(SiteCapture, ManualCapture):
     def __init__(self, db):
         self.db = db
         with db.connect() as con:
@@ -132,8 +133,11 @@ class BrowserCapture(ManualCapture):
             session_cols={r[1] for r in con.execute("PRAGMA table_info(browser_capture_sessions)")}
             if 'mode' not in session_cols:
                 con.execute("ALTER TABLE browser_capture_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'task'")
-            # Manual capture must be deliberately started again after restart.
-            con.execute("""UPDATE browser_capture_sessions SET status='disabled',
+            migrate_sites(con)
+            # Legacy one-off sessions finish on restart. Continuous sites keep
+            # their intent and open new document intervals after reconnection.
+            con.execute("""UPDATE browser_capture_sessions SET
+                status=CASE WHEN site_id IS NULL THEN 'disabled' ELSE 'connection_lost' END,
                 ended_at=? WHERE mode='manual' AND status IN ('armed','capturing')""",
                 (int(time.time()),))
             con.execute("""UPDATE browser_capture_settings SET manual_enabled=0,
@@ -154,6 +158,7 @@ class BrowserCapture(ManualCapture):
                 FROM browser_capture_settings WHERE id=1""").fetchone()
             return {"enabled":self.enabled(con),"allow_ai":bool(flags['allow_ai']),
                     "extension_connected":bool(client and now-int(client["last_seen"])<=90),
+                    "extension_paired":bool(client),
                     "active_tasks":sessions,
                     "manual_enabled":bool(flags['manual_enabled']),
                     "manual_site":flags['manual_site'],
@@ -166,19 +171,13 @@ class BrowserCapture(ManualCapture):
             con.execute("UPDATE browser_capture_settings SET enabled=? WHERE id=1",(int(enabled),))
             if not enabled:
                 con.execute("""UPDATE browser_capture_sessions SET status='disabled',ended_at=?
-                    WHERE status IN ('armed','capturing','navigation_stopped')""",(int(time.time()),))
-                con.execute("DELETE FROM browser_extension_pairing")
-                # Existing extension may re-pair when the user next enables capture.
-                con.execute("DELETE FROM browser_extension_clients")
-                con.execute("""UPDATE browser_capture_settings SET
-                    allow_ai=0,manual_enabled=0,manual_site='',manual_session_id='' WHERE id=1""")
-                con.execute("UPDATE browser_capture_tasks SET state='disabled' WHERE state='active'")
+                    WHERE mode='manual' AND status IN ('armed','capturing')""",(int(time.time()),))
+                con.execute("""UPDATE browser_capture_sessions SET status='paused'
+                    WHERE mode='task' AND status IN ('armed','capturing')""")
         return self.settings()
 
     def toggle_ai(self,allow_ai: bool):
         with self.db.connect() as con:
-            if allow_ai and not self.enabled(con):
-                raise HTTPException(409,"请先启用浏览器行为采集")
             con.execute("UPDATE browser_capture_settings SET allow_ai=? WHERE id=1",
                         (int(allow_ai),))
         return self.settings()
@@ -212,8 +211,8 @@ class BrowserCapture(ManualCapture):
                 (hashlib.sha256(token.encode()).hexdigest(),now,now))
         return token
 
-    def _extension(self, con, token: str):
-        if not self.enabled(con):
+    def _extension(self, con, token: str, *, require_enabled=True):
+        if require_enabled and not self.enabled(con):
             raise HTTPException(403,"浏览器采集已关闭")
         digest=hashlib.sha256(token.encode()).hexdigest()
         client=con.execute("SELECT token_hash FROM browser_extension_clients WHERE id=1").fetchone()
@@ -223,8 +222,8 @@ class BrowserCapture(ManualCapture):
 
     def heartbeat(self, token: str):
         with self.db.connect() as con:
-            self._extension(con,token)
-        return {"ok":True}
+            self._extension(con,token,require_enabled=False)
+            return {"ok":True,"enabled":self.enabled(con)}
 
     def _command(self, con, envelope: dict, sender_origin: str) -> tuple[str,str,str,str]:
         secret=os.environ.get("WORKTWIN_CAPTURE_FLOW_SECRET","")
@@ -263,7 +262,7 @@ class BrowserCapture(ManualCapture):
         now=int(time.time())
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            self._extension(con,token)
+            self._extension(con,token,require_enabled=False)
             action,task_id,target,status_path=self._command(con,envelope,sender_origin)
             task=con.execute("""SELECT * FROM browser_capture_tasks WHERE
                 task_id=? AND launcher_origin=?""",(task_id,sender_origin)).fetchone()
@@ -284,12 +283,17 @@ class BrowserCapture(ManualCapture):
                     VALUES(?,?,?,?,?)""",(task_id,sender_origin,status_path,now,now))
             # Each *newly signed click* may authorize another first document
             # within the same task. Replaying an old signal remains forbidden.
+            site=manual_site(target)
+            con.execute("""INSERT OR IGNORE INTO browser_capture_sites
+                (origin,created_at,updated_at) VALUES(?,?,?)""",(site,now,now))
+            site_id=con.execute('SELECT id FROM browser_capture_sites WHERE origin=?',(site,)).fetchone()[0]
             session_id=secrets.token_urlsafe(20)
+            state='armed' if self.enabled(con) else 'paused'
             con.execute("""INSERT INTO browser_capture_sessions
-                (id,task_id,page_key,launcher_origin,status,created_at,expires_at)
-                VALUES(?,?,?,?,'armed',?,?)""",
-                (session_id,task_id,target,sender_origin,now,now+SESSION_TTL_SECONDS))
-            return {"status":"armed","session_id":session_id,"target_page":target}
+                (id,task_id,page_key,launcher_origin,status,created_at,expires_at,site_id)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (session_id,task_id,target,sender_origin,state,now,now+SESSION_TTL_SECONDS,site_id))
+            return {"status":state,"session_id":session_id,"target_page":target}
 
     @staticmethod
     def _close_task(con, task_id: str, launcher_origin: str, status: str, now: int):
@@ -299,7 +303,7 @@ class BrowserCapture(ManualCapture):
             (status,now,task_id,launcher_origin))
         con.execute("""UPDATE browser_capture_sessions SET status=?,ended_at=?
             WHERE task_id=? AND launcher_origin=? AND
-              status IN ('armed','capturing','navigation_stopped')""",
+              status IN ('armed','capturing','navigation_stopped','paused')""",
             (status,now,task_id,launcher_origin))
 
     def poll_task_states(self, fetcher, *, now: int | None = None, max_tasks: int = 25):
@@ -343,6 +347,10 @@ class BrowserCapture(ManualCapture):
                         last_success_at=?,last_check_at=?,failures=0
                         WHERE task_id=? AND launcher_origin=?""",
                         (now,now,task["task_id"],task["launcher_origin"]))
+                    con.execute("""UPDATE browser_capture_sessions SET
+                        status=CASE WHEN document_id IS NULL THEN 'armed' ELSE 'capturing' END
+                        WHERE task_id=? AND launcher_origin=? AND status='paused' AND expires_at>?""",
+                        (task['task_id'],task['launcher_origin'],now))
                 else:
                     failures=current["failures"]+1
                     if failures>=MAX_STATUS_FAILURES:
@@ -387,6 +395,12 @@ class BrowserCapture(ManualCapture):
                 raise HTTPException(409,"目标网页与有效待采集任务不匹配")
             con.execute("""UPDATE browser_capture_sessions SET tab_id=?,document_id=?,status='capturing'
                 WHERE id=?""",(tab_id,document_id,session_id))
+            if r['mode']=='task':
+                # One tab has one current workflow owner. Other tabs and
+                # manual site intent remain independent.
+                con.execute("""UPDATE browser_capture_sessions SET status='navigation_stopped',ended_at=?
+                    WHERE mode='task' AND tab_id=? AND id!=? AND status='capturing'""",
+                    (int(time.time()),tab_id,session_id))
         return {"status":"capturing"}
 
     def event(self, token: str, session_id: str, seq: int, kind: str,
@@ -469,16 +483,17 @@ class BrowserCapture(ManualCapture):
                 action,status,label FROM browser_capture_steps
                 WHERE session_id=? ORDER BY step LIMIT ?""",(session_id,limit))]
 
-    def recent(self, limit: int=30, offset: int=0):
+    def recent(self, limit: int=30, offset: int=0, mode: str | None=None):
         with self.db.connect() as con:
+            where, parameters = (' WHERE mode=?', [mode]) if mode else ('', [])
             return [dict(x) for x in con.execute("""SELECT id,task_id,page_key,mode,status,
-                event_count,created_at,ended_at FROM browser_capture_sessions
-                ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?""",(limit,offset))]
+                event_count,created_at,ended_at FROM browser_capture_sessions""" + where +
+                ' ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?', [*parameters,limit,offset])]
 
     def events(self, session_id: str, limit: int=100, offset: int=0):
         with self.db.connect() as con:
             if not con.execute("SELECT 1 FROM browser_capture_sessions WHERE id=?",(session_id,)).fetchone():
                 raise HTTPException(404,"采集会话不存在")
             return [dict(x) for x in con.execute("""SELECT seq,at,kind,label,location
-                FROM browser_capture_events WHERE session_id=?
+                FROM browser_capture_session_events WHERE session_id=?
                 ORDER BY seq LIMIT ? OFFSET ?""",(session_id,limit,offset))]

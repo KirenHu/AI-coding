@@ -14,6 +14,8 @@ class FakeModel:
     def chat(self,messages,max_tokens=2400):
         self.requests.append(messages)
         body=messages[-1]['content']
+        if '"batch_items"' in body or '"new_items"' in body:
+            return '{"items":[]}'
         if '<source>\n' not in body:
             return '这是根据 '+(re.search(r'\[K\d+\]',body).group(0) if re.search(r'\[K\d+\]',body) else '[K1]')+' 已授权知识生成的回答。'
         source=body.split('<source>\n',1)[1].split('\n</source>',1)[0]

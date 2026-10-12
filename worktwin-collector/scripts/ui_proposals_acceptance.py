@@ -33,6 +33,7 @@ def main():
         try:
             for _ in range(80):
                 try:
+                    if process.poll() is not None:raise RuntimeError('Isolated test server exited')
                     if httpx.get(base+'/api/health',timeout=.5,trust_env=False).status_code==200:break
                 except httpx.HTTPError:time.sleep(.1)
             else:raise RuntimeError('HTTP server unavailable')
@@ -73,12 +74,12 @@ def main():
                         }}''')
                         page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text())
                         page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
-                        page.locator('[data-project="reviews"]').click()
+                        page.locator('#knowledge-proposals').click()
                         expect(page.locator('[data-proposal]')).to_have_count(1)
                         page.locator('[data-proposal]').first.click()
                         expect(page.get_by_text('AI 建议的新版本')).to_be_visible()
                         page.locator('#proposal-accept').click()
-                        expect(page.locator('[data-project="reviews"] .count')).to_have_text('0')
+                        expect(page.locator('#knowledge-proposals')).to_have_text('更新建议 0')
                         result=client.get('/api/knowledge',headers=headers).json()
                         article=next(k for k in result if k['id']==kid)
                         assert article['version']==2 and article['status']=='confirmed'
@@ -86,7 +87,6 @@ def main():
                         assert not errors,errors
                         screenshot=os.getenv('WORKTWIN_UI_REVIEW_SCREENSHOT','')
                         if screenshot:
-                            page.locator('[data-project="all"]').click()
                             page.screenshot(path=screenshot,full_page=True)
                         print('UI REVIEW PASS: proposal listed, accepted, versioned, no browser errors')
                     finally:browser.close()

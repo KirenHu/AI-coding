@@ -143,8 +143,10 @@ def test_default_disabled_and_local_extension_pairing_boundaries(monkeypatch,tmp
             assert "https://flow.example.com/*" in manifest["externally_connectable"]["matches"]
         assert client.put("/api/browser-capture",headers=auth,
                           json={"enabled":False}).status_code==200
-        assert client.post("/capture/heartbeat",headers=credential).status_code==403
-        assert client.get("/api/browser-capture",headers=auth).json()["extension_connected"] is False
+        assert client.post("/capture/heartbeat",headers=credential).json()=={"ok":True,"enabled":False}
+        assert client.get("/api/browser-capture",headers=auth).json()["extension_connected"] is True
+        client.put("/api/browser-capture",headers=auth,json={"enabled":True})
+        assert client.post("/capture/heartbeat",headers=credential).json()["enabled"] is True
 
 
 def test_navigation_to_browser_internal_url_closes_session(monkeypatch,tmp_path):

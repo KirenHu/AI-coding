@@ -39,13 +39,24 @@ def snapshot(path):
                 for table in PRESERVED_TABLES}
 
 
-def test_upgrade_preserves_knowledge_versions_access_and_legacy_backup(tmp_path):
+def assert_preserved_fields(path, before):
+    after = snapshot(path)
+    for table, rows in before.items():
+        assert len(after[table]) == len(rows)
+        for old, current in zip(rows, after[table]):
+            assert {key: current[key] for key in old} == old
+
+
+def test_upgrade_preserves_knowledge_versions_access_and_legacy_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr('worktwin.config.codex_sessions_path', lambda: Path('/legacy/authorized/sessions'))
     path = legacy_database(tmp_path / 'worktwin.sqlite')
     before = snapshot(path)
     db = Database(path)
-    assert snapshot(path) == before
+    assert_preserved_fields(path, before)
     with db.connect() as con:
         assert [note['id'] for note in effective_notes(con, 8)] == [41]
+        assert con.execute('SELECT collection_scope FROM sources WHERE id=7').fetchone()[0] == 'assistant'
+        assert con.execute('SELECT organization FROM knowledge WHERE id=41').fetchone()[0] == 'material'
         assert grant(con, TOKEN)['twin_id'] == 8
         assert grant(con, TOKEN)['allow_logs'] == 1
         assert con.execute('SELECT version FROM knowledge WHERE id=41').fetchone()[0] == 3
@@ -70,7 +81,7 @@ def test_upgrade_preserves_knowledge_versions_access_and_legacy_backup(tmp_path)
     Database(path)
     assert backup.stat().st_mtime_ns == original_mtime
     assert hashlib.sha256(backup.read_bytes()).hexdigest() == original_backup
-    assert snapshot(path) == before
+    assert_preserved_fields(path, before)
     assert db.setting('post_upgrade_user_setting') == 'saved'
 
 
@@ -81,10 +92,11 @@ def test_fresh_database_does_not_create_an_empty_upgrade_backup(tmp_path):
     assert not list(tmp_path.glob('*.pre-1.3.0.sqlite'))
 
 
-def test_first_upgrade_scan_replaces_a_rewritten_legacy_transcript(tmp_path):
+def test_first_upgrade_scan_replaces_a_rewritten_legacy_transcript(tmp_path, monkeypatch):
     path = legacy_database(tmp_path / 'legacy.sqlite')
     root = tmp_path / 'sessions'
     root.mkdir()
+    monkeypatch.setattr('worktwin.config.codex_sessions_path', lambda: root)
     transcript = root / 'one.jsonl'
     fresh_quote = '用户明确改为分步发布，旧流程已经取消。'
     transcript.write_text(json.dumps({'timestamp': '2026-10-10T10:00:00Z',
@@ -125,12 +137,13 @@ def test_cursor_source_api_uses_export_adapter_without_default_model_consent(tmp
         assert client.get('/api/ai/jobs', headers=auth).json() == []
 
 
-def test_completed_legacy_transcript_only_processes_post_upgrade_append(tmp_path):
+def test_completed_legacy_transcript_only_processes_post_upgrade_append(tmp_path, monkeypatch):
     from worktwin.codex import parse_codex_session
 
     path = legacy_database(tmp_path / 'appended.sqlite')
     root = tmp_path / 'logs'
     root.mkdir()
+    monkeypatch.setattr('worktwin.config.codex_sessions_path', lambda: root)
     transcript = root / 'one.jsonl'
     old_quote = '用户确认采用统一工作流。'
     new_quote = '新增决定分两个批次发布。'
@@ -164,3 +177,17 @@ def test_completed_legacy_transcript_only_processes_post_upgrade_append(tmp_path
         assert con.execute('SELECT is_current FROM knowledge_evidence WHERE knowledge_id=41').fetchone()[0] == 1
         assert con.execute('SELECT version FROM knowledge WHERE id=41').fetchone()[0] == 3
         assert [note['id'] for note in effective_notes(con, 8)] == [41]
+
+
+def test_upgrade_pauses_old_partial_tool_source_but_preserves_usable_knowledge(tmp_path, monkeypatch):
+    path = legacy_database(tmp_path / 'partial.sqlite')
+    monkeypatch.setattr('worktwin.config.codex_sessions_path', lambda: tmp_path / 'whole-sessions')
+    before = snapshot(path)
+    db = Database(path)
+    before['sources'][0]['enabled'] = 0
+    assert_preserved_fields(path, before)
+    with db.connect() as con:
+        assert con.execute('SELECT collection_scope FROM sources WHERE id=7').fetchone()[0] == 'legacy'
+        assert [note['id'] for note in effective_notes(con, 8)] == [41]
+        assert con.execute('SELECT state FROM ai_jobs').fetchone()[0] == 'done'
+        assert con.execute('SELECT count(*) FROM transcript_streams').fetchone()[0] == 0

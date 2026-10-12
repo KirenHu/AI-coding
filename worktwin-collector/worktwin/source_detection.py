@@ -9,11 +9,25 @@ import json
 import os
 from pathlib import Path
 
-from .config import codex_sessions_path, claude_projects_path
+from .config import codex_sessions_path, claude_projects_path, cursor_exports_path
+
+
+def recognizes_file(kind: str, path: Path) -> bool:
+    with path.open('rb') as stream:
+        lines = stream.read(128 * 1024).splitlines()[:80]
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if isinstance(event, dict) and recognizable(kind, event):
+            return True
+    return False
 
 
 def detect_transcripts(kind: str, root: str | None = None) -> dict:
-    default = {'codex': codex_sessions_path(), 'claude': claude_projects_path()}.get(kind)
+    default = {'codex': codex_sessions_path(), 'claude': claude_projects_path(),
+               'cursor': cursor_exports_path()}.get(kind)
     path = Path(root).expanduser().resolve() if root else default
     result = {'kind': kind, 'root': str(path or ''), 'exists': bool(path and path.is_dir()),
               'recognized': 0, 'inspected': 0, 'unreadable': 0, 'sampled': True}
@@ -29,18 +43,8 @@ def detect_transcripts(kind: str, root: str | None = None) -> dict:
                 continue
             result['inspected'] += 1
             try:
-                with Path(folder, name).open('rb') as stream:
-                    lines = stream.read(128 * 1024).splitlines()[:80]
-                for line in lines:
-                    try:
-                        event = json.loads(line)
-                    except (ValueError, UnicodeError):
-                        continue
-                    if not isinstance(event, dict):
-                        continue
-                    if recognizable(kind, event):
-                        result['recognized'] += 1
-                        break
+                if recognizes_file(kind, Path(folder, name)):
+                    result['recognized'] += 1
             except OSError:
                 result['unreadable'] += 1
             if result['inspected'] >= 64:

@@ -33,7 +33,7 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
             continue
         # Permission revocation or a deleted contributing document invalidates
         # the whole article, including any previously assigned pin.
-        if any(not r['enabled'] or r['deleted'] or not r['allow_ai'] or
+        if any(r['deleted'] or not r['allow_ai'] or
                (sharing and not r['allow_share']) for r in records):
             continue
         active_sources={str(r['source_id']) for r in records
@@ -83,3 +83,20 @@ def replace_grants(con, twin_id: int, grants: list[dict]) -> None:
     con.executemany("""INSERT INTO twin_grants(twin_id,subject_type,subject_key,effect)
         VALUES(?,?,?,?)""",[(twin_id,g['subject_type'],g['subject_key'],g['effect'])
                              for g in grants])
+
+
+def migrate_exclusions(con):
+    """Freeze each old exclusion policy as its current explicit knowledge set."""
+    if 'grants_migrated' not in {r[1] for r in con.execute('PRAGMA table_info(twins)')}:
+        con.execute('ALTER TABLE twins ADD COLUMN grants_migrated INTEGER NOT NULL DEFAULT 0')
+    if con.execute("SELECT 1 FROM settings WHERE key='twin_exclusions_removed_v1'").fetchone():
+        return
+    for row in con.execute("SELECT DISTINCT twin_id FROM twin_grants WHERE effect='deny'").fetchall():
+        twin_id = row['twin_id']
+        ids = [note['id'] for note in effective_notes(con, twin_id)]
+        con.execute('DELETE FROM twin_grants WHERE twin_id=?', (twin_id,))
+        con.execute('DELETE FROM twin_knowledge WHERE twin_id=?', (twin_id,))
+        con.executemany('INSERT INTO twin_knowledge(twin_id,knowledge_id) VALUES(?,?)',
+                        [(twin_id, kid) for kid in ids])
+        con.execute("UPDATE twins SET knowledge_mode='manual',grants_migrated=1 WHERE id=?", (twin_id,))
+    con.execute("INSERT INTO settings(key,value) VALUES('twin_exclusions_removed_v1','1')")
