@@ -5,6 +5,7 @@ from worktwin.db import Database
 from worktwin.knowledge import store_candidates
 from worktwin.scope import snapshot_history
 from worktwin.twin_access import effective_notes
+from tests.support import current_refs
 
 
 def material(con, name, quote, *, project='project:worktwin', allow_ai=True, context=''):
@@ -42,11 +43,12 @@ class Writer:
             return json.dumps({'items':groups},ensure_ascii=False)
         if self.hook:
             self.hook()
-        return json.dumps({'items':[self.output or {'complete':True,'kind':'process',
+        result=self.output or {'complete':True,'kind':'process',
             'title':'WorkTwin任务办理机制','topic':'任务办理机制','scope_detail':'WorkTwin工作任务',
             'article_summary':'介绍WorkTwin任务从开始处理到完成的状态、结束条件与异常处理。',
             'body':'## 任务是什么\nWorkTwin工作任务是一次需要明确结果的工作事项。\n\n## 办理规则\n开始处理后进入进行中，验收完成后进入已完成。',
-            'change_summary':'补充任务状态与完成条件'}]},ensure_ascii=False)
+            'change_summary':'补充任务状态与完成条件'}
+        return json.dumps({'items':[dict(result,source_refs=result.get('source_refs',current_refs(request)))]},ensure_ascii=False)
 
 
 def test_materials_are_not_articles_and_periodic_writer_reads_original_context(tmp_path):
@@ -57,9 +59,9 @@ def test_materials_are_not_articles_and_periodic_writer_reads_original_context(t
     model=Writer();worker=ArticleMaintainer(db,model)
     assert worker.process_next()['articles']==1
     assert worker.process_next()['state']=='idle'
-    assert len(model.requests)==2
-    authored=json.loads(model.requests[1][-1]['content'])
-    assert '工作任务代表' in authored['source_materials'][0]['sources'][0]['context']
+    assert len(model.requests)==1
+    authored=json.loads(model.requests[0][-1]['content'])
+    assert '工作任务代表' in authored['source_documents'][0]['content']
     with db.connect() as con:
         result=con.execute("SELECT * FROM knowledge WHERE organization='article'").fetchone()
         assert result['id']!=kid and result['status']=='confirmed'
@@ -154,13 +156,13 @@ def test_large_article_continuation_stays_bounded_and_unchanged_keeps_prior_rewr
             req=json.loads(messages[-1]['content'])
             if 'materials' in req: return super().chat(messages,max_tokens)
             self.requests.append(messages)
-            if len(self.requests)==2:
+            if len(self.requests)==1:
                 return json.dumps({'items':[{'complete':True,'kind':'process','title':'完整任务机制',
-                    'article_summary':'任务定义及办理机制','body':'重写后的当前章节。'*2500,'change_summary':'重写章节'}]},ensure_ascii=False)
+                    'article_summary':'任务定义及办理机制','body':'重写后的当前章节。'*2500,'change_summary':'重写章节','source_refs':current_refs(req)}]},ensure_ascii=False)
             assert req['existing_articles'][0]['body'].startswith('重写后的')
             return '{"items":[{"complete":true,"unchanged":true}]}'
     writer=Continuation(groups=[{'topic':'任务机制','material_ids':ids,'article_ids':[kid]}])
     assert ArticleMaintainer(db,writer).process_next()['articles']==1
-    assert len(writer.requests)>2
+    assert len(writer.requests)>1
     with db.connect() as con:
         assert con.execute('SELECT body FROM knowledge WHERE id=?',(kid,)).fetchone()[0].startswith('重写后的')

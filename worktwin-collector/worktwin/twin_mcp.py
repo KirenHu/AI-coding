@@ -123,15 +123,15 @@ def create_server(db):
             return {key:k[key] for key in ('id','title','body','topic','scope','project','project_key','scope_detail','version','updated_at')}|{'citations':evidence}
 
     @server.tool(annotations=annotations)
-    def search_article_sources(knowledge_id:int, query:str) -> list[dict]:
-        """Search original passages linked to an authorized article. No separate item grants are needed."""
+    def search_article_sources(knowledge_id:int, query:str, include_history:bool=False) -> list[dict]:
+        """Search current supporting passages. Explicit include_history retrieves original history, not current requirements."""
         if not query.strip() or len(query)>500:
             raise ToolError('请输入有效查询')
         with db.connect() as con:
             _,notes=authorized_notes(con)
             if not any(k['id']==knowledge_id for k in notes):
                 raise ToolError('文章不存在、不可用或未授权')
-            return source_passages(con,knowledge_id,query=query)
+            return source_passages(con,knowledge_id,query=query,include_history=include_history)
 
     @server.tool(annotations=annotations)
     def read_source_log(document_id:int, offset:int=0, limit:int=12000) -> dict:

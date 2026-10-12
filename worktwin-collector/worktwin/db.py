@@ -255,7 +255,9 @@ class Database:
         continuous = 'settings' in tables and conn.execute(
             "SELECT 1 FROM settings WHERE key='continuous_evidence_v1'").fetchone()
         articles = 'settings' in tables and conn.execute("SELECT 1 FROM settings WHERE key='topic_articles_v1'").fetchone()
-        marker, version = (('article_maintenance_v1','1.5.0') if articles else
+        maintained = 'settings' in tables and conn.execute("SELECT 1 FROM settings WHERE key='article_maintenance_v1'").fetchone()
+        marker, version = (('project_current_documents_v1','1.5.1') if maintained and articles else
+            ('article_maintenance_v1','1.5.0') if articles else
             ('topic_articles_v1', '1.4.0') if continuous else ('continuous_evidence_v1', '1.3.0'))
         if 'settings' in tables and conn.execute('SELECT 1 FROM settings WHERE key=?', (marker,)).fetchone():
             return

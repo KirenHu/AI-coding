@@ -32,7 +32,7 @@ def _available_knowledge(con: sqlite3.Connection) -> list[dict]:
         SELECT k.id,k.kind,k.title,k.body,k.status,k.version,k.updated_at,
                k.source_bound,k.needs_review
         FROM knowledge k
-        WHERE k.status!='archived' AND k.needs_review=0
+        WHERE k.organization='article' AND k.status!='archived' AND k.needs_review=0
           AND (k.source_bound=0 OR EXISTS (
               SELECT 1 FROM knowledge_evidence e
               JOIN documents d ON d.id=e.document_id
@@ -119,7 +119,7 @@ def export_wiki_archive(con: sqlite3.Connection) -> bytes:
     """
     records = [dict(row) for row in con.execute("""
         SELECT *
-        FROM knowledge WHERE status!='archived' ORDER BY id
+        FROM knowledge WHERE organization='article' AND status!='archived' ORDER BY id
     """)]
     ids = {int(k['id']) for k in records}
     groups: dict[str, list[dict]] = defaultdict(list)

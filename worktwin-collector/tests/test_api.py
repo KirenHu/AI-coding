@@ -28,7 +28,7 @@ def test_local_web_workflow(tmp_path: Path):
         run_ai_article(app.state.db)
         documents = client.get("/api/documents",headers=headers).json()
         assert len(documents) == 1
-        hits=client.get("/api/search",params={"q":"审批"},headers=headers).json()
+        hits=client.get("/api/search",params={"q":"审批","include_sources":True},headers=headers).json()
         assert hits["documents"]
         assert client.get("/api/knowledge",headers=headers).json()
         item=client.get('/api/knowledge',headers=headers,params={'organization':'article'}).json()[0]

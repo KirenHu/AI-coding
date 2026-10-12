@@ -12,7 +12,7 @@ from worktwin.collector import Collector
 from worktwin.db import Database
 from worktwin.knowledge import candidates_from_text
 from worktwin.search import search
-from tests.support import run_ai
+from tests.support import run_ai, run_ai_article
 
 
 def auth(client):
@@ -117,14 +117,14 @@ def test_claude_project_wiki_and_question_retrieval(tmp_path):
         result=c.post('/api/sources',headers=h,json={'name':'Claude','kind':'claude','root':str(sessions.parent),'allow_ai':True})
         assert result.status_code==200
         assert app.state.collector.scan_all()['new']==1
-        run_ai(app.state.db)
+        run_ai_article(app.state.db)
         projects=c.get('/api/projects',headers=h).json()
         assert projects[0]['name']=='MyApp'
         summary=c.get('/api/projects/summary',headers=h,params={'name':'MyApp'}).json()
         assert len(summary['documents'])==1
         assert len(summary['knowledge'])>=1
         question='为什么审批能力要做成工作流节点？'
-        hits=c.get('/api/search',headers=h,params={'q':question}).json()
+        hits=c.get('/api/search',headers=h,params={'q':question,'include_sources':True}).json()
         assert any('审批' in item['excerpt'] for item in hits['documents'])
         assert not c.get('/api/projects').is_success
         archive=c.get('/api/export-wiki',headers=h)

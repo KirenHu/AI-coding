@@ -8,6 +8,7 @@ from worktwin.knowledge import store_candidates
 from worktwin.reconcile import review_flags
 from worktwin.twin_access import effective_notes
 from tests.test_article_maintenance import material
+from tests.support import current_refs
 
 
 class TopicWriter:
@@ -31,12 +32,11 @@ class TopicWriter:
         if self.fail_once:
             self.fail_once=False
             raise RuntimeError('provider-error-with-private-token-do-not-store')
-        body='\n\n'.join(dict.fromkeys(e['context'] for m in request['source_materials']
-                                      for e in m['sources']))
+        body='\n\n'.join(dict.fromkeys(d['content'] for d in request['source_documents']))
         return json.dumps({'items':[{'complete':True,'unchanged':False,'kind':'process',
             'title':request['topic']+'说明','topic':request['topic'],
             'scope_detail':'WorkTwin项目','article_summary':'介绍'+request['topic']+'的对象、规则及适用条件。',
-            'body':'## 工作背景与规则\n\n'+body,'change_summary':'更新具体办理规则及其依据'}]},ensure_ascii=False)
+            'body':'## 工作背景与规则\n\n'+body,'source_refs':current_refs(request),'change_summary':'更新具体办理规则及其依据'}]},ensure_ascii=False)
 
 
 def add_material(con,name,quote,topic,context=''):
@@ -52,39 +52,29 @@ def test_one_off_rebuild_reads_only_its_document_set(tmp_path):
         _,outside=add_material(con,'范围之外','只有此范围之外资料记载的规则。','任务办理机制')
     writer=TopicWriter()
     assert ArticleMaintainer(db,writer).process_next(authorized_documents={selected_doc})['articles']==1
-    assert [m['id'] for m in writer.requests[0]['materials']]==[selected]
-    assert all(e['document_id']==selected_doc for m in writer.requests[1]['source_materials'] for e in m['sources'])
+    assert [m['id'] for m in writer.requests[0]['source_materials']]==[selected]
+    assert all(e['document_id']==selected_doc for m in writer.requests[0]['source_materials'] for e in m['sources'])
     with db.connect() as con:
         assert con.execute('SELECT 1 FROM article_material_receipts WHERE material_id=?',(outside,)).fetchone() is None
 
 
-def test_new_material_rewrites_only_affected_article_and_reuses_related_context(tmp_path):
+def test_new_meeting_updates_same_project_document_with_all_relevant_sections(tmp_path):
     db=Database(tmp_path/'incremental.sqlite')
     with db.connect() as con:
-        task_doc,task=add_material(con,'任务定义','任务由负责人开始办理。','任务办理机制')
+        task_doc,task=add_material(con,'会议任务定义','任务由负责人开始办理。','任务办理机制')
         model_doc,model=add_material(con,'模型配置','模型地址由管理员配置。','模型配置方法')
     writer=TopicWriter();worker=ArticleMaintainer(db,writer)
-    assert worker.process_next()['articles']==2
-    with db.connect() as con:
-        articles={r['topic']:dict(r) for r in con.execute("SELECT * FROM knowledge WHERE organization='article'")}
-        assert con.execute('SELECT count(*) FROM article_material_receipts').fetchone()[0]==2
-    assert worker.process_next()['state']=='idle'
-    writer.requests.clear()
-    with db.connect() as con:
-        completion_doc,completion=add_material(con,'任务结束','任务完成必须通过验收。','任务办理机制')
     assert worker.process_next()['articles']==1
-    assert [m['id'] for m in writer.requests[0]['materials']]==[completion]
-    composed=writer.requests[1]
-    assert {m['id'] for m in composed['source_materials']}=={task,completion}
-    assert {e['document_id'] for m in composed['source_materials'] for e in m['sources']}=={task_doc,completion_doc}
-    assert all(e['document_id']!=model_doc for m in composed['source_materials'] for e in m['sources'])
     with db.connect() as con:
-        changed=con.execute('SELECT * FROM knowledge WHERE id=?',(articles['任务办理机制']['id'],)).fetchone()
-        untouched=con.execute('SELECT * FROM knowledge WHERE id=?',(articles['模型配置方法']['id'],)).fetchone()
-        assert changed['version']==2 and '通过验收' in changed['body']
-        assert dict(untouched)==articles['模型配置方法']
-        assert con.execute('SELECT count(*) FROM knowledge_history WHERE knowledge_id=?',(untouched['id'],)).fetchone()[0]==0
-        assert con.execute('SELECT count(*) FROM article_material_receipts').fetchone()[0]==3
+        article=dict(con.execute("SELECT * FROM knowledge WHERE organization='article'").fetchone())
+        assert con.execute('SELECT count(*) FROM article_material_receipts').fetchone()[0]==2
+        completion_doc,completion=add_material(con,'后续会议','任务完成必须通过验收。','完全不同的小点标题')
+    assert worker.process_next()['articles']==1
+    with db.connect() as con:
+        current=con.execute('SELECT * FROM knowledge WHERE id=?',(article['id'],)).fetchone()
+        assert current['version']==article['version']+1
+        assert '任务由负责人' in current['body'] and '管理员配置' in current['body'] and '必须通过验收' in current['body']
+        assert con.execute("SELECT count(*) FROM knowledge WHERE organization='article' AND status!='archived'").fetchone()[0]==1
     assert worker.process_next()['state']=='idle'
 
 
@@ -165,63 +155,42 @@ def test_source_replacement_supersedes_old_citations_and_keeps_article_usable(tm
         assert [k['id'] for k in effective_notes(con,tid)]==[article['id']]
 
 
-def test_unrelated_project_background_is_used_for_routing_not_article_authorship(tmp_path):
+def test_other_project_private_material_does_not_enter_current_document(tmp_path):
     db=Database(tmp_path/'project-privacy.sqlite')
     marker='INTERNAL-PRICING-PRIVATE-7742'
     with db.connect() as con:
-        private_doc,private=add_material(con,'内部定价',marker+'只属于内部定价事项。','内部定价机制')
-        con.execute("UPDATE knowledge SET organization='article',status='confirmed',article_summary='内部定价机制说明' WHERE id=?",(private,))
+        _,private=material(con,'内部定价',marker,project='project:private')
+        con.execute("UPDATE knowledge SET organization='article',status='confirmed' WHERE id=?",(private,))
         public_doc,public=add_material(con,'公开办理','公开任务由负责人提交验收。','公开办理机制')
         con.execute('UPDATE sources SET allow_share=1 WHERE id=(SELECT source_id FROM documents WHERE id=?)',(public_doc,))
     writer=TopicWriter()
     assert ArticleMaintainer(db,writer).process_next()['articles']==1
-    assert marker in json.dumps(writer.requests[0]['project'],ensure_ascii=False)
-    composed=writer.requests[1]
-    assert marker not in json.dumps(composed,ensure_ascii=False)
-    assert {e['document_id'] for m in composed['source_materials'] for e in m['sources']}=={public_doc}
+    assert marker not in json.dumps(writer.requests,ensure_ascii=False)
     with db.connect() as con:
-        authored=con.execute("SELECT * FROM knowledge WHERE organization='article' AND topic='公开办理机制'").fetchone()
-        assert marker not in authored['body']
+        authored=con.execute("SELECT * FROM knowledge WHERE organization='article' AND project_key='project:worktwin'").fetchone()
         tid=con.execute("INSERT INTO twins(name) VALUES('公开事项助手')").lastrowid
         con.execute('INSERT INTO twin_knowledge(twin_id,knowledge_id) VALUES(?,?)',(tid,authored['id']))
         assert [k['id'] for k in effective_notes(con,tid,sharing=True)]==[authored['id']]
 
 
-def test_shared_material_is_not_receipted_until_every_selected_topic_is_complete(tmp_path):
-    db=Database(tmp_path/'shared-material.sqlite')
-    common='任务是一项具有明确结果与验收条件的工作事项。'
-    with db.connect() as con: _,shared=add_material(con,'共享定义',common,'任务办理机制')
+def test_incomplete_project_waits_for_context_without_publishing_small_point(tmp_path):
+    db=Database(tmp_path/'incomplete.sqlite')
+    with db.connect() as con: _,shared=add_material(con,'孤立指代','按前面商议的方法进行。','任务办理机制')
     class PartialWriter(TopicWriter):
-        exception_complete=False
-
+        complete=False
         def chat(self,messages,max_tokens):
-            request=json.loads(messages[-1]['content'])
-            if 'materials' in request:
-                self.requests.append(request)
-                ids=[m['id'] for m in request['materials']]
-                groups=[{'topic':'异常处理机制','material_ids':ids,
-                    'article_ids':[a['id'] for a in request['articles'] if a['topic']=='异常处理机制']}]
-                if shared in ids:
-                    groups.insert(0,{'topic':'任务办理机制','material_ids':[shared],
-                        'article_ids':[a['id'] for a in request['articles'] if a['topic']=='任务办理机制']})
-                return json.dumps({'items':groups},ensure_ascii=False)
-            if request['topic']=='异常处理机制' and not self.exception_complete:
-                self.requests.append(request)
+            if not self.complete:
                 return '{"items":[{"complete":false}]}'
             return super().chat(messages,max_tokens)
     writer=PartialWriter();worker=ArticleMaintainer(db,writer)
-    result=worker.process_next()
-    assert result['articles']==1 and result['deferred']==1
+    assert worker.process_next()['deferred']==1
+    assert worker.process_next()['state']=='idle'
     with db.connect() as con:
-        assert con.execute('SELECT state FROM article_maintenance_runs').fetchone()[0]=='waiting'
-        assert con.execute('SELECT count(*) FROM article_material_receipts WHERE material_id=?',(shared,)).fetchone()[0]==0
-        _,background=add_material(con,'异常规则','异常时由审核人退回至办理中状态。','异常处理机制')
-    writer.exception_complete=True
-    writer.requests.clear()
-    assert worker.process_next()['articles']>=1
-    assert {m['id'] for m in writer.requests[0]['materials']}=={shared,background}
+        assert con.execute("SELECT count(*) FROM knowledge WHERE organization='article'").fetchone()[0]==0
+        assert con.execute('SELECT count(*) FROM article_material_receipts').fetchone()[0]==0
+        add_material(con,'办理规则','异常时由审核人退回至办理中状态。','异常规则')
+    writer.complete=True
+    assert worker.process_next()['articles']==1
     with db.connect() as con:
-        exception=con.execute("SELECT * FROM knowledge WHERE organization='article' AND topic='异常处理机制'").fetchone()
-        assert common in exception['body'] and '退回至办理中' in exception['body']
         assert con.execute('SELECT count(*) FROM article_material_receipts').fetchone()[0]==2
     assert worker.process_next()['state']=='idle'

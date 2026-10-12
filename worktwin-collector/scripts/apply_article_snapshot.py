@@ -113,9 +113,17 @@ def main():
     with db.connect() as con:
         con.execute('BEGIN IMMEDIATE')
         permissions=[tuple(r) for r in con.execute('SELECT id,enabled,allow_ai,allow_share FROM sources ORDER BY id')]
+        blocked_projects=set()
+        for document in stage.execute('SELECT scope,project_key,knowledge_id FROM project_documents'):
+            for reference in stage.execute('SELECT document_id,content_sha FROM article_current_sources WHERE knowledge_id=?',(document['knowledge_id'],)):
+                current_source=con.execute('SELECT sha256 FROM documents WHERE id=? AND deleted=0',(reference[0],)).fetchone()
+                if not current_source or current_source[0]!=reference[1]:
+                    blocked_projects.add((document['scope'],document['project_key']))
         mapping={r[0]:r[0] for r in baseline.execute('SELECT id FROM knowledge')}
         for item in candidates:
             kid=item['id']
+            if (item['scope'],item['project_key']) in blocked_projects:
+                skipped.append(kid);skipped_reasons[kid]='source_content_changed';continue
             prior=baseline.execute('SELECT version FROM knowledge WHERE id=?',(kid,)).fetchone()
             current=con.execute('SELECT version FROM knowledge WHERE id=?',(kid,)).fetchone()
             if prior and (not current or current['version']!=prior['version']):
@@ -143,6 +151,8 @@ def main():
         for project in stage.execute('SELECT * FROM project_entities'):
             if not con.execute('SELECT 1 FROM project_entities WHERE project_key=?',(project['project_key'],)).fetchone():
                 insert(con,'project_entities',project)
+            elif con.execute('SELECT 1 FROM knowledge WHERE id IN ('+','.join('?' for _ in valid)+') AND project_key=?',(*[mapping[i] for i in valid],project['project_key'])).fetchone():
+                con.execute('UPDATE project_entities SET name=? WHERE project_key=?',(project['name'],project['project_key']))
         for table in ('knowledge_evidence','article_parts'):
             for row in stage.execute('SELECT * FROM '+table):
                 if row['knowledge_id'] not in valid:continue
@@ -167,6 +177,12 @@ def main():
             if row['article_id'] in valid and row['material_id'] not in skipped:
                 con.execute('INSERT OR IGNORE INTO article_materials VALUES(?,?)',
                     (mapping[row['article_id']],mapping.get(row['material_id'],row['material_id'])))
+                material=stage.execute('SELECT * FROM knowledge WHERE id=?',(row['material_id'],)).fetchone()
+                live_id=mapping.get(row['material_id'],row['material_id'])
+                current_material=con.execute('SELECT * FROM knowledge WHERE id=?',(live_id,)).fetchone()
+                if current_material and material['version']==current_material['version'] and material['body']==current_material['body']:
+                    con.execute('UPDATE knowledge SET scope=?,project_key=?,project=? WHERE id=?',
+                        (material['scope'],material['project_key'],material['project'],live_id))
         for row in stage.execute('SELECT * FROM project_memberships'):
             if row['knowledge_id'] in valid:
                 data=dict(row);data['knowledge_id']=mapping[data['knowledge_id']]
@@ -198,6 +214,18 @@ def main():
             if row['knowledge_id'] in valid and con.execute('SELECT 1 FROM browser_capture_sessions WHERE id=?',(row['session_id'],)).fetchone():
                 data=dict(row);data['knowledge_id']=mapping[data['knowledge_id']]
                 insert(con,'browser_article_observations',data,replace=True)
+        current_ids={row[0] for row in stage.execute('SELECT DISTINCT knowledge_id FROM article_current_sources') if row[0] in valid}
+        for old_id in current_ids:
+            con.execute('DELETE FROM article_current_sources WHERE knowledge_id=?',(mapping[old_id],))
+        for table in ('project_documents','article_current_sources'):
+            for row in stage.execute('SELECT * FROM '+table):
+                if row['knowledge_id'] in valid:
+                    data=dict(row);data['knowledge_id']=mapping[data['knowledge_id']]
+                    insert(con,table,data,replace=True)
+        for table in ('project_source_priorities','project_source_guides'):
+            for row in stage.execute('SELECT * FROM '+table):
+                if con.execute('SELECT 1 FROM project_documents WHERE project_key=?',(row['project_key'],)).fetchone():
+                    insert(con,table,row,replace=True)
         receipts=copy_receipts(stage,con,mapping,accepted_articles=valid)
         assert permissions==[tuple(r) for r in con.execute('SELECT id,enabled,allow_ai,allow_share FROM sources ORDER BY id')]
         assert con.execute('PRAGMA integrity_check').fetchone()[0]=='ok'

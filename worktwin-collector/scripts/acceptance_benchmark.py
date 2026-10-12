@@ -28,14 +28,13 @@ class DeterministicModel:
                     'material_ids':[m['id'] for m in data['materials']],
                     'article_ids':[],'defer':False}]},ensure_ascii=False)
             if 'source_materials' in data:
-                assert all('避免重复的审批系统维护' in e['context']
-                    for m in data['source_materials'] for e in m['sources'])
+                assert all('避免重复的审批系统维护' in d['content'] for d in data['source_documents'])
                 return json.dumps({'items':[{'complete':True,'unchanged':False,
                     'unresolved_conflict':False,'kind':'decision','title':'审批采用工作流节点',
                     'topic':'审批架构','scope_detail':'本项目的审批能力',
                     'article_summary':'审批作为工作流节点实现，复用现有上下文和权限，避免重复维护审批系统。',
                     'body':'## 实现方式\n\n审批能力封装为工作流节点，复用工作流上下文、权限及路由机制。\n\n## 选择依据\n\n采用现有工作流能力，避免独立审批系统带来的重复维护。',
-                    'change_summary':'形成审批实现方式及其选择依据'}]},ensure_ascii=False)
+                    'source_refs':[{'document_id':e['document_id'],'quote':e['quote']} for m in data['source_materials'] for e in m['sources']], 'change_summary':'形成审批实现方式及其选择依据'}]},ensure_ascii=False)
         raw = request.split('<source>\n', 1)[-1].split('\n</source>', 1)[0]
         anchor = '我们最终决定将审批能力封装为一个节点。'
         if anchor not in raw:

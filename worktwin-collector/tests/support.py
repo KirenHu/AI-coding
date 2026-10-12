@@ -5,6 +5,13 @@ from worktwin.jobs import KnowledgeWorker
 from worktwin.knowledge import visible_turns
 
 
+def current_refs(payload):
+    refs=[r for a in payload.get('existing_articles',[]) for r in a.get('source_refs',[]) if isinstance(r,dict)]
+    refs += [{'document_id':e['document_id'],'quote':e['quote']} for m in payload.get('source_materials',[]) for e in m['sources']]
+    refs += [{'source_id':sid} for d in payload.get('source_documents',[]) for sid in d.get('source_ids',[])]
+    return list({r.get('source_id') or (r['document_id'],r['quote']):r for r in refs}.values())
+
+
 class FakeModel:
     configured=True
 
@@ -29,15 +36,16 @@ class FakeModel:
                 materials=payload['source_materials']
                 existing=payload['existing_articles']
                 paragraphs=list(dict.fromkeys(m['body'] for m in materials))
-                title=existing[0]['title'] if existing else materials[0]['title']
-                overview=f"本文说明{payload['topic']}，适用于{materials[0]['scope_detail']}。"
+                title=existing[0]['title'] if existing else (materials[0]['title'] if materials else payload['topic'])
+                detail=materials[0]['scope_detail'] if materials else payload['topic']
+                overview=f"本文说明{payload['topic']}，适用于{detail}。"
                 article_body='## 工作事项\n\n'+'\n\n'.join(paragraphs)
-                article_body+='\n\n## 适用条件\n\n'+materials[0]['scope_detail']
+                article_body+='\n\n## 适用条件\n\n'+detail
                 return json.dumps({'items':[{'complete':True,'unchanged':False,
                     'unresolved_conflict':False,'kind':'decision','title':title,
-                    'topic':payload['topic'],'scope_detail':materials[0]['scope_detail'],
+                    'topic':payload['topic'],'scope_detail':detail,
                     'article_summary':overview,'body':article_body,
-                    'change_summary':'补充工作要求及其依据' if existing else '形成工作事项说明'}]},ensure_ascii=False)
+                    'source_refs':current_refs(payload),'change_summary':'补充工作要求及其依据' if existing else '形成工作事项说明'}]},ensure_ascii=False)
         if '"batch_items"' in body or '"new_items"' in body:
             return '{"items":[]}'
         if '<source>\n' not in body:

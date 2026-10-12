@@ -708,7 +708,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             for row in rows:
                 from markdown_it import MarkdownIt
                 display_body=WIKILINK.sub(lambda m: '['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+str(int(m.group(1)))+')',row['body'])
-                row["rendered_body"] = MarkdownIt("commonmark", {"html": False}).render(display_body)
+                row["rendered_body"] = MarkdownIt("commonmark", {"html": False}).enable("table").render(display_body)
                 row["evidence"] = [dict(e) for e in con.execute("""
                     SELECT e.document_id,e.chunk_id,e.quote,e.is_current,e.superseded,d.title document_title,d.project,d.relative_path
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -737,7 +737,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,'知识不存在')
             from markdown_it import MarkdownIt
             result=dict(row)
-            result['rendered_body']=MarkdownIt('commonmark',{'html':False}).render(WIKILINK.sub(lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',result['body']))
+            result['rendered_body']=MarkdownIt('commonmark',{'html':False}).enable('table').render(WIKILINK.sub(lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',result['body']))
             result['evidence']=[dict(e) for e in con.execute('''SELECT e.*,d.title document_title,d.project FROM knowledge_evidence e
                 JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(knowledge_id,))]
             from .articles import detail_parts
@@ -953,7 +953,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             from markdown_it import MarkdownIt
             versions = [dict(r) for r in con.execute("SELECT * FROM knowledge_history WHERE knowledge_id=? ORDER BY version DESC",(knowledge_id,))]
             for version in versions:
-                version['rendered_body'] = MarkdownIt('commonmark',{'html':False}).render(WIKILINK.sub(
+                version['rendered_body'] = MarkdownIt('commonmark',{'html':False}).enable('table').render(WIKILINK.sub(
                     lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',version['body']))
             return versions
 
@@ -999,9 +999,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             return {"name":name,"documents":docs,"knowledge":entries,"decision_timeline":timeline}
 
     @app.get("/api/search")
-    def search_endpoint(q: str = Query(default="", max_length=160)):
+    def search_endpoint(q: str = Query(default="", max_length=160), include_sources: bool = False):
         with db.connect() as con:
-            return search(con,q)
+            return search(con,q,include_sources=include_sources)
 
     @app.get("/api/settings")
     def settings():

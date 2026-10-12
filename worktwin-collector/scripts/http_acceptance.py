@@ -67,7 +67,7 @@ def main():
                 assert client.get('/api/knowledge', headers=h).json() == []
                 assert client.get('/api/ai/jobs', headers=h).json() == []
                 assert client.get('/api/projects', headers=h).json()
-                assert client.get('/api/search', headers=h, params={'q': '审批节点'}).json()['documents']
+                assert client.get('/api/search', headers=h, params={'q': '审批节点','include_sources':True}).json()['documents']
                 doc = client.get(f"/api/documents/{documents[0]['id']}", headers=h).json()
                 quote = doc['content'][:40]
                 assert len(quote) >= 8

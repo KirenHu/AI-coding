@@ -2,13 +2,29 @@
 import re
 
 
-def source_passages(con, knowledge_id: int, *, query: str = '', budget: int = 12000) -> list[dict]:
+def source_passages(con, knowledge_id: int, *, query: str = '', budget: int = 12000,
+                    include_history: bool = False) -> list[dict]:
+    curated=con.execute('SELECT 1 FROM project_documents WHERE knowledge_id=?',(knowledge_id,)).fetchone()
+    if curated and not include_history:
+        records=[{'document_id':r['document_id'],'title':r['title'],'text':r['quote'],
+                  'usage':'current_evidence'} for r in con.execute('''SELECT a.document_id,a.quote,d.title
+            FROM article_current_sources a JOIN documents d ON d.id=a.document_id
+            JOIN sources s ON s.id=d.source_id WHERE a.knowledge_id=? AND d.deleted=0
+              AND s.allow_ai=1 AND a.content_sha=d.sha256 AND instr(d.content,a.quote)>0
+              AND EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=a.knowledge_id
+                AND e.document_id=a.document_id AND e.quote=a.quote AND e.is_current=1 AND e.superseded=0)''',(knowledge_id,))]
+        matches=matching_passages(records,query,limit=12) if query else records
+        result=[]
+        for record in matches:
+            if sum(len(p['text']) for p in result)+len(record['text'])<=budget:
+                result.append(record)
+        return result
     passages, seen, length = [], set(), 0
     records=list(con.execute('''SELECT e.quote,d.id document_id,d.title,d.content
         FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
         JOIN sources s ON s.id=d.source_id
-        WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0
-          AND d.deleted=0 AND s.allow_ai=1 ORDER BY e.id''', (knowledge_id,)))
+        WHERE e.knowledge_id=? AND (e.superseded=0 OR ?=1) AND e.is_current=1
+          AND d.deleted=0 AND s.allow_ai=1 ORDER BY e.id''', (knowledge_id,int(include_history))))
     if query:
         documents={r['document_id']:r for r in records if r['quote'] in r['content']}
         candidates=[]
@@ -16,7 +32,8 @@ def source_passages(con, knowledge_id: int, *, query: str = '', budget: int = 12
             for paragraph in row['content'].split('\n\n'):
                 for start in range(0,len(paragraph),1800):
                     candidates.append({'document_id':row['document_id'],'title':row['title'],
-                                       'text':paragraph[start:start+1800]})
+                                       'text':paragraph[start:start+1800],
+                                       'usage':'original_history' if include_history else 'source_context'})
         for passage in matching_passages(candidates,query,limit=12):
             if length+len(passage['text'])<=budget:
                 passages.append(passage);length+=len(passage['text'])

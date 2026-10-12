@@ -61,7 +61,7 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                     'topic':'审批架构','scope_detail':'审批系统的架构设计',
                     'article_summary':'审批在现有工作流中实现，复用节点和路由能力，避免维护两套系统。',
                     'body':'## 审批架构\n\n审批配置为工作流节点，复用现有工作流上下文和路由能力。\n\n## 选择依据\n\n采用统一架构，避免重复维护独立审批系统。',
-                    'change_summary':'形成审批架构及选择依据'}]},ensure_ascii=False)
+                    'source_refs':[{'document_id':d['id'],'quote':expected_quote} for d in json.loads(raw)['source_documents']], 'change_summary':'形成审批架构及选择依据'}]},ensure_ascii=False)
             else:
                 citation=re.search(r'\[K\d+\]',raw)
                 assert citation  # twin receives the generated article and its provenance
@@ -129,7 +129,7 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                 'question': '为什么把审批配置为工作流节点？'})
             assert answer.status_code == 200, answer.text
             assert answer.json()['citations'][0]['knowledge_id'] == knowledge_id
-            assert len(requests) == 4
+            assert len(requests) == 3
             assert all(auth == 'Bearer enterprise-provider-only-secret' for auth, _ in requests)
             assert all(payload['model'] == 'centrally-billed-model' for _, payload in requests)
             assert 'SECRET-9988' not in json.dumps(requests, ensure_ascii=False)

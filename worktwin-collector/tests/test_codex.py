@@ -49,7 +49,7 @@ def test_codex_directory_is_indexed_end_to_end(tmp_path: Path):
         con.execute("INSERT INTO sources(name,kind,root) VALUES(?,?,?)",("Codex","codex",str(root)))
     assert Collector(db).scan_all()["new"] == 1
     with db.connect() as con:
-        assert len(search(con, "知识来源")["documents"]) == 1
+        assert len(search(con,"知识来源",include_sources=True)["documents"]) == 1
         text = con.execute("SELECT content FROM documents").fetchone()[0]
         assert "sensitive internal thoughts" not in text
         assert "最终决定" in text

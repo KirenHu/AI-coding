@@ -19,7 +19,7 @@ def main():
         with TestClient(app) as client,sync_playwright() as pw:
             html=client.get('/').text
             token=re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";',html).group(1);auth={'X-Worktwin-Token':token}
-            article={'title':'需求评审工作指南','article_summary':'面向项目参与者，说明评审前需要准备的材料，以及评审后如何保留结论和依据。','body':'# 需求评审工作指南\n\n## 准备材料\n\n1. 确认评审范围。\n2. 梳理关键流程。\n\n## 评审后\n\n保留结论及依据。','status':'confirmed'}
+            article={'title':'需求评审工作指南','article_summary':'面向项目参与者，说明评审前需要准备的材料，以及评审后如何保留结论和依据。','body':'# 需求评审工作指南\n\n## 准备材料\n\n1. 确认评审范围。\n2. 梳理关键流程。\n\n## 评审后\n\n保留结论及依据。\n\n| 事项 | 说明 |\n| --- | --- |\n| 结论 | 保留依据 |','status':'confirmed'}
             kid=client.post('/api/knowledge',headers=auth,json=article).json()['id']
             client.put(f'/api/knowledge/{kid}',headers=auth,json={**article,'body':article['body']+'\n新增异常事项应记录负责人。'})
             archived=client.post('/api/knowledge',headers=auth,json={**article,'body':'旧版片段，已合并到新的完整文章。','status':'archived'}).json()['id']
@@ -58,8 +58,10 @@ def main():
                 expect(page.locator('.drawer-body h2')).to_have_count(2)
                 expect(page.locator('.drawer-body h1')).to_have_count(0)
                 expect(page.locator('.article-summary p')).to_have_text(article['article_summary'])
-                expect(page.locator('.article-updates tbody tr')).to_have_count(2)
+                expect(page.locator('.article-updates tbody tr')).to_have_count(1)
                 assert page.locator('.article-summary').evaluate('(el)=>el.offsetTop') < page.locator('.article-updates').evaluate('(el)=>el.offsetTop') < page.locator('.drawer-body').evaluate('(el)=>el.offsetTop')
+                page.locator('#drawer-history-jump').click()
+                expect(page.locator('.article-updates tbody tr')).to_have_count(2)
                 page.locator('[data-view-version="1"]').click()
                 expect(page.locator('.version-heading')).to_contain_text('v1 · 历史版本')
                 expect(page.locator('#restore-version')).to_be_visible()
@@ -72,6 +74,8 @@ def main():
                     assert page.evaluate('document.body.scrollWidth<=innerWidth')
                 page.set_viewport_size({'width':1280,'height':900})
                 expect(page.locator('#knowledge-history')).to_have_count(0)
+                expect(page.locator('article[aria-label=文章正文] table')).to_contain_text('保留依据')
+                expect(page.locator('.article-updates tbody tr')).to_have_count(1)
                 page.screenshot(path=str(ROOT/'release/WorkTwin-1.4-detail.png'))
                 page.locator('#drawer-history-jump').click();expect(page.get_by_role('heading',name='变更日志')).to_be_visible()
                 page.locator('#history-back').click()
@@ -189,6 +193,7 @@ def main():
 
                 page.locator('[data-page=knowledge]').click();page.locator(f'[data-entry="{kid}"]').click()
                 page.locator('.source-reference > summary',has_text='来源依据').click()
+                page.locator('.historical-evidence > summary').click()
                 expect(page.locator('.reference-row').filter(has_text='历史材料')).to_contain_text('旧版历史引用')
                 expect(page.locator('.reference-row').filter(has_text='历史材料')).not_to_contain_text('需要重新核对')
                 expect(page.locator('.browser-evidence-events')).to_contain_text('查询订单')

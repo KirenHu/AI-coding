@@ -31,10 +31,22 @@ def source_context(con, document, *, authorized_documents=None):
         WHERE d.id!=? AND d.deleted=0 AND '''+access+''' AND d.source_id=?
         ORDER BY ABS(d.mtime_ns-?) LIMIT 3''',
         (doc['id'],*(authorized or ()),doc['source_id'],doc.get('mtime_ns', 0)))]
+    current_projects=[]
+    for article in con.execute('''SELECT DISTINCT k.id,k.project_key,k.project,k.article_summary
+            FROM project_documents p JOIN knowledge k ON k.id=p.knowledge_id
+            JOIN knowledge_evidence e ON e.knowledge_id=k.id JOIN documents d ON d.id=e.document_id
+            WHERE d.source_id=? AND e.is_current=1 AND e.superseded=0 AND k.status!='archived' ''',(doc['source_id'],)):
+        evidence=con.execute('''SELECT d.id,d.deleted,s.allow_ai FROM article_current_sources a
+            JOIN documents d ON d.id=a.document_id JOIN sources s ON s.id=d.source_id
+            WHERE a.knowledge_id=?''',(article['id'],)).fetchall()
+        if evidence and all(not r['deleted'] and (r['id'] in authorized if authorized is not None else r['allow_ai']) for r in evidence):
+            current_projects.append({'project_key':article['project_key'],'name':article['project'],
+                                     'current_summary':article['article_summary'][:500]})
     return {'workspace':workspace, 'folder_name':Path(workspace).name,'source_root':source['root'],
             'file_path':doc.get('path',''), 'title':doc.get('title',''),
             'modified_at':datetime.fromtimestamp(doc.get('mtime_ns', 0)/1e9, timezone.utc).isoformat(),
             'document_opening':original[:1800],
+            'project_documents':current_projects,
             'nearby_work':[{'document_id':r['id'], 'title':r['title'], 'path':r['path'],
                             'modified_at':r['mtime_ns'], 'excerpt':r['content'][:700]} for r in neighbors]}
 

@@ -56,7 +56,7 @@ function onEscape(e){if(e.key==='Escape'){const preview=el('overlay-root').query
 function closeOverlay(force=false){if(!force&&state.overlayDirty&&!confirm('有尚未保存的修改，确定放弃吗？'))return false;state.overlayDirty=false;el('overlay-root').innerHTML='';document.removeEventListener('keydown',onEscape);return true}
 async function refreshConnection(){
   try{const info=await api('settings');state.settings=info;state.modelReady=!!info.enterprise_model_ready;state.shareReady=!!info.cloud_sync;
-    const node=el('model-status');const labels={not_configured:'模型未配置',configured:'已配置 · 尚未测试',connected:'模型连接正常',error:'模型调用失败'};
+    const node=el('model-status');const labels={reading_credentials:'等待钥匙串确认',not_configured:'模型未配置',configured:'已配置 · 尚未测试',connected:'模型连接正常',error:'模型调用失败'};
     node.innerHTML=`<span class="pulse-dot ${info.model_status==='connected'?'':'off'}"></span>${labels[info.model_status]||'模型未配置'}`;node.title=info.model_error||'打开设置';node.onclick=()=>go('settings');
     el('edition-label').textContent=info.edition==='enterprise'?'企业版':'个人版';
   }catch(e){el('model-status').textContent='本地服务不可用'}
@@ -289,7 +289,7 @@ async function renderKnowledge(){
   renderKnowledgeList();
   if(state.scrollPosition)requestAnimationFrame(()=>document.querySelector('.main-area').scrollTop=state.scrollPosition);
 }
-function knowledgeStatus(k){return k.status==='archived'?['已归档','grey']:k.quality==='noise'?['已停用','grey']:k.can_use?['可用','']:['待处理','warn']}
+function knowledgeStatus(k){return k.status==='archived'?['已归档','grey']:k.quality==='noise'?['已停用','grey']:k.can_use?['可用','']:k.unavailable_reason==='来源未允许 AI 使用'?['AI 未授权','grey']:['待处理','warn']}
 function renderKnowledgeList(){
   const entries=visibleKnowledge().filter(k=>(state.project==='all'||entryProject(k)===state.project)&&(state.kind==='all'||k.kind===state.kind)).filter(k=>(k.title+' '+k.body+' '+entryProject(k)).toLowerCase().includes(state.query.toLowerCase()));
   const filtered=state.query||state.project!=='all'||state.kind!=='all'||state.lifecycle!=='active';
@@ -341,7 +341,7 @@ async function openKnowledge(id){
   const versions=k?await api(`knowledge/${k.id}/history`):[];
   function linkedSection(){if(!relations)return '';const groups=[['文中链接',relations.outgoing],['提到这篇的知识',relations.backlinks],['同一份资料的其他知识',relations.same_source]];return `<details class="source-reference"><summary>关联文章</summary>${groups.filter(([_,rows])=>rows.length).map(([name,rows])=>`<h4>${name}</h4>${rows.map(r=>`<button class="info-link relation-link" data-open-knowledge="${r.id}">${esc(r.title)} ${icon('arrow')}</button>`).join('')}`).join('')||'<p class="muted">暂无关联文章</p>'}${relations.unresolved_ids.length?'<p class="field-note">部分链接已失效或需要复核。</p>':''}</details>`}
   function versionRows(){return [{...k,changed_at:k.updated_at,current:true},...versions]}
-  function changeTable(heading='更新记录'){return `<section class="article-updates" aria-label="更新记录"><h3>${heading}</h3><div class="article-updates-scroll"><table><thead><tr><th>时间 / 版本</th><th>更新内容</th><th><span class="sr-only">查看版本</span></th></tr></thead><tbody>${versionRows().map(v=>`<tr><td><time>${esc(localUpdateTime(v.changed_at))}</time><span>v${v.version}${v.current?' · 当前':''}</span></td><td>${esc(v.change_summary||v.reason||(v.version===1?'创建文章':'更新文章内容'))}</td><td><button class="info-link" data-view-version="${v.version}" aria-label="查看 v${v.version}">查看</button></td></tr>`).join('')}</tbody></table></div></section>`}
+  function changeTable(heading='更新记录',limit=1){return `<section class="article-updates" aria-label="更新记录"><h3>${heading}</h3><div class="article-updates-scroll"><table><thead><tr><th>时间 / 版本</th><th>更新内容</th><th><span class="sr-only">查看版本</span></th></tr></thead><tbody>${versionRows().slice(0,limit).map(v=>`<tr><td><time>${esc(localUpdateTime(v.changed_at))}</time><span>v${v.version}${v.current?' · 当前':''}</span></td><td>${esc(v.change_summary||v.reason||(v.version===1?'创建文章':'更新文章内容'))}</td><td><button class="info-link" data-view-version="${v.version}" aria-label="查看 v${v.version}">查看</button></td></tr>`).join('')}</tbody></table></div></section>`}
   function articleBody(content=k){
     if(!content.rendered_body)return esc(content.body);
     const template=document.createElement('template');template.innerHTML=content.rendered_body;
@@ -365,14 +365,16 @@ async function openKnowledge(id){
   }
   function historyView(){
     if(state.overlayDirty){notify('请先保存或取消编辑');return}
-    details.innerHTML=changeTable('变更日志');
+    details.innerHTML=changeTable('变更日志',Infinity);
     footer.innerHTML='<button class="btn secondary" id="history-back">返回正文</button>';
     el('history-back').onclick=view;bindVersionLinks();details.scrollTop=0;
   }
   function referenceRows(){
-    const total=sources.length+browserSources.length;
+    const currentSources=sources.filter(e=>!e.superseded),historicalSources=sources.filter(e=>e.superseded);
+    const total=currentSources.length+browserSources.length;
+    const evidenceRow=e=>`<div class="reference-row"><b>${esc(e.document_title)}</b><blockquote>${esc(e.quote)}</blockquote>${e.superseded?'<span class="state-label grey">旧版历史引用</span>':!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':''}${e.is_current||e.superseded?`<button class="info-link" data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`:''}</div>`;
     const browserKinds={click:'点击',change:'修改',submit:'尝试提交',feedback:'页面提示',navigation:'页面导航',tab_closed:'关闭标签页'};
-    return `<details class="source-reference"><summary>来源依据 <span class="muted">${total} 条</span></summary>${sources.map(e=>`<div class="reference-row"><b>${esc(e.document_title)}</b><blockquote>${esc(e.quote)}</blockquote>${e.superseded?'<span class="state-label grey">旧版历史引用</span>':!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':`<button class="info-link" data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`}</div>`).join('')}${browserSources.map(source=>`<div class="reference-row"><b>${esc(source.source_title)}</b>${source.summary?`<p>${esc(source.summary)}</p>`:''}<ol class="browser-evidence-events">${source.events.map(e=>`<li><span>#${e.seq} · ${esc(browserKinds[e.kind]||e.kind)} · ${esc(e.label)}</span>${e.location?`<small>${esc(e.location)}</small>`:''}</li>`).join('')}</ol><button class="info-link" data-read-browser="${esc(source.session_id)}">查看操作详情 ${icon('arrow')}</button></div>`).join('')}${!total?'<p class="muted">人工创建</p>':''}${k?.parts?.length?`<details class="article-parts"><summary>查看文章各部分依据</summary>${k.parts.map(part=>`<div class="reference-row"><b>${esc(part.title)}</b><p>${esc(part.body)}</p><blockquote>${esc(part.quote)}</blockquote>${part.document_id?`<button class="info-link" data-read-source="${part.document_id}">查看原始资料</button>`:''}</div>`).join('')}</details>`:''}</details>`;
+    return `<details class="source-reference"><summary>来源依据 <span class="muted">${total} 条</span></summary>${currentSources.map(evidenceRow).join('')}${historicalSources.length?`<details class="historical-evidence"><summary>历史引用 ${historicalSources.length} 条</summary>${historicalSources.map(evidenceRow).join('')}</details>`:''}${browserSources.map(source=>`<div class="reference-row"><b>${esc(source.source_title)}</b>${source.summary?`<p>${esc(source.summary)}</p>`:''}<ol class="browser-evidence-events">${source.events.map(e=>`<li><span>#${e.seq} · ${esc(browserKinds[e.kind]||e.kind)} · ${esc(e.label)}</span>${e.location?`<small>${esc(e.location)}</small>`:''}</li>`).join('')}</ol><button class="info-link" data-read-browser="${esc(source.session_id)}">查看操作详情 ${icon('arrow')}</button></div>`).join('')}${!total?'<p class="muted">人工创建</p>':''}${k?.parts?.length?`<details class="article-parts"><summary>原始材料分段</summary>${k.parts.map(part=>`<div class="reference-row"><b>${esc(part.title)}</b><p>${esc(part.body)}</p><blockquote>${esc(part.quote)}</blockquote>${part.document_id?`<button class="info-link" data-read-source="${part.document_id}">查看原始资料</button>`:''}</div>`).join('')}</details>`:''}</details>`;
   }
   function bindSourceLinks(){
     details.querySelectorAll('[data-read-source]').forEach(x=>x.onclick=()=>showDocument(Number(x.dataset.readSource)));
