@@ -44,6 +44,29 @@ def test_exact_origin_and_default_off(tmp_path):
             capture.site_bind(token, added['id'], 1, 'doc-1', url)
 
 
+def test_old_connected_extension_is_flagged_until_versioned_heartbeat(tmp_path):
+    capture,token=capture_at(tmp_path/'version.sqlite')
+    capture.heartbeat(token)
+    assert capture.settings()['extension_connected']
+    assert capture.settings()['extension_update_required']
+    capture.heartbeat(token,'0.4.1')
+    assert capture.settings()['extension_version']=='0.4.1'
+    assert not capture.settings()['extension_update_required']
+
+
+def test_site_reports_chrome_permission_separately_from_capture_intent(tmp_path):
+    capture,token=capture_at(tmp_path/'permissions.sqlite')
+    site=capture.add_site('https://portal.example.com')
+    capture.toggle_site(site['id'],True)
+    capture.heartbeat(token,'0.4.1',['http://127.0.0.1/*'])
+    assert capture.sites()[0]['status']=='needs_permission'
+    assert capture.sites()[0]['enabled']
+    capture.heartbeat(token,'0.4.1',['https://portal.example.com/*'])
+    assert capture.sites()[0]['status']=='waiting_page'
+    capture.site_bind(token,site['id'],7,'doc',site['origin']+'/work')
+    assert capture.sites()[0]['status']=='capturing'
+
+
 def test_task_history_filters_before_pagination(tmp_path, monkeypatch):
     monkeypatch.setenv('WORKTWIN_CAPTURE_FLOW_ORIGIN', 'https://flow.example.com')
     monkeypatch.setenv('WORKTWIN_CAPTURE_FLOW_SECRET', 'x'*48)

@@ -57,7 +57,9 @@ async function heartbeat(){
   try{
     await ready;
     if(!await token())return false;
-    const connection=await call("/capture/heartbeat");
+    const permissions=await chrome.permissions.getAll();
+    const connection=await call("/capture/heartbeat",{version:chrome.runtime.getManifest().version,
+      origins:permissions.origins||[]});
     if(!connection.enabled){await stopRecording();return true;}
     const watched=[...sessions.values()].filter(s=>
       ["armed","capturing","paused","transport_error"].includes(s.status));
@@ -137,7 +139,9 @@ async function syncSites(){
 }
 async function status(){
   const connected=await heartbeat();
-  const entry=[...pendingSite.values()][0];
+  const [active]=await chrome.tabs.query({active:true,currentWindow:true});
+  const pending=[...pendingSite.values()];
+  const entry=pending.find(item=>item.origin===site(active?.url||""))||pending[0];
   return {connected,pendingOrigin:entry?.origin||""};
 }
 async function tryBind(session,details){

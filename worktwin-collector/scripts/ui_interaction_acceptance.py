@@ -54,6 +54,8 @@ def main():
                 page.locator('#history-back').click();page.locator('#drawer-close').click()
                 page.locator('[data-page=twins]').click();page.locator(f'[data-twin="{tid}"]').click()
                 expect(page.locator('[data-exclude-note]')).to_have_count(0)
+                expect(page.locator(f'[data-select-entry="{material}"]')).to_have_count(0)
+                expect(page.locator('.selection-head b')).to_have_text('补充授权文章')
                 page.locator('[data-twin-tab=chat]').click()
                 expect(page.locator('#twin-question')).to_have_attribute('maxlength','500')
                 for i in range(12):
@@ -108,6 +110,20 @@ def main():
                 assert not client.get('/api/browser-capture/sites',headers=auth).json()[0]['enabled']
                 expect(page.locator('.website-row').last).to_contain_text('未采集')
                 page.screenshot(path=str(ROOT/'release/WorkTwin-1.4-websites.png'))
+                capture=app.state.browser_capture
+                capture.toggle(True);extension_token=capture.pair(capture.pairing_code())
+                capture.heartbeat(extension_token)
+                page.locator('[data-page=sources]').click()
+                expect(page.get_by_text('插件需升级，网站持续采集尚不可用',exact=True)).to_be_visible()
+                capture.heartbeat(extension_token,'0.4.1')
+                page.locator('[data-page=sources]').click()
+                expect(page.get_by_text('插件需升级，网站持续采集尚不可用',exact=True)).to_have_count(0)
+                for name in ('项目资料','会议记录'):
+                    folder=Path(tmp)/name;folder.mkdir()
+                    assert client.post('/api/sources',headers=auth,json={'name':'本地文件夹','root':str(folder),'kind':'folder'}).status_code==200
+                page.locator('[data-source-tab=folders]').click()
+                expect(page.locator('.source-summary b')).to_have_count(2)
+                assert set(page.locator('.source-summary b').all_text_contents())=={'项目资料','会议记录'}
                 assert not errors,errors
                 print('UI INTERACTION PASS: articles/materials, log entry, 12-turn conversation/context reset, website whitelist switches, plugin sections')
             finally:browser.close()

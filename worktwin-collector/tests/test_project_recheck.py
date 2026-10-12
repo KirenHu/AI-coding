@@ -72,7 +72,7 @@ def test_lost_origin_withdraws_matches_without_self_reinforcement_and_can_recove
     recheck = ProjectRechecker(db,Judge())
     recheck.process_next()
     with db.connect() as con:
-        con.execute('UPDATE sources SET enabled=0 WHERE id=?',(source,))
+        con.execute('UPDATE sources SET allow_ai=0 WHERE id=?',(source,))
     assert recheck.process_next()['withdrawn'] == 2
     for _ in range(3):
         recheck.process_next()
@@ -82,7 +82,7 @@ def test_lost_origin_withdraws_matches_without_self_reinforcement_and_can_recove
         assert con.execute('SELECT count(*) FROM project_memberships').fetchone()[0] == 0
         assert con.execute('SELECT count(*) FROM twin_grants').fetchone()[0] == 1
         assert {r[0] for r in con.execute('SELECT scope FROM knowledge')} == {'session'}
-        con.execute('UPDATE sources SET enabled=1 WHERE id=?',(source,))
+        con.execute('UPDATE sources SET allow_ai=1 WHERE id=?',(source,))
     assert recheck.process_next()['updated'] == 2
     with db.connect() as con:
         assert {k['id'] for k in effective_notes(con,twin)} == {seed,note}

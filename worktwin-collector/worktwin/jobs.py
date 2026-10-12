@@ -11,7 +11,7 @@ from .knowledge import store_candidates
 from .reconcile import existing_for_project, make_consolidation_plan, store_proposals
 from .gardener import KnowledgeGardener
 from .scope import document_scope
-from .projects import catalog, plan_work_units, apply_assignments
+from .projects import catalog, plan_work_units, apply_assignments, source_context
 from .project_recheck import ProjectRechecker
 from .decision_model import DecisionRouter
 from .credentials import DesktopSecrets
@@ -88,7 +88,7 @@ class KnowledgeWorker:
             con.execute("UPDATE ai_jobs SET state='error',error='整理任务多次中断，请重试' WHERE state='running' AND updated_at<datetime('now','-20 minutes') AND attempts>=4")
             row = con.execute("""SELECT j.id job_id,j.document_id,j.content_sha,d.content,
                     j.batch_generation,j.batch_from_seq,j.batch_through_seq,t.generation,
-                    d.id,d.source_id,d.project,d.project_key,d.scope,d.project_verified,d.file_type,COALESCE(s.adapter,s.kind) adapter
+                    d.id,d.source_id,d.path,d.title,d.mtime_ns,d.project,d.project_key,d.scope,d.project_verified,d.file_type,COALESCE(s.adapter,s.kind) adapter
                     FROM ai_jobs j JOIN documents d ON d.id=j.document_id
                     JOIN sources s ON s.id=d.source_id
                     LEFT JOIN transcript_streams t ON t.document_id=d.id
@@ -131,6 +131,9 @@ class KnowledgeWorker:
             with self.db.connect() as con:
                 con.execute('BEGIN IMMEDIATE')
                 metadata=document_scope(job)
+                metadata['project_context'] = source_context(con, job)
+                metadata['candidate_projects'] = [{'project_key':p['project_key'], 'name':p['name'],
+                    'summary':p.get('summary','')} for p in catalog(con)][:30]
                 con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],job['document_id']))
                 known = existing_for_project(con, job["document_id"])
                 context = work_context(con, job['document_id'],
@@ -158,6 +161,7 @@ class KnowledgeWorker:
                 document=con.execute('SELECT * FROM documents WHERE id=?',(job['document_id'],)).fetchone()
                 known_projects=catalog(con)
                 for item in items:
+                    item['project_context'] = metadata['project_context']
                     item['work_context'] = work_context(con, job['document_id'], quote=item['quote'],
                                                        event_start=batch['from_seq'] + 1 if batch else None,
                                                        event_end=batch['through_seq'] if batch else None)

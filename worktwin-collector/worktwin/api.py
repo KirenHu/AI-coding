@@ -35,6 +35,7 @@ from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRunt
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
 from .twin_access import effective_notes, grant_options, replace_grants
+from .article_sources import source_passages
 from .decision_model import DecisionRouter, JevDecisionModel
 from .model_settings import validate_url
 from .answers import answer_from_knowledge
@@ -184,6 +185,10 @@ class CaptureToggle(BaseModel):
 
 class CaptureAiToggle(BaseModel):
     allow_ai: bool
+
+class CaptureHeartbeat(BaseModel):
+    version: str = Field(default='',max_length=32)
+    origins: list[str] | None = Field(default=None,max_length=100)
 
 class ManualCaptureInput(BaseModel):
     enabled: bool
@@ -425,8 +430,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return {"token":browser_capture.pair(body.code)}
 
     @app.post("/capture/heartbeat")
-    def capture_heartbeat(request: Request):
-        return browser_capture.heartbeat(capture_credential(request))
+    def capture_heartbeat(request: Request, body: CaptureHeartbeat | None = None):
+        payload=body or CaptureHeartbeat()
+        return browser_capture.heartbeat(capture_credential(request), payload.version, payload.origins)
 
     @app.post("/capture/sessions/status")
     def capture_sessions_status(request: Request,body: CaptureSessionsStatus):
@@ -1206,7 +1212,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             # Also show disabled explicit pins for actionable reasons.
             disabled=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,)) if r['id'] not in {k['id'] for k in rows}]
             rows += disabled
-            result=[{'id':r['id'],'title':r['title'],'local_reason':unavailable_reason(con,r),'share_reason':unavailable_reason(con,r,sharing=True)} for r in rows]
+            result=[{'id':r['id'],'title':r['title'],
+                'local_reason':unavailable_reason(con,r) if r['organization']=='article' else '材料尚未整理为文章',
+                'share_reason':unavailable_reason(con,r,sharing=True) if r['organization']=='article' else '材料尚未整理为文章'} for r in rows]
         return {'selected_count':len(rows),'usable_count':sum(not r['local_reason'] for r in result),
                 'publishable_count':sum(not r['share_reason'] for r in result),'knowledge':result}
 
@@ -1296,7 +1304,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     (kind=='source' and key not in known_sources) or
                     (kind=='global' and key!='*') or
                     (kind=='knowledge' and (not key.isdecimal() or not con.execute(
-                        'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                        "SELECT id FROM knowledge WHERE id=? AND organization='article'",(int(key),)).fetchone()))):
                     raise HTTPException(400,'授权范围无效或已不存在')
             replace_grants(con,twin_id,entries)
             con.execute("UPDATE twins SET knowledge_mode=?,updated_at=datetime('now') WHERE id=?",
@@ -1385,7 +1393,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def update_twin(twin_id: int,payload: TwinInput):
         with db.connect() as con:
             if payload.knowledge_ids is not None:
-                allowed={r[0] for r in con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL)}
+                allowed={r[0] for r in con.execute("SELECT k.id FROM knowledge k WHERE k.organization='article' AND "+READY_SQL)}
                 retained={r[0] for r in con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?', (twin_id,))}
                 if not set(payload.knowledge_ids).issubset(allowed | retained):
                     raise HTTPException(400,'包含不可用知识，请核对状态后重新保存')
@@ -1410,7 +1418,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                         (kind=='source' and key not in known_sources) or
                         (kind=='global' and key!='*') or
                         (kind=='knowledge' and (not key.isdecimal() or not con.execute(
-                            'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                            "SELECT id FROM knowledge WHERE id=? AND organization='article'",(int(key),)).fetchone()))):
                         raise HTTPException(400,'项目或来源授权范围无效')
                 replace_grants(con,twin_id,entries)
             if payload.knowledge_mode is not None:
@@ -1432,7 +1440,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not con.execute("SELECT id FROM twins WHERE id=?",(twin_id,)).fetchone():
                 raise HTTPException(404,"数字分身不存在")
             allowed = {r[0] for r in con.execute("""SELECT k.id FROM knowledge k
-                WHERE """+READY_SQL)}
+                WHERE k.organization='article' AND """+READY_SQL)}
             if not requested.issubset(allowed):
                 raise HTTPException(400,"包含尚未确认、已归档、需要核对、个人偏好或未允许 AI 使用的知识")
             con.execute("DELETE FROM twin_knowledge WHERE twin_id=?",(twin_id,))
@@ -1461,6 +1469,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,"数字分身不存在")
             rows = effective_notes(con,twin_id)
             for r in rows:
+                r['source_passages'] = source_passages(con, r['id'])
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
                     WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0 LIMIT 3""",(r['id'],))]

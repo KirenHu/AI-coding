@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import secrets
 import time
+import json
+from fnmatch import fnmatchcase
 
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -58,7 +60,7 @@ class SiteCapture:
     def _site_rows(self, con):
         now = int(time.time())
         enabled = self.enabled(con)
-        client = con.execute('SELECT last_seen FROM browser_extension_clients WHERE id=1').fetchone()
+        client = con.execute('SELECT last_seen,version,origins FROM browser_extension_clients WHERE id=1').fetchone()
         connected = bool(client and now-client['last_seen'] <= 90)
         rows = []
         for record in con.execute('SELECT * FROM browser_capture_sites ORDER BY id'):
@@ -71,10 +73,13 @@ class SiteCapture:
             capturing = con.execute('''SELECT 1 FROM browser_capture_sessions
                 WHERE site_id=? AND status='capturing' AND expires_at>? LIMIT 1''',
                 (row['id'], now)).fetchone()
+            needs_permission = bool(connected and client['version'] and row['manual_enabled'] and
+                not any(fnmatchcase(row['origin']+'/',pattern) for pattern in json.loads(client['origins'])))
             row.update(manual_enabled=bool(row['manual_enabled']), enabled=intent,
                        task_requests=task_requests,
                        status=('off' if not intent else 'paused' if not enabled else
                                'waiting_extension' if not connected else
+                               'needs_permission' if needs_permission else
                                'capturing' if capturing else 'waiting_page'))
             rows.append(row)
         return rows

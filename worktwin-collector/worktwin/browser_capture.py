@@ -131,6 +131,11 @@ class BrowserCapture(SiteCapture, ManualCapture):
                 if field not in cols:
                     con.execute(f"ALTER TABLE browser_capture_settings ADD COLUMN {field} {definition}")
             session_cols={r[1] for r in con.execute("PRAGMA table_info(browser_capture_sessions)")}
+            client_cols={r[1] for r in con.execute("PRAGMA table_info(browser_extension_clients)")}
+            if 'version' not in client_cols:
+                con.execute("ALTER TABLE browser_extension_clients ADD COLUMN version TEXT NOT NULL DEFAULT ''")
+            if 'origins' not in client_cols:
+                con.execute("ALTER TABLE browser_extension_clients ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'")
             if 'mode' not in session_cols:
                 con.execute("ALTER TABLE browser_capture_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'task'")
             migrate_sites(con)
@@ -149,7 +154,7 @@ class BrowserCapture(SiteCapture, ManualCapture):
     def settings(self) -> dict:
         now = int(time.time())
         with self.db.connect() as con:
-            client = con.execute("SELECT last_seen FROM browser_extension_clients WHERE id=1").fetchone()
+            client = con.execute("SELECT last_seen,version FROM browser_extension_clients WHERE id=1").fetchone()
             sessions = con.execute("""SELECT count(*) FROM
                 (SELECT task_id,launcher_origin FROM browser_capture_sessions
                 WHERE mode='task' AND status IN ('armed','capturing','navigation_stopped') AND expires_at>?
@@ -159,6 +164,8 @@ class BrowserCapture(SiteCapture, ManualCapture):
             return {"enabled":self.enabled(con),"allow_ai":bool(flags['allow_ai']),
                     "extension_connected":bool(client and now-int(client["last_seen"])<=90),
                     "extension_paired":bool(client),
+                    "extension_version":client['version'] if client else '',
+                    "extension_update_required":bool(client and not client['version']),
                     "active_tasks":sessions,
                     "manual_enabled":bool(flags['manual_enabled']),
                     "manual_site":flags['manual_site'],
@@ -220,9 +227,12 @@ class BrowserCapture(SiteCapture, ManualCapture):
             raise HTTPException(401,"插件尚未配对或凭据已失效")
         con.execute("UPDATE browser_extension_clients SET last_seen=? WHERE id=1",(int(time.time()),))
 
-    def heartbeat(self, token: str):
+    def heartbeat(self, token: str, version: str = '', origins: list[str] | None = None):
         with self.db.connect() as con:
             self._extension(con,token,require_enabled=False)
+            con.execute('UPDATE browser_extension_clients SET version=? WHERE id=1', (version,))
+            if origins is not None:
+                con.execute('UPDATE browser_extension_clients SET origins=? WHERE id=1', (json.dumps(origins),))
             return {"ok":True,"enabled":self.enabled(con)}
 
     def _command(self, con, envelope: dict, sender_origin: str) -> tuple[str,str,str,str]:

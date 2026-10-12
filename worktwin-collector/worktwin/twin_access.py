@@ -13,7 +13,7 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
     if not twin:
         return []
     ready = SHARE_SQL if sharing else READY_SQL
-    candidates = [dict(k) for k in con.execute("SELECT k.* FROM knowledge k WHERE " + ready)]
+    candidates = [dict(k) for k in con.execute("SELECT k.* FROM knowledge k WHERE k.organization='article' AND " + ready)]
     pinned = {r[0] for r in con.execute("SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?", (twin_id,))}
     grant_rows = con.execute("""SELECT subject_type,subject_key,effect
         FROM twin_grants WHERE twin_id=?""",(twin_id,)).fetchall()
@@ -70,9 +70,9 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
 def grant_options(con):
     projects = [dict(row) for row in con.execute("""SELECT k.project_key,MIN(k.project) name,
         COUNT(*) knowledge_count FROM knowledge k
-        WHERE k.scope='project' AND k.project_key!='' AND k.status!='archived'
+        WHERE k.organization='article' AND k.scope='project' AND k.project_key!='' AND k.status!='archived'
         GROUP BY k.project_key ORDER BY name""")]
-    sources = [dict(row) for row in con.execute("""SELECT id,name,kind,enabled,allow_ai,allow_share
+    sources = [dict(row) for row in con.execute("""SELECT id,name,kind,root,adapter,enabled,allow_ai,allow_share
         FROM sources ORDER BY name,id""")]
     return {'projects':projects,'sources':sources}
 

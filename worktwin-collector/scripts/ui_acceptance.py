@@ -94,9 +94,8 @@ def main():
                         page.locator('[data-page=sources]').click()
                         page.locator('#add-folder').click()
                         page.locator('#browse-folder').click()
-                        page.locator('#new-source-name').fill('产品文档')
                         page.locator('#save-source').click()
-                        expect(page.get_by_text('产品文档').first).to_be_visible()
+                        expect(page.locator('.source-summary b')).to_have_text('work')
                         # Verify collection actually reached the real SQLite database.
                         headers = {'X-Worktwin-Token': re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', html).group(1)}
                         for _ in range(100):

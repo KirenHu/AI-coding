@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WorkTwin · 网站操作采集",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "按网站白名单持续采集脱敏操作，并保留可信流程任务的独立范围",
   "permissions": [
     "tabs",

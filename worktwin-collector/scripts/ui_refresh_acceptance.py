@@ -28,6 +28,7 @@ def main():
                 html=re.sub(r'<link rel="stylesheet" href="/assets/styles\.css(?:\?[^"]*)?" />|<script defer src="/assets/app\.js(?:\?[^"]*)?"></script>','',html)
                 def backend(path,options):
                     assert path.startswith('/api/')
+                    if path=='/api/pick-folder':return {'status':200,'body':json.dumps({'path':str(work)})}
                     response=client.request(options.get('method','GET'),path,headers=options.get('headers') or {},content=options.get('body'))
                     return {'status':response.status_code,'body':response.text}
                 browser=pw.chromium.launch(headless=True,executable_path=os.environ.get('CHROMIUM_PATH') or None,args=['--no-sandbox'])
@@ -42,9 +43,9 @@ def main():
                     page.locator('[data-page=sources]').click()
                     expect(page.locator('[data-source-tab]')).to_have_count(3)
                     page.evaluate("window.__navNode=document.querySelector('.main-nav')")
-                    page.locator('#add-folder').click();page.locator('#new-source-name').fill('保留输入')
+                    page.locator('#add-folder').click();page.locator('#browse-folder').click()
                     page.clock.install();page.clock.fast_forward(16000)
-                    expect(page.locator('#new-source-name')).to_have_value('保留输入')
+                    expect(page.locator('#new-source-path')).to_have_text(str(work))
                     page.locator('.dialog-footer [data-close]').click()
                     added=client.post('/api/sources',headers=auth,json={'kind':'folder','root':str(work),'name':'刷新后出现'})
                     assert added.status_code==200,added.text

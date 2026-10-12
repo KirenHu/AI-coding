@@ -54,7 +54,8 @@ def test_upgrade_preserves_knowledge_versions_access_and_legacy_backup(tmp_path,
     db = Database(path)
     assert_preserved_fields(path, before)
     with db.connect() as con:
-        assert [note['id'] for note in effective_notes(con, 8)] == [41]
+        assert effective_notes(con, 8) == []  # Legacy extracted rows are materials, not article grants.
+        assert con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=8').fetchone()[0] == 41
         assert con.execute('SELECT collection_scope FROM sources WHERE id=7').fetchone()[0] == 'assistant'
         assert con.execute('SELECT organization FROM knowledge WHERE id=41').fetchone()[0] == 'material'
         assert grant(con, TOKEN)['twin_id'] == 8
@@ -176,7 +177,8 @@ def test_completed_legacy_transcript_only_processes_post_upgrade_append(tmp_path
         assert doc.count(old_quote) == 1 and doc.count(new_quote) == 1
         assert con.execute('SELECT is_current FROM knowledge_evidence WHERE knowledge_id=41').fetchone()[0] == 1
         assert con.execute('SELECT version FROM knowledge WHERE id=41').fetchone()[0] == 3
-        assert [note['id'] for note in effective_notes(con, 8)] == [41]
+        assert effective_notes(con, 8) == []  # Legacy extracted rows are materials, not article grants.
+        assert con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=8').fetchone()[0] == 41
 
 
 def test_upgrade_pauses_old_partial_tool_source_but_preserves_usable_knowledge(tmp_path, monkeypatch):
@@ -188,6 +190,7 @@ def test_upgrade_pauses_old_partial_tool_source_but_preserves_usable_knowledge(t
     assert_preserved_fields(path, before)
     with db.connect() as con:
         assert con.execute('SELECT collection_scope FROM sources WHERE id=7').fetchone()[0] == 'legacy'
-        assert [note['id'] for note in effective_notes(con, 8)] == [41]
+        assert effective_notes(con, 8) == []  # Legacy extracted rows are materials, not article grants.
+        assert con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=8').fetchone()[0] == 41
         assert con.execute('SELECT state FROM ai_jobs').fetchone()[0] == 'done'
         assert con.execute('SELECT count(*) FROM transcript_streams').fetchone()[0] == 0

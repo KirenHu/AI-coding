@@ -21,7 +21,8 @@ class ConversationQuestion(BaseModel):
 
 def prepare_conversation(payload: ConversationQuestion, rows: list[dict], context: str):
     snapshot = [context, payload.project_key,
-                sorted((r['id'], r.get('version', 1), r.get('project_key', ''), r['body']) for r in rows)]
+                sorted((r['id'], r.get('version', 1), r.get('project_key', ''), r['body'],
+                    json.dumps(r.get('source_passages', []),ensure_ascii=False,sort_keys=True)) for r in rows)]
     revision = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False).encode()).hexdigest()
     if payload.messages and payload.context_revision != revision:
         raise HTTPException(409, '知识或授权范围已更新，请开启新会话')

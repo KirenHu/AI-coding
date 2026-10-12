@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from tests.support import FakeModel
 from worktwin.api import create_app
 from worktwin.server import create_server
+from tests.test_project_autonomy import create_source
 
 
 def auth(c):
@@ -23,6 +24,34 @@ class InProcessPublisher:
         r=self.c.request(method,path,headers={'Authorization':'Bearer '+self.token},json=body)
         r.raise_for_status()
         return r.json()
+
+
+def test_article_source_passages_are_shared_only_with_source_share_permission(tmp_path):
+    model=FakeModel()
+    server=create_server(tmp_path/'source-server.sqlite',inference_client=model,
+        publisher_tokens={'alice':'owner-credential-token'})
+    with TestClient(server) as remote:
+        app=create_app(tmp_path/'source-local.sqlite',start_worker=False,inference_client=model,
+            publishing_client=InProcessPublisher(remote))
+        with TestClient(app) as local:
+            headers=auth(local)
+            quote='审批结果按流程节点传递。'
+            with app.state.db.connect() as con:
+                sid,did=create_source(con,'协作资料','审批.md',quote+'\n\n传递时必须携带活动实例编号。')
+            kid=local.post('/api/knowledge',headers=headers,json={'title':'流程协作文章',
+                'body':'业务结果由流程节点传递。','status':'confirmed','document_id':did,'quote':quote}).json()['id']
+            tid=local.post('/api/twins',headers=headers,json={'name':'流程助手'}).json()['id']
+            assert local.put(f'/api/twins/{tid}/knowledge',headers=headers,json={'knowledge_ids':[kid]}).status_code==200
+            assert local.post(f'/api/twins/{tid}/publish',headers=headers).status_code==200
+            publication=app.state.publisher.public_id(tid)
+            model.requests.clear()
+            answer=remote.post(f'/v1/twins/{publication}/preview-ask',headers={'Authorization':'Bearer owner-credential-token'},
+                json={'question':'活动实例编号是什么？'})
+            assert answer.status_code==200
+            assert '活动实例编号' in json.dumps(model.requests,ensure_ascii=False)
+            with app.state.db.connect() as con:
+                con.execute('UPDATE sources SET allow_share=0 WHERE id=?',(sid,))
+            assert app.state.publisher.snapshot()['assets']==[]
 
 
 def test_full_publish_share_update_revoke_and_restart(tmp_path):

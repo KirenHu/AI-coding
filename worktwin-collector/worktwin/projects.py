@@ -10,6 +10,27 @@ import hashlib
 import json
 import re
 import secrets
+from pathlib import Path
+from datetime import datetime, timezone
+
+
+def source_context(con, document):
+    """Location, chronology and adjacent authorized work are routing inputs."""
+    doc = dict(document)
+    source = con.execute('SELECT root,kind FROM sources WHERE id=?', (doc['source_id'],)).fetchone()
+    original = con.execute('SELECT content FROM documents WHERE id=?', (doc['id'],)).fetchone()['content']
+    cwd = re.search(r'^工作目录：([^\n]+)', original, re.M)
+    workspace = cwd.group(1).strip() if cwd else source['root']
+    neighbors = [dict(row) for row in con.execute('''SELECT d.id,d.title,d.path,
+        d.mtime_ns,d.content FROM documents d JOIN sources s ON s.id=d.source_id
+        WHERE d.id!=? AND d.deleted=0 AND s.allow_ai=1 AND d.source_id=?
+        ORDER BY ABS(d.mtime_ns-?) LIMIT 3''', (doc['id'], doc['source_id'], doc.get('mtime_ns', 0)))]
+    return {'workspace':workspace, 'folder_name':Path(workspace).name,
+            'file_path':doc.get('path',''), 'title':doc.get('title',''),
+            'modified_at':datetime.fromtimestamp(doc.get('mtime_ns', 0)/1e9, timezone.utc).isoformat(),
+            'document_opening':original[:1800],
+            'nearby_work':[{'document_id':r['id'], 'title':r['title'], 'path':r['path'],
+                            'modified_at':r['mtime_ns'], 'excerpt':r['content'][:700]} for r in neighbors]}
 
 
 def normalized_name(value):
@@ -52,7 +73,7 @@ def catalog(con):
     for row in con.execute("""SELECT d.id,d.project_key,d.project,d.content
         FROM documents d JOIN sources s ON s.id=d.source_id
         WHERE d.project_verified=1 AND d.scope='project' AND d.project_key!=''
-          AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1"""):
+          AND d.deleted=0 AND s.allow_ai=1"""):
         key = row['project_key']
         projects.setdefault(key, {'project_key':key, 'name':row['project'],
             'anchor_type':'', 'anchor':'', 'origin':'manual'})
@@ -65,7 +86,7 @@ def catalog(con):
         LEFT JOIN work_units w ON w.document_id=e.document_id
           AND json_extract(w.evidence_json,'$.quote')=e.quote
         WHERE k.scope IN ('project','session') AND e.is_current=1 AND e.superseded=0
-          AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1
+          AND d.deleted=0 AND s.allow_ai=1
         ORDER BY e.document_id,e.quote""")
     for row in rows:
         evidence = json.loads(row['evidence_json'] or '{}')
@@ -79,10 +100,11 @@ def catalog(con):
         if not valid_grounding(evidence, row['content']):
             continue
         named = project['name'].casefold() in raw.casefold()
-        if not named or _identity_kind(evidence) != 'explicit':
+        inferred = _identity_kind(evidence) == 'inferred'
+        if not (named and _identity_kind(evidence) == 'explicit' or inferred):
             continue
         support = {'document_id':row['document_id'], 'quote':row['quote'],
-                   'work_id':row['work_id'], 'origin':_identity_kind(evidence) == 'explicit'}
+                   'work_id':row['work_id'], 'origin':True}
         for field in ('context_quote', 'confirmation_quote'):
             if evidence.get(field):
                 support[field] = evidence[field]
@@ -136,13 +158,15 @@ def plan_work_units(items, document, projects, decision_router):
             continue
         explicit = bool(hint and len(normalized_name(hint)) >= 3 and
                         hint.casefold() in local.casefold())
+        routing_context = item.get('project_context', {})
+        inferred = bool(routing_context)
         context, context_keys, context_sources = continuity_context(item, available, doc['id'])
-        if not explicit and not context_keys:
+        if not explicit and not context_keys and not inferred:
             planned.append({'scope':'session', 'project_key':'session:'+str(doc['id']),
                 'project':doc.get('project',''), 'status':'isolated', 'confidence':0,
                 'identity_kind':'isolated', 'reason':'来源没有可验证的项目名称或连续工作上下文'})
             continue
-        key_hint = normalized_name(hint) if explicit else ''
+        key_hint = normalized_name(hint) if explicit or inferred else ''
         # Context differs between units even when their project hints match.
         memo_key = (key_hint, tuple(anchors['repositories']),
                     tuple(anchors['pull_requests']), local, context)
@@ -150,10 +174,19 @@ def plan_work_units(items, document, projects, decision_router):
             planned.append(dict(memo[memo_key]))
             continue
         candidates = [p for p in available if
-            (explicit and normalized_name(p['name']) == key_hint) or
+            ((explicit or inferred) and normalized_name(p['name']) == key_hint) or
             (explicit and anchors['repositories'] and p.get('anchor_type') == 'repo'
              and p.get('anchor') in anchors['repositories']) or
-            (not explicit and p['project_key'] in context_keys)]
+            (not explicit and p['project_key'] in context_keys) or
+            (inferred and p.get('summary'))]
+        named_candidates = [p for p in candidates if key_hint and normalized_name(p['name']) == key_hint]
+        if named_candidates:
+            candidates = named_candidates
+        elif inferred:
+            text = hint+' '+item.get('project_objective','')+' '+item.get('topic','')+' '+local
+            terms = {text[i:i+2].casefold() for i in range(len(text)-1) if not text[i:i+2].isspace()}
+            candidates.sort(key=lambda p:sum(t in (p['name']+' '+p.get('summary','')).casefold()
+                                             for t in terms), reverse=True)
         accepted = []
         for candidate in candidates[:6]:
             repo = candidate.get('anchor','') if candidate.get('anchor_type') == 'repo' else ''
@@ -170,11 +203,12 @@ def plan_work_units(items, document, projects, decision_router):
                 match = {'same':1.0, 'conflict':0.0, 'engine':'source-origin'}
             else:
                 match = decision_router.compare(
-                    {'name':hint if explicit else '', 'topic':item.get('topic',''),
+                    {'name':hint if explicit or inferred else '', 'topic':item.get('topic',''),
                      'quote':str(item.get('quote',''))[:700],
                      'repositories':anchors['repositories'],
                      'pull_requests':anchors['pull_requests'],
-                     'preceding_work':context if not explicit else ''},
+                     'preceding_work':context if not explicit else '',
+                     'source_context':routing_context},
                     {'name':candidate['name'], 'project_key':candidate['project_key'],
                      'anchor_type':candidate.get('anchor_type',''), 'anchor':repo,
                      'existing_work':candidate.get('summary','')})
@@ -184,13 +218,32 @@ def plan_work_units(items, document, projects, decision_router):
             candidate, match = accepted[0]
             assignment = {'scope':'project', 'project_key':candidate['project_key'],
                 'project':candidate['name'], 'status':'confirmed', 'confidence':match['same'],
-                'identity_kind':('explicit' if match['engine'] == 'source-origin'
+                'identity_kind':('inferred' if inferred and not explicit else 'explicit' if match['engine'] == 'source-origin'
                                  else 'matched' if explicit else 'context'),
                 'identity_supports':candidate.get('identity_supports', []),
                 'reason':'独立项目匹配：'+match['engine']}
             if not explicit:
                 assignment['preceding_work'] = context
                 assignment['context_sources'] = context_sources
+        elif inferred and hint and item.get('project_objective') and not explicit and not accepted:
+            # A new durable objective is decided from content and context;
+            # a folder or nearby timestamp alone is insufficient.
+            decision = decision_router.compare(
+                {'name':hint,'topic':item.get('topic',''),'quote':str(item.get('quote',''))[:1200],
+                 'source_context':routing_context},
+                {'name':hint,'proposed_new_project':True,
+                 'objective':item.get('project_objective','')})
+            if decision['same'] >= .92 and decision['conflict'] <= .08:
+                assignment = {'scope':'project','project_key':'auto:'+secrets.token_hex(16),
+                    'project':hint,'status':'confirmed','confidence':decision['same'],
+                    'identity_kind':'inferred','reason':'资料与工作上下文识别新项目：'+decision['engine']}
+                available.append({'project_key':assignment['project_key'],'name':hint,
+                    'origin':'auto','summary':str(item.get('project_objective') or item['quote'])[:550],
+                    'identity_supports':[{'document_id':doc['id'],'quote':item['quote'],'origin':True}]})
+            else:
+                assignment = {'scope':'session','project_key':'session:'+str(doc['id']),
+                    'project':doc.get('project',''),'status':'provisional','confidence':0,
+                    'identity_kind':'isolated','reason':'项目上下文不足，暂保留本次资料范围'}
         elif candidates or not explicit:
             assignment = {'scope':'session', 'project_key':'session:'+str(doc['id']),
                 'project':doc.get('project',''), 'status':'provisional', 'confidence':0,
@@ -210,6 +263,8 @@ def plan_work_units(items, document, projects, decision_router):
                 'identity_supports':[{'document_id':doc['id'], 'quote':str(item.get('quote','')), 'origin':True,
                     **{k:item[k] for k in ('context_quote','confirmation_quote') if item.get(k)}}]})
         memo[memo_key] = assignment
+        if inferred:
+            assignment['project_context'] = routing_context
         planned.append(dict(assignment))
     return planned
 
@@ -240,7 +295,7 @@ def apply_assignments(con, document_id, items, plan):
                 **({'original_project_key':link['project_key']}
                    if link.get('identity_kind') == 'explicit' else {}),
                 **{k:item[k] for k in ('context_quote','confirmation_quote') if item.get(k)},
-                **{k:link[k] for k in ('identity_kind','identity_supports','preceding_work','context_sources')
+                **{k:link[k] for k in ('identity_kind','identity_supports','preceding_work','context_sources','project_context')
                    if k in link}}, ensure_ascii=False)))
         if link['scope']!='project':
             continue

@@ -29,6 +29,12 @@ from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .decision_model import JevDecisionModel, DecisionRouter
 
 
+class SourcePassage(BaseModel):
+    document_id: int = Field(ge=1)
+    title: str = Field(max_length=1000)
+    text: str = Field(max_length=3000)
+
+
 class Asset(BaseModel):
     id: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=130)
@@ -39,6 +45,7 @@ class Asset(BaseModel):
     project_key: str = Field(default='',max_length=1000)
     topic: str = Field(default='',max_length=100)
     scope_detail: str = Field(default='',max_length=500)
+    source_passages: list[SourcePassage] = Field(default_factory=list,max_length=40)
 
 
 class PublishedTwin(BaseModel):
@@ -415,8 +422,8 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
             con.execute('INSERT INTO installations VALUES(?,?,?) ON CONFLICT(owner,installation) DO UPDATE SET revision=excluded.revision', (identity,installation,body.revision))
             con.execute('DELETE FROM assets WHERE owner=? AND installation=?', (identity,installation))
             con.executemany('INSERT INTO assets(owner,installation,local_id,title,body,version,metadata) VALUES(?,?,?,?,?,?,?)',
-                [(identity,installation,a.id,a.title,a.body,a.version,json.dumps({key:getattr(a,key) for key in
-                  ('scope','project','project_key','topic','scope_detail')},ensure_ascii=False)) for a in body.assets])
+                [(identity,installation,a.id,a.title,a.body,a.version,json.dumps(
+                    a.model_dump(exclude={'id','title','body','version'}),ensure_ascii=False)) for a in body.assets])
             old = con.execute('SELECT id,local_id FROM twins WHERE owner=? AND installation=?', (identity,installation)).fetchall()
             for t in old:
                 if t['local_id'] not in twin_ids:

@@ -76,7 +76,7 @@ class ProjectRechecker:
             quote = evidence.get('quote', '')
             local = ' '.join(str(evidence.get(k) or '') for k in
                              ('quote','context_quote','confirmation_quote'))
-            authorized = not work['deleted'] and work['source_enabled'] and work['allow_ai']
+            authorized = not work['deleted'] and work['allow_ai']
             grounded = bool(quote and authorized and work['current_reference']
                             and valid_grounding(evidence, work['content']))
             anchors = source_anchors(local)
@@ -86,8 +86,9 @@ class ProjectRechecker:
             entity = entities.get(work['project_key'], {})
             repo = entity.get('anchor','') if entity.get('anchor_type') == 'repo' else ''
             contradicted = bool(repo and anchors['repositories'] and repo not in anchors['repositories'])
-            independent = bool(grounded and explicit and not contradicted and
-                _identity_kind(evidence) == 'explicit')
+            independent = bool(grounded and not contradicted and
+                (explicit and _identity_kind(evidence) == 'explicit' or
+                 _identity_kind(evidence) == 'inferred' and evidence.get('project_context')))
             # Exclude the assigned work from the candidate's support; matching
             # a previous label against itself would never discover a mistake.
             independent_target = self._without_self(target, work, quote)
@@ -188,11 +189,11 @@ class ProjectRechecker:
                     or current['evidence_json'] != work['evidence_json'] or current['project_verified']):
                 return False
             if target:
-                if current['deleted'] or not current['enabled'] or not current['allow_ai']:
+                if current['deleted'] or not current['allow_ai']:
                     return False
                 for source in context_sources:
                     valid = con.execute("""SELECT 1 FROM documents d JOIN sources s ON s.id=d.source_id
-                        WHERE d.id=? AND d.deleted=0 AND s.enabled=1 AND s.allow_ai=1
+                        WHERE d.id=? AND d.deleted=0 AND s.allow_ai=1
                           AND instr(d.content,?)>0""", (source['document_id'], source['quote'])).fetchone()
                     if not valid:
                         return False

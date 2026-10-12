@@ -7,6 +7,7 @@ import threading
 from urllib.request import Request, urlopen
 from .inference import GatewayClient
 from .twin_access import effective_notes
+from .article_sources import source_passages
 
 
 class PublishingClient(GatewayClient):
@@ -49,6 +50,8 @@ class Publisher:
             for t in twins:
                 rows = [{field:k[field] for field in ('id','title','body','version','scope','project','project_key','topic','scope_detail')}
                         for k in effective_notes(con,t['id'],sharing=True)]
+                for row in rows:
+                    row['source_passages'] = source_passages(con,row['id'])
                 t['knowledge_ids']=[r['id'] for r in rows]
                 assets.update({r['id']:r for r in rows})
             return {'twins':twins,'assets':list(assets.values())}

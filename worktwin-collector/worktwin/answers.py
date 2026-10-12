@@ -3,6 +3,7 @@ import re
 from .answer_policy import check_answer
 from .rowboat_markdown import extract_list
 from .scope import scope_description
+from .article_sources import matching_passages
 
 
 def article_excerpt(body: str, terms: set[str], budget: int) -> str:
@@ -55,7 +56,8 @@ def answer_from_knowledge(client, question: str, rows: list[dict], *, project_ke
     terms = set(phrases)
     terms.update(p[i:i+2] for p in phrases for i in range(len(p)-1) if re.match(r"[\u4e00-\u9fff]", p))
     def score(r):
-        return sum(3 * (r['title']+' '+r.get('topic','')+' '+' '.join(extract_list(r['body'],'Aliases')+extract_list(r['body'],'Keywords'))).lower().count(t) + r['body'].lower().count(t) for t in terms)
+        sources = '\n'.join(p['text'] for p in r.get('source_passages', []))
+        return sum(3 * (r['title']+' '+r.get('topic','')+' '+' '.join(extract_list(r['body'],'Aliases')+extract_list(r['body'],'Keywords'))).lower().count(t) + (r['body']+'\n'+sources).lower().count(t) for t in terms)
     ranked = sorted((r for r in rows if score(r)>0),key=score,reverse=True)
     if not ranked:
         return {'answer':'当前范围内没有找到相关的已确认知识。','answer_status':'insufficient',
@@ -63,6 +65,8 @@ def answer_from_knowledge(client, question: str, rows: list[dict], *, project_ke
     selected, context, length = [], [], 0
     for k in ranked[:12]:
         excerpts = '\n'.join('证据：' + e['quote'][:180] for e in k.get('evidence', [])[:3])
+        excerpts += '\n' + '\n'.join(f"关联资料 [D{p['document_id']}] {p['title']}：\n{p['text']}"
+            for p in matching_passages(k.get('source_passages', []),query,limit=4))[:6000]
         heading = f"[K{k['id']}] {k['title']}\n适用范围：{scope_description(k)}\n主题：{k.get('topic','')}\n"
         budget = min(24000, 48000 - length - len(heading) - len(excerpts) - 10)
         if budget < 1400:

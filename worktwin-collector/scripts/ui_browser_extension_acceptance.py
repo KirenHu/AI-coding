@@ -140,6 +140,8 @@ uvicorn.run(app,host='127.0.0.1',port=int(os.environ['WORKTWIN_ACCEPTANCE_PORT']
                         popup.locator("#pair-code").fill(code)
                         popup.locator("#pair").click()
                         eventually(lambda:"已连接" in popup.locator("#status").inner_text(),timeout=10)
+                        state=client.get("/api/browser-capture",headers=dashboard).json()
+                        assert state["extension_version"]==manifest["version"] and not state["extension_update_required"]
 
                         browser.route("https://flow.example.com/**",lambda route:
                           route.fulfill(content_type="text/html",body=(
