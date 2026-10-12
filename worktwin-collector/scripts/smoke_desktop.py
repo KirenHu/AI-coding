@@ -38,7 +38,7 @@ def verify_mcp(opener, owner_headers, note_id, base_url='http://127.0.0.1:8765')
     headers['MCP-Protocol-Version']='2025-11-25'
     listed=call('/mcp/',{'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},headers)
     tools=listed['result']['tools']
-    assert {t['name'] for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log'},listed
+    assert {t['name'] for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log','search_article_sources'},listed
     assert all(t['annotations']['readOnlyHint'] for t in tools),listed
     result=call('/mcp/',{'jsonrpc':'2.0','id':3,'method':'tools/call',
                         'params':{'name':'read_knowledge','arguments':{'knowledge_id':note_id}}},headers)['result']
