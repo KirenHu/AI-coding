@@ -131,3 +131,12 @@ def test_editor_stages_enable_reasoning_but_probe_remains_small():
     assert qwen['max_tokens']==65536
     probe=transport.chat_payload('https://dashscope.aliyuncs.com/compatible-mode/v1','qwen3.8-flash',[{'role':'user','content':'Hi'}],64)
     assert probe['enable_thinking'] is False and probe['max_tokens']==64
+
+
+def test_mimo_openrouter_reasoning_has_room_for_final_answer():
+    messages=[{'role':'user','content':json.dumps({'stage':'article_writing'})}]
+    draft=transport.chat_payload('https://openrouter.ai/api/v1','xiaomi/mimo-v2.6-flash',messages,12000)
+    assert draft['reasoning']=={'enabled':True,'exclude':True}
+    assert draft['max_tokens']==65536
+    probe=transport.chat_payload('https://openrouter.ai/api/v1','xiaomi/mimo-v2.6-flash',[{'role':'user','content':'OK'}],64)
+    assert probe['reasoning']['enabled'] is False and probe['max_tokens']==64
