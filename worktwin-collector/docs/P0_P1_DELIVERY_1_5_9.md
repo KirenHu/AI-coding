@@ -54,3 +54,14 @@ NVIDIA 免费端点还明确要求不上传机密与个人数据，因此本轮�
 ## 本机验收记录
 
 2026-10-13 已安装并运行 1.5.9。344 项 Python 回归通过；十组浏览器验收通过；冻结 App 冒烟与包内 stdio MCP 初始化、列工具、读取授权文章通过。运行版本和安装包版本一致，模型凭据成功加载，SQLite quick_check 为 ok；安装前后的来源采集、AI 使用、分享权限逐项一致。签名 CI 结果独立记录，不以本机 ad-hoc 签名冒充正式公证。
+
+
+## 最终签名安装结果
+
+2026-10-13 本机已替换为 Developer ID 签名、Apple 公证的 1.5.9（应用源码提交 04ba011）。下载的 ARM DMG 和挂载后的 App 均通过 stapler 与 Gatekeeper；同一包完成冻结应用冒烟、MCP 协议初始化、读取及撤销验证，再安装到 /Applications/WorkTwin.app。运行版本 1.5.9，模型凭据可用，SQLite quick_check 为 ok，采集、AI、分享授权与安装前备份一致。
+
+[构建记录](https://github.com/KirenHu/AI-coding/actions/runs/38378402772)：Python 与浏览器验收通过；Intel macOS 的签名、公证、Gatekeeper、冻结应用及 MCP 验收通过；Windows 冻结应用及 MCP 验收通过。该轮 ARM CI 在公证成功后的 CloudKit 网络核验失败；同一签名包随后在本机完整核验通过，不将该轮 CI 描述成全绿。b793ef2 仅把已验证的网络重试复用到安装包验收，未改变应用逻辑；[流水线复跑](https://github.com/KirenHu/AI-coding/actions/runs/38379523806)单独保留。
+
+Windows 产物仍未签名，未宣称完成 Windows 可信发行；正式签名需要相应证书或签名服务。未执行正式 Release 发布、PR 合并或生产历史批量重处理。
+
+本机证据位于 release/local-install-signed-1.5.9.json 与 release/local-verification-signed-1.5.9.json；安装记录包含数据库快照与原 App 的完整路径。保留两者用于回退，不能只降级程序却混用不兼容的数据库。真实生产资料的整体知识质量与月度成本尚未测量，前述小样本结果不代替长期效果。
