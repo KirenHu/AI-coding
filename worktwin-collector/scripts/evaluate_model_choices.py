@@ -22,7 +22,7 @@ for label,modelname in [('paid',settings['personal_model']),('free','nvidia/nemo
  for name,old,new,expected in cases:
   started=time.monotonic()
   try:
-   raw=model.chat([{'role':'system','content':'判断新材料相对现行知识。输出JSON {"decision":"same|update|uncertain|same_object|different_object","reason":"简短依据"}。重复和语义等价用same；已确认实质变化用update；未确认建议或缺乏证据用uncertain；旧材料不能覆盖现行规则，用same；只比较对象身份的条目用same_object或different_object。'}, {'role':'user','content':json.dumps({'stage':'benchmark','current':old,'incoming':new},ensure_ascii=False)}],max_tokens=1200)
+   raw=model.chat([{'role':'system','content':'按 task 指定任务判断。task=object 时只比较研究对象身份，同一产品的不同章节仍为同一对象；只能用same_object或different_object。task=update 时判断是否需要进一步处理知识更新，不判断链接所指网页的内容；只能用same/update/uncertain。金额、日期、否定、删除条款、链接目标变化必须update；建议从未确认变为用户明确确认也属于update；仅换行、同义改写和段落移动为same。比较业务事件时间而非导入时间，较早历史记录不覆盖已确认的新规则。输出JSON {"decision":"same|update|uncertain|same_object|different_object","reason":"简短依据"}。重复和语义等价用same；已确认实质变化用update；未确认建议或缺乏证据用uncertain；旧材料不能覆盖现行规则，用same；只比较对象身份的条目用same_object或different_object。'}, {'role':'user','content':json.dumps({'stage':'benchmark','task':'object' if expected.endswith('_object') else 'update','current':old,'incoming':new},ensure_ascii=False)}],max_tokens=1200)
    parsed=json.loads(raw);result={'name':name,'expected':expected,'actual':parsed,'passed':parsed.get('decision')==expected}
   except Exception as e: result={'name':name,'expected':expected,'error':type(e).__name__,'passed':False}
   result['seconds']=round(time.monotonic()-started,2);results.append(result)
