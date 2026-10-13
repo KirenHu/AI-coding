@@ -19,6 +19,17 @@ CREATE TABLE IF NOT EXISTS sources (
   last_error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS source_file_issues (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  size_bytes INTEGER,
+  mtime_ns INTEGER,
+  state TEXT NOT NULL DEFAULT 'waiting',
+  UNIQUE(source_id,path)
+);
 CREATE TABLE IF NOT EXISTS documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

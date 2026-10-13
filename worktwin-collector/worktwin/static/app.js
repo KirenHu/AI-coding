@@ -125,6 +125,7 @@ async function renderSources(){
   },3500);
 }
 function bindSourceControls(node){
+  bindFileIssues(node);
   node.querySelectorAll('[data-collect-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.collectToggle}/toggle`,{method:'POST'}),'sources'))b.checked=!b.checked}));
   node.querySelectorAll('[data-ai-toggle]').forEach(b=>b.onchange=()=>busy(b,async()=>{if(!await perform(()=>api(`sources/${b.dataset.aiToggle}/ai`,{method:'PUT',body:{allow_ai:b.checked}}),'sources'))b.checked=!b.checked}));
   node.querySelectorAll('[data-source-detail]').forEach(b=>b.onclick=()=>sourceDetail(state.sources.find(s=>s.id===Number(b.dataset.sourceDetail))));
@@ -140,7 +141,8 @@ async function processingDetails(jobs,source=null){
   el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry'+(source?'?source_id='+source.id:''),{method:'POST'}))){closeOverlay();await go('sources',true)}}));
 }
 function sourceDetail(s){
-  dialog(sourceName(s),`<section class="settings-group"><h3>采集范围</h3><p class="source-path">${s.collection_scope==='assistant'?(sourceType(s)==='cursor'?'自动识别本机 Cursor 目录中的 CLI JSONL 导出，不读取 IDE 对话':'此助手在本机的全部可识别会话'):esc(s.root)}</p><p>${s.document_count} 份资料${s.last_error?' · '+esc(s.last_error):''}</p></section><section class="settings-group"><h3>处理与分享</h3><label class="setting-row"><span>允许 AI 整理<small>相关文本发送到已配置的模型</small></span><input class="toggle" id="source-detail-ai" type="checkbox" ${s.allow_ai?'checked':''}></label><label class="setting-row"><span>允许分身分享</span><input class="toggle" id="source-detail-share" type="checkbox" ${s.allow_share?'checked':''}></label></section><section class="settings-group"><h3>整理与记录</h3><button class="btn secondary" id="source-jobs">整理任务</button> <button class="btn danger" id="source-remove">移除来源数据</button></section>`,`<button class="btn secondary" data-close>关闭</button>`);
+  dialog(sourceName(s),`<section class="settings-group"><h3>采集范围</h3><p class="source-path">${s.collection_scope==='assistant'?(sourceType(s)==='cursor'?'自动识别本机 Cursor 目录中的 CLI JSONL 导出，不读取 IDE 对话':'此助手在本机的全部可识别会话'):esc(s.root)}</p><p>${s.document_count} 份资料</p><p>${s.file_issues?.length?sourceFileStatus(s):esc(s.last_error||'')}</p></section><section class="settings-group"><h3>处理与分享</h3><label class="setting-row"><span>允许 AI 整理<small>相关文本发送到已配置的模型</small></span><input class="toggle" id="source-detail-ai" type="checkbox" ${s.allow_ai?'checked':''}></label><label class="setting-row"><span>允许分身分享</span><input class="toggle" id="source-detail-share" type="checkbox" ${s.allow_share?'checked':''}></label></section><section class="settings-group"><h3>整理与记录</h3><button class="btn secondary" id="source-jobs">整理任务</button> <button class="btn danger" id="source-remove">移除来源数据</button></section>`,`<button class="btn secondary" data-close>关闭</button>`);
+  bindFileIssues(el('overlay-root'));
   el('source-detail-ai').onchange=async e=>{if(await perform(()=>api(`sources/${s.id}/ai`,{method:'PUT',body:{allow_ai:e.target.checked}}))){s.allow_ai=e.target.checked;await go('sources',true)}else e.target.checked=!e.target.checked};
   el('source-detail-share').onchange=async e=>{if(await perform(()=>api(`sources/${s.id}/share`,{method:'PUT',body:{allow_share:e.target.checked}}))){s.allow_share=e.target.checked;notify('分享权限已更新')}else e.target.checked=!e.target.checked};
   el('source-jobs').onclick=async()=>processingDetails(await api('ai/jobs?source_id='+s.id),s);
@@ -254,7 +256,38 @@ async function browserExtensionGuide(){
   el('browser-extension-unpair').onclick=async()=>{if(confirm('解除插件配对并停止当前采集？网站和历史记录会保留。')&&await perform(()=>api('browser-capture/unpair',{method:'POST'}))){await browserExtensionGuide();await go('sources',true)}};
 }
 
-function sourceRow(s){const name=sourceName(s);return `<div class="source-item"><div class="source-summary"><b>${esc(name)}</b><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div></div><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}></label><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}></label><span class="source-state">${s.last_error?`<span class="state-label warn">${esc(s.last_error)}</span>`:s.document_count+' 份资料'}</span><button class="icon-button" data-source-detail="${s.id}" aria-label="${esc(name)} 来源设置">${icon('ellipsis')}</button></div>`}
+const fileIssueNames={oversized:'超过大小限制',parse_failed:'解析失败',unreadable:'无法读取',no_text:'未提取到文字'};
+function sourceFileStatus(s){
+  if(s.file_issues?.length)return s.file_issues.map(r=>`<button class="file-issue-link" data-source-issues="${s.id}" data-issue-code="${r.code}">${r.count} 个文件${r.state==='waiting'?fileIssueNames[r.code]:'处理中'}</button>`).join('');
+  return s.last_error?`<span class="state-label warn">${esc(s.last_error)}</span>`:s.document_count+' 份资料';
+}
+function bindFileIssues(node){node.querySelectorAll('[data-source-issues]').forEach(b=>b.onclick=()=>sourceFileIssues(Number(b.dataset.sourceIssues),b.dataset.issueCode))}
+async function sourceFileIssues(sourceId,code){
+  const data=await api(`sources/${sourceId}/file-issues`);
+  const files=data.files.filter(f=>f.code===code);
+  const size=n=>n==null?'':(n/1024/1024).toFixed(2)+' MB';
+  const rows=items=>items.map(f=>`<div class="file-issue-row"><div><b>${esc(f.name)}</b><small>${esc(f.state==='waiting'?f.message:'正在处理…')}</small></div><span>${size(f.size_bytes)}</span></div>`).join('');
+  dialog(fileIssueNames[code]||'采集详情',`<div id="file-issue-list">${files.length?rows(files):'<p>这些文件已处理。</p>'}</div>${code==='oversized'?`<p class="field-note">默认读取上限 ${size(data.limit_bytes)}。本次仅处理以上文件，AI 整理沿用来源设置。</p>`:''}`,`<button class="btn secondary" data-close>关闭</button>${code==='oversized'&&files.some(f=>f.state==='waiting')?'<button class="btn" id="process-large-files">处理这些文件</button>':''}`);
+  const list=el('file-issue-list');
+  const ids=files.map(f=>f.id);
+  const poll=async()=>{
+    if(!list.isConnected)return;
+    try{
+      const current=await api(`sources/${sourceId}/file-issues`);
+      if(!list.isConnected)return;
+      const remaining=current.files.filter(f=>ids.includes(f.id));
+      list.innerHTML=rows(remaining)||'<p>文件已采集。后续是否由 AI 整理，取决于来源设置。</p>';
+      if(remaining.some(f=>f.state!=='waiting'))setTimeout(poll,1000);
+      else {const button=el('process-large-files');if(button)button.remove();await go('sources',true)}
+    }catch(e){if(list.isConnected){list.insertAdjacentHTML('beforeend',`<p class="field-note">${esc(e.message)}，可关闭后重新查看。</p>`);const button=el('process-large-files');if(button)button.remove()}}
+  };
+  el('process-large-files')?.addEventListener('click',()=>busy(el('process-large-files'),async()=>{
+    try{await api(`sources/${sourceId}/process-large-files`,{method:'POST',body:{issue_ids:files.filter(f=>f.state==='waiting').map(f=>f.id)}});el('process-large-files').textContent='处理中…';el('process-large-files').hidden=true;await poll()}catch(e){notify(e.message)}
+  }));
+  if(files.some(f=>f.state!=='waiting'))setTimeout(poll,1000);
+}
+
+function sourceRow(s){const name=sourceName(s);return `<div class="source-item"><div class="source-summary"><b>${esc(name)}</b><div class="source-path" title="${esc(s.root)}">${esc(s.root)}</div></div><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="采集 ${esc(name)}" data-collect-toggle="${s.id}" ${s.enabled?'checked':''}></label><label class="permission-cell"><input class="toggle" type="checkbox" aria-label="允许 AI 整理 ${esc(name)}" data-ai-toggle="${s.id}" ${s.allow_ai?'checked':''}></label><span class="source-state">${sourceFileStatus(s)}</span><button class="icon-button" data-source-detail="${s.id}" aria-label="${esc(name)} 来源设置">${icon('ellipsis')}</button></div>`}
 async function addSource(){
   dialog('添加文件夹',`<div class="field"><label>文件夹</label><div class="folder-picker"><span id="new-source-path">尚未选择</span><button class="btn secondary" id="browse-folder">选择文件夹</button></div></div><p class="field-note">添加后开始采集；AI 整理与分享可在来源设置中开启。</p>`,`<button class="btn secondary" data-close>取消</button><button class="btn" id="save-source" disabled>添加</button>`);
   let folder='';

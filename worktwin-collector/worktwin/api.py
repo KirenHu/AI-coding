@@ -63,6 +63,10 @@ class SourceInput(BaseModel):
     validate_transcript: bool = False
 
 
+class SourceFileProcessInput(BaseModel):
+    issue_ids: list[int] = Field(min_length=1)
+
+
 class SourceDetectionInput(BaseModel):
     kind: Literal['codex','claude','cursor']
     root: str | None = None
@@ -518,10 +522,34 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.get("/api/sources")
     def sources():
         with db.connect() as con:
-            return [dict(r) for r in con.execute("""
+            rows = [dict(r) for r in con.execute("""
                 SELECT s.*, COALESCE(s.adapter,s.kind) AS source_type, COUNT(d.id) AS document_count FROM sources s
                 LEFT JOIN documents d ON d.source_id=s.id
                 GROUP BY s.id ORDER BY s.id DESC""")]
+            for source in rows:
+                source['file_issues'] = [dict(r) for r in con.execute(
+                    "SELECT code,state,COUNT(*) count FROM source_file_issues WHERE source_id=? GROUP BY code,state",(source['id'],))]
+            return rows
+
+    @app.get('/api/sources/{source_id}/file-issues',dependencies=[Depends(authorized)])
+    def source_file_issues(source_id: int):
+        with db.connect() as con:
+            source = con.execute('SELECT root FROM sources WHERE id=?',(source_id,)).fetchone()
+            if not source:
+                raise HTTPException(404,'来源不存在')
+            rows = [dict(r) for r in con.execute('SELECT * FROM source_file_issues WHERE source_id=? ORDER BY path',(source_id,))]
+        for row in rows:
+            row['name'] = str(Path(row.pop('path')).relative_to(source['root']))
+        from .config import MAX_FILE_BYTES
+        return {'files':rows,'limit_bytes':MAX_FILE_BYTES}
+
+    @app.post('/api/sources/{source_id}/process-large-files',dependencies=[Depends(authorized)])
+    def process_large_files(source_id: int, payload: SourceFileProcessInput):
+        try:
+            count = collector.request_large_files(source_id,payload.issue_ids)
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from exc
+        return {'queued':count}
 
     @app.post("/api/sources", dependencies=[Depends(authorized)])
     def create_source(payload: SourceInput):

@@ -52,6 +52,7 @@ class Collector:
         self._thread: threading.Thread | None = None
         self._watchers: dict[str, tuple[threading.Thread, threading.Event]] = {}
         self.is_scanning = False
+        self._legacy_issues_checked = False
         self.last_scan = "尚未扫描"
         self.last_result = {"new": 0, "updated": 0, "deleted": 0, "errors": 0}
 
@@ -74,6 +75,31 @@ class Collector:
 
     def schedule(self):
         self._wake.set()
+
+    def request_large_files(self, source_id: int, issue_ids: list[int]) -> int:
+        with self.db.connect() as con:
+            rows = [dict(r) for r in con.execute(
+                "SELECT * FROM source_file_issues WHERE source_id=?", (source_id,))]
+            selected = [r for r in rows if r['id'] in set(issue_ids)]
+            if not issue_ids or len(selected) != len(set(issue_ids)) or any(r['code'] != 'oversized' for r in selected):
+                raise ValueError('文件列表已变化，请重新打开查看')
+            con.executemany("UPDATE source_file_issues SET state='queued' WHERE id=? AND state='waiting'",
+                            [(r['id'],) for r in selected])
+        self.schedule()
+        return len(selected)
+
+    def _file_issue(self, source_id, path, code, message, stat=None):
+        with self.db.connect() as con:
+            con.execute("""INSERT INTO source_file_issues(source_id,path,code,message,size_bytes,mtime_ns)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(source_id,path) DO UPDATE SET code=excluded.code,
+                message=excluded.message,state=CASE WHEN source_file_issues.state='queued'
+                AND source_file_issues.size_bytes=excluded.size_bytes AND source_file_issues.mtime_ns=excluded.mtime_ns
+                THEN 'queued' ELSE 'waiting' END,size_bytes=excluded.size_bytes,mtime_ns=excluded.mtime_ns""",
+                (source_id,str(path),code,message,stat.st_size if stat else None,stat.st_mtime_ns if stat else None))
+
+    def _clear_issue(self, source_id, path):
+        with self.db.connect() as con:
+            con.execute('DELETE FROM source_file_issues WHERE source_id=? AND path=?',(source_id,str(path)))
 
     def forget_source(self, source_id: int) -> str | None:
         """Serialize source revocation with scans so a scan cannot restore removed data."""
@@ -140,14 +166,40 @@ class Collector:
             self._watchers[root] = (worker, stop)
             worker.start()
 
+    def _classify_legacy_size_errors(self):
+        """Classify old size-limit messages using metadata only, including paused sources."""
+        with self.db.connect() as con:
+            rows = [dict(r) for r in con.execute("""SELECT * FROM sources s WHERE COALESCE(adapter,kind)='folder' AND last_error LIKE '%个文件解析失败'
+                AND NOT EXISTS (SELECT 1 FROM source_file_issues f WHERE f.source_id=s.id)""")]
+        for source in rows:
+            oversized = 0
+            for path in source_files(Path(source['root']),source.get('adapter') or source['kind']):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if stat.st_size > MAX_FILE_BYTES:
+                    self._file_issue(source['id'],path,'oversized','超过默认读取上限',stat)
+                    oversized += 1
+            if oversized:
+                message = f'{oversized} 个文件超过大小限制'
+                if source['last_error'] != f'{oversized} 个文件解析失败':
+                    message += ' · 另有历史采集异常，重新检查后更新'
+                with self.db.connect() as con:
+                    con.execute('UPDATE sources SET last_error=? WHERE id=?',(message,source['id']))
+
     def scan_all(self) -> dict[str, int]:
         if not self._lock.acquire(blocking=False):
             return dict(self.last_result)
         summary = {"new": 0, "updated": 0, "deleted": 0, "errors": 0}
         self.is_scanning = True
         try:
+            if not self._legacy_issues_checked:
+                self._classify_legacy_size_errors()
+                self._legacy_issues_checked = True
             with self.db.connect() as con:
-                sources = [dict(r) for r in con.execute("SELECT * FROM sources WHERE enabled=1 ORDER BY id").fetchall()]
+                sources = [dict(r) for r in con.execute("""SELECT * FROM sources WHERE enabled=1 OR EXISTS
+                    (SELECT 1 FROM source_file_issues f WHERE f.source_id=sources.id AND f.state IN ('queued','processing')) ORDER BY id""").fetchall()]
             for src in sources:
                 res = self._scan_source(src)
                 for k in summary:
@@ -163,11 +215,15 @@ class Collector:
         counts = {"new": 0, "updated": 0, "deleted": 0, "errors": 0}
         root = Path(src["root"])
         kind = src.get("adapter") or src["kind"]
+        with self.db.connect() as con:
+            issues = {r['path']:dict(r) for r in con.execute('SELECT * FROM source_file_issues WHERE source_id=?',(src['id'],))}
+        selected_only = not src['enabled']
         if not root.is_dir():
             if src.get('collection_scope') == 'assistant':
                 return counts  # A selected tool can wait for its first local session.
             with self.db.connect() as con:
                 con.execute("UPDATE sources SET last_error=? WHERE id=?", ("目录不可访问或已移除", src["id"]))
+                con.execute("UPDATE source_file_issues SET state='waiting' WHERE source_id=?",(src['id'],))
             counts["errors"] += 1
             return counts
         with self.db.connect() as con:
@@ -179,6 +235,11 @@ class Collector:
         for path in source_files(root, kind, onerror=walk_error):
             key = str(path)
             seen.add(key)
+            issue = issues.get(key)
+            requested = issue and issue['state'] in ('queued','processing')
+            if selected_only and not requested:
+                continue
+            stat = None
             try:
                 stat = path.stat()
                 previous = existing.get(key)
@@ -193,12 +254,18 @@ class Collector:
                         counts[result["state"]] += 1
                     counts["errors"] += result["errors"]
                     continue
-                if stat.st_size > MAX_FILE_BYTES:
-                    counts["errors"] += 1
-                    self.db.event("scan_skipped", f"{path.name}: 文件超出当前读取上限，保留已采集资料", src["id"])
-                    continue
                 if previous and previous["mtime_ns"] == stat.st_mtime_ns and previous["size_bytes"] == stat.st_size:
+                    self._clear_issue(src['id'],path)
                     continue
+                same_version = issue and issue['size_bytes'] == stat.st_size and issue['mtime_ns'] == stat.st_mtime_ns
+                if stat.st_size > MAX_FILE_BYTES and not (requested and same_version):
+                    counts['errors'] += 1
+                    if not (same_version and issue['code'] != 'oversized'):
+                        self._file_issue(src['id'],path,'oversized','超过默认读取上限',stat)
+                    continue
+                if requested:
+                    with self.db.connect() as con:
+                        con.execute("UPDATE source_file_issues SET state='processing' WHERE id=?",(issue['id'],))
                 digest = hashlib.sha256()
                 with path.open("rb") as file_stream:
                     for block in iter(lambda: file_stream.read(1024 * 1024), b""):
@@ -207,6 +274,7 @@ class Collector:
                 if previous and previous["sha256"] == data_digest:
                     with self.db.connect() as con:
                         con.execute("UPDATE documents SET mtime_ns=?,size_bytes=? WHERE id=?", (stat.st_mtime_ns, stat.st_size, previous["id"]))
+                    self._clear_issue(src['id'],path)
                     continue
                 title, content = parse_file(path, codex=kind == "codex", claude=kind == "claude")
                 relative = str(path.relative_to(root))
@@ -217,6 +285,8 @@ class Collector:
                     parent = path.relative_to(root).parts
                     project = parent[0] if len(parent) >= 2 else src["name"]
                 if not content.strip():
+                    counts['errors'] += 1
+                    self._file_issue(src['id'],path,'no_text','未提取到文字' + ('；扫描件 PDF 暂不支持文字识别' if path.suffix.lower()=='.pdf' else '，文件内容可能为空'),stat)
                     if previous:
                         with self.db.connect() as con:
                             affected = {int(r[0]) for r in con.execute(
@@ -276,13 +346,16 @@ class Collector:
                             AND created_by IN ('rules','ollama','enterprise_ai') AND id IN
                             (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=? AND is_current=0)
                             AND NOT EXISTS (SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=knowledge.id AND e.is_current=1)""", (document_id,))
+                self._clear_issue(src['id'],path)
             except Exception as exc:
                 counts["errors"] += 1
-                self.db.event("parse_error", f"{path.name}: {exc}", src["id"])
+                code = 'unreadable' if isinstance(exc,OSError) else 'parse_failed'
+                message = '文件无法读取，请检查访问权限或文件是否仍存在' if code == 'unreadable' else '无法解析文件内容，请确认文件未损坏、未加密且格式正确'
+                self._file_issue(src['id'],path,code,message,stat)
         # Enumeration filters, read errors and incomplete walks do not prove
         # deletion. Only a missing path removes a previously collected file.
         removed = set()
-        for old_path in set(existing) - seen:
+        for old_path in (set(existing) - seen if not selected_only else set()):
             try:
                 Path(old_path).stat()
             except FileNotFoundError:
@@ -302,8 +375,22 @@ class Collector:
                     review_flags(con, affected)
                     counts["deleted"] += 1
                 self._purge_orphans(con)
+        for path in set(issues) - seen:
+            # A removed file no longer needs an action, including queued files.
+            if not Path(path).exists():
+                if issues[path]['state'] in ('queued','processing'):
+                    self._file_issue(src['id'],path,'unreadable','文件已移动或删除')
+                else:
+                    self._clear_issue(src['id'],path)
+            elif issues[path]['state'] in ('queued','processing'):
+                self._file_issue(src['id'],path,'unreadable','文件不在当前可采集范围内')
         with self.db.connect() as con:
-            con.execute("UPDATE sources SET last_scanned=datetime('now'),last_error=? WHERE id=?", (f"{counts['errors']} 个文件解析失败" if counts["errors"] else None,src["id"]))
+            totals = dict(con.execute('SELECT code,COUNT(*) FROM source_file_issues WHERE source_id=? GROUP BY code',(src['id'],)))
+            labels = {'oversized':'个文件超过大小限制','parse_failed':'个文件解析失败','unreadable':'个文件无法读取','no_text':'个文件未提取到文字'}
+            error_text = ' · '.join(f"{n} {labels[code]}" for code,n in totals.items())
+            if not error_text and counts['errors']:
+                error_text = '部分文件或目录无法读取'
+            con.execute("UPDATE sources SET last_scanned=datetime('now'),last_error=? WHERE id=?", (error_text or None,src["id"]))
             if any(counts.values()):
                 con.execute("INSERT INTO events(action,details,source_id) VALUES(?,?,?)", ("scan", f"新增 {counts['new']} · 更新 {counts['updated']} · 删除 {counts['deleted']} · 错误 {counts['errors']}",src["id"]))
         return counts

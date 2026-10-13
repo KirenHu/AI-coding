@@ -202,6 +202,8 @@ def test_oversize_unreadable_and_incomplete_walk_are_not_deletions(tmp_path, mon
     collector = Collector(db)
     collector.scan_all()
     monkeypatch.setattr(module, "MAX_FILE_BYTES", 2)
+    # A changed oversized version must preserve the last collected content.
+    path.write_text("修改后超过上限的新资料", encoding="utf-8")
     result = collector.scan_all()
     assert result["deleted"] == 0 and result["errors"] == 1
     monkeypatch.setattr(module, "source_files", lambda *args, **kwargs: iter(()))
