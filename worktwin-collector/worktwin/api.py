@@ -1277,6 +1277,21 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         from urllib.parse import quote
         return admin_request('DELETE','employees/'+quote(employee,safe=''))
 
+    @app.get('/api/processing/stats', dependencies=[Depends(authorized)])
+    def processing_stats():
+        with db.connect() as con:
+            decisions=[dict(r) for r in con.execute("""SELECT mode,reason,state,COUNT(*) runs,
+                SUM(source_chars) source_chars,SUM(submitted_chars) submitted_chars,
+                SUM(model_calls) extraction_calls,SUM(elapsed_ms) elapsed_ms
+                FROM knowledge_processing_runs GROUP BY mode,reason,state""")]
+            models=[dict(r) for r in con.execute("""SELECT model,COUNT(*) calls,
+                SUM(CASE WHEN state='error' THEN 1 ELSE 0 END) failed_calls,
+                SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,
+                SUM(CASE WHEN input_tokens IS NULL THEN 1 ELSE 0 END) unknown_input_usage_calls,
+                SUM(elapsed_ms) elapsed_ms FROM model_call_metrics GROUP BY model""")]
+        return {'decisions':decisions,'models':models,'cost':None,
+                'document_incremental_enabled':db.setting('document_incremental_enabled',os.getenv('WORKTWIN_DOCUMENT_INCREMENTAL','1'))=='1'}
+
     @app.post("/api/sharing/sync", dependencies=[Depends(authorized)])
     def sync_sharing():
         return publisher.sync(force=True)

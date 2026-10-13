@@ -17,6 +17,7 @@ from .knowledge import KIND_LABELS, visible_turns
 from .scope import low_value, source_time
 from .model_transport import model_urlopen
 from .articles import BODY_LIMIT
+from .update_filter import ModelText
 
 
 class GatewayClient:
@@ -42,7 +43,7 @@ class GatewayClient:
         }, method="POST")
         with model_urlopen(request, timeout=600) as response:
             data = json.load(response)
-        return str(data["choices"][0]["message"]["content"])
+        return ModelText(str(data["choices"][0]["message"]["content"]),data.get('usage'))
 
 
 def text_batches(text: str, max_chars: int = 6400) -> list[str]:

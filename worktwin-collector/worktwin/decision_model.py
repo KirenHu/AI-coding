@@ -10,6 +10,7 @@ import json
 from urllib.request import Request
 
 from .model_settings import PersonalModel, validate_url
+from .update_filter import measured_call
 from .model_transport import ModelConnectionError, model_urlopen
 
 
@@ -124,18 +125,18 @@ class DecisionRouter:
         source='main'
         try:
             if getattr(self.main,'mode','personal')=='enterprise':
-                data=self._enterprise(state,questions)
+                data=measured_call(self.db,"enterprise-decision",lambda:self._enterprise(state,questions))
                 if data is not None:
                     score=self._score_jev(data);source='enterprise-specialized'
             else:
                 client=self._specialized()
                 if isinstance(client,JevDecisionModel) and client.configured:
-                    score=self._score_jev(client.evaluate(state,questions));source='jev'
+                    score=self._score_jev(measured_call(self.db,client.model,lambda:client.evaluate(state,questions)));source='jev'
                 elif client is not None and client.configured:
-                    response=client.chat([
+                    response=measured_call(self.db,client.model,lambda:client.chat([
                         {'role':'system','content':'判断工作事项是否属于候选业务项目。结合内容目标、文件夹/工作目录、时间和相邻上下文；目录或时间不能单独决定，但不要求每条引文重复项目名。proposed_new_project表示判断内容是否支持这个持续业务目标。只返回 JSON: {"same_project":true|false,"different_project":true|false}。'},
                         {'role':'user','content':json.dumps(state,ensure_ascii=False)}],
-                        max_tokens=160)
+                        max_tokens=160))
                     parsed=json.loads(response)
                     score=(1.0 if parsed.get('same_project') is True else 0.0,
                            1.0 if parsed.get('different_project') is True else 0.0)

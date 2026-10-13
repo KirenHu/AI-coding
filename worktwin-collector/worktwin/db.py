@@ -256,6 +256,8 @@ class Database:
             migrate_maintenance(conn)
             from .library_organization import migrate as migrate_library
             migrate_library(conn)
+            from .update_filter import migrate as migrate_update_filter
+            migrate_update_filter(conn)
             conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('continuous_evidence_v1','1')")
         if os.name == "posix":
             self.path.chmod(0o600)

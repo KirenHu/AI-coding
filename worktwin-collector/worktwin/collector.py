@@ -14,6 +14,7 @@ from .reconcile import review_flags
 from .parsers import EXCLUDED_FILES, EXCLUDED_FOLDERS, SUPPORTED_EXTENSIONS, parse_file, split_chunks
 from .ingest import TRANSCRIPT_ADAPTERS, collect_transcript
 from .artifacts import record_file_observation, record_file_deletion
+from .update_filter import canonical, request_article_refresh, start_run
 
 
 def eligible_file(path: Path, kind: str) -> bool:
@@ -278,6 +279,9 @@ class Collector:
                 if previous and previous["sha256"] == data_digest:
                     with self.db.connect() as con:
                         con.execute("UPDATE documents SET mtime_ns=?,size_bytes=? WHERE id=?", (stat.st_mtime_ns, stat.st_size, previous["id"]))
+                        run_id = start_run(con,previous['id'],data_digest,
+                            {'mode':'skip','reason':'raw_hash_equal','changes':[],'content':''},len(previous['content']))
+                        con.execute("UPDATE knowledge_processing_runs SET state='done' WHERE id=?",(run_id,))
                     self._clear_issue(src['id'],path)
                     continue
                 title, content = parse_file(path, codex=kind == "codex", claude=kind == "claude")
@@ -295,12 +299,14 @@ class Collector:
                         with self.db.connect() as con:
                             affected = {int(r[0]) for r in con.execute(
                                 "SELECT DISTINCT knowledge_id FROM knowledge_evidence WHERE document_id=?", (previous["id"],))}
+                            request_article_refresh(con, previous['id'])
                             con.execute("DELETE FROM documents WHERE id=?", (previous["id"],))
                             self._purge_orphans(con)
                             con.executemany("UPDATE knowledge SET review_hold=1 WHERE id=?", [(k,) for k in affected])
                             review_flags(con, affected)
                         counts["deleted"] += 1
                     continue
+                format_only = bool(previous and canonical(previous['content']) == canonical(content))
                 chunks = split_chunks(content)
                 with self.db.connect() as con:
                     if previous:
@@ -334,6 +340,16 @@ class Collector:
                                 part = next((r for r in chunk_rows if ev["quote"][:60] in r["text"]), None)
                                 con.execute("UPDATE knowledge_evidence SET is_current=1,chunk_id=? WHERE id=?",
                                             (part["id"] if part else None, ev["id"]))
+                    if previous and not format_only:
+                        request_article_refresh(con, document_id)
+                    elif previous:
+                        # Keep current citation versions in sync even when no model is needed.
+                        con.execute('UPDATE article_current_sources SET content_sha=? WHERE document_id=? AND quote IN (SELECT quote FROM knowledge_evidence WHERE document_id=? AND is_current=1)',
+                                    (data_digest,document_id,document_id))
+                        from .article_maintenance import source_materials, _signature
+                        for material in source_materials(con):
+                            if any(e['document_id']==document_id for e in material['sources']):
+                                con.execute('UPDATE article_material_receipts SET input_signature=? WHERE material_id=?',(_signature([material]),material['id']))
                     # Collection is intentionally model-free. The scheduled
                     # knowledge worker handles BYOK inference asynchronously,
                     # and only for sources explicitly granted AI processing.
@@ -372,6 +388,7 @@ class Collector:
                     doc_id = existing[old_path]["id"]
                     if kind not in TRANSCRIPT_ADAPTERS:
                         record_file_deletion(con, doc_id)
+                        request_article_refresh(con, doc_id)
                     affected = {int(r[0]) for r in con.execute(
                         "SELECT DISTINCT knowledge_id FROM knowledge_evidence WHERE document_id=?", (doc_id,))}
                     con.execute("DELETE FROM documents WHERE id=?", (doc_id,))

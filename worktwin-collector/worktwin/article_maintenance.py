@@ -140,9 +140,72 @@ class ArticleMaintainer:
     def __init__(self, db, client):
         self.db, self.client = db, client
 
+    def _refresh_sources(self):
+        """Recheck an existing article even when a deletion extracted zero materials."""
+        with self.db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            selected = None
+            receipts = dict(con.execute('SELECT material_id,input_signature FROM article_material_receipts'))
+            deferred = {r[0] for r in con.execute('SELECT material_id FROM article_material_deferrals')}
+            pending_documents = {e['document_id'] for m in source_materials(con)
+                if receipts.get(m['id']) != _signature([m]) and m['id'] not in deferred
+                for e in m['sources']}
+            for row in con.execute("""SELECT k.*,r.revision refresh_revision FROM article_source_refresh r
+                    JOIN knowledge k ON k.id=r.article_id WHERE k.status!='archived' ORDER BY k.id"""):
+                article = dict(row)
+                sources = list(con.execute("""SELECT e.is_current,e.superseded,d.deleted,s.allow_ai,d.id,d.sha256,s.enabled
+                    FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
+                    JOIN sources s ON s.id=d.source_id WHERE e.knowledge_id=?""",(article['id'],)))
+                # Let normal material routing refresh affected articles first, avoiding a second rewrite.
+                if any(e['id'] in pending_documents for e in sources):
+                    continue
+                if not sources or any(e['deleted'] or not e['allow_ai'] or not e['enabled'] for e in sources):
+                    continue
+                if any(con.execute("SELECT 1 FROM ai_jobs WHERE document_id=? AND state!='done'",(e['id'],)).fetchone() for e in sources):
+                    continue
+                key = article['scope'],article['project_key']
+                if con.execute("""SELECT 1 FROM article_maintenance_runs WHERE scope=? AND project_key=? AND
+                        ((state='running' AND updated_at>datetime('now','-20 minutes')) OR
+                         (state='error' AND (next_run_at>datetime('now') OR (attempts>=3 AND input_signature=?))))""",(*key,'source-refresh:'+str(article['id'])+':'+str(article['refresh_revision']))).fetchone():
+                    continue
+                article['_source_signature'] = [tuple(e) for e in sources]
+                selected = article
+                break
+            if selected is None:
+                return None
+            token = secrets.token_hex(16)
+            con.execute("""INSERT INTO article_maintenance_runs(scope,project_key,input_signature,state,claim_token,attempts)
+                VALUES(?,?,?,'running',?,1) ON CONFLICT(scope,project_key) DO UPDATE SET
+                attempts=CASE WHEN article_maintenance_runs.input_signature=excluded.input_signature THEN article_maintenance_runs.attempts+1 ELSE 1 END,
+                state='running',claim_token=excluded.claim_token,input_signature=excluded.input_signature,
+                error='',updated_at=datetime('now')""",(*key,'source-refresh:'+str(selected['id'])+':'+str(selected['refresh_revision']),token))
+        try:
+            with renew_lease(self.db,"UPDATE article_maintenance_runs SET updated_at=datetime('now') WHERE scope=? AND project_key=? AND claim_token=?",(*key,token)):
+                wrote = self._compose(key,selected['topic'],[],[selected],
+                    {'name':selected['project']},token,())
+            with self.db.connect() as con:
+                if wrote:
+                    con.execute('DELETE FROM article_source_refresh WHERE article_id=? AND revision=?',
+                                (selected['id'],selected['refresh_revision']))
+                con.execute("""UPDATE article_maintenance_runs SET state=?,claim_token=NULL,
+                    next_run_at=CASE WHEN ? THEN NULL ELSE datetime('now','+5 minutes') END,
+                    updated_at=datetime('now') WHERE scope=? AND project_key=? AND claim_token=?""",
+                    ('done' if wrote else 'error',int(wrote),*key,token))
+            return {'state':'done' if wrote else 'error','articles':int(wrote),'source_refresh':True}
+        except Exception as exc:
+            with self.db.connect() as con:
+                con.execute("""UPDATE article_maintenance_runs SET state='error',claim_token=NULL,error=?,
+                    next_run_at=datetime('now','+5 minutes') WHERE scope=? AND project_key=? AND claim_token=?""",
+                    (type(exc).__name__,*key,token))
+            return {'state':'error','error':type(exc).__name__,'source_refresh':True}
+
     def process_next(self, *, authorized_documents=(), force=False, final_only=False):
         if not self.client.configured:
             return {'state':'not_configured'}
+        if not authorized_documents and not force:
+            refreshed = self._refresh_sources()
+            if refreshed is not None:
+                return refreshed
         with self.db.connect() as con:
             con.execute('BEGIN IMMEDIATE')
             buckets = {}
@@ -304,6 +367,7 @@ class ArticleMaintainer:
             '存在未决事项不妨碍维护其余已确定知识；只写有当前依据的结论，未知部分不作假定。'
             'file_modified_ns、文章更新时间和材料ID不能作为业务决策生效时间。'
             '进展状态不是长期规则；若已经存在后续专题设计和确认的需求文档，不再复述旧路线中的“尚未开始设计”。不根据设计稿推断功能已开发或业务已验收。'
+            '原文删除或撤回的内容不再作为当前结论；旧文章和旧材料本身不是证据。即使旧引文仍在，也必须结合全文检查是否被其他段落否定。'
             '综合完整原文 source_documents、材料和当前文档，重写全文，而非堆叠旧文章。旧小条目的标题和正文结构不决定本次结构。'
             '概要通常一两句话，只说明项目对象与当前重点，不复述正文目录。正文不重复概要、文章标题或日志。'
             'source_refs选择支持正文当前结论的原文 source_id（例如D993:0），不要重新抄写或改写引文。只能选输入中给出的ID。'
@@ -498,6 +562,8 @@ class ArticleMaintainer:
                 con.execute('INSERT OR IGNORE INTO article_materials(article_id,material_id) SELECT ?,material_id FROM article_materials WHERE article_id=?',(kid,duplicate['id']))
                 con.execute("UPDATE knowledge SET status='archived',change_summary=?,version=version+1,updated_at=datetime('now') WHERE id=?",('内容已合并到：'+result['title'],duplicate['id']))
                 con.execute("UPDATE knowledge_proposals SET status='dismissed',resolved_at=datetime('now') WHERE target_id=? AND status='pending'",(duplicate['id'],))
+            for article in articles:
+                con.execute('DELETE FROM article_source_refresh WHERE article_id=?',(article['id'],))
             # Raw excerpts are retained as historical evidence; only the
             # editor's selected current citations support default retrieval.
             con.execute('UPDATE knowledge_evidence SET superseded=1 WHERE knowledge_id=?',(kid,))

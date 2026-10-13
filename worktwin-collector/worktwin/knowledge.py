@@ -113,7 +113,13 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
         if not row:
             continue
         know_id = int(row[0])
-        if cursor.rowcount > 0:
+        refresh_material = created_by == 'enterprise_ai' and con.execute(
+            "SELECT 1 FROM knowledge WHERE id=? AND organization='material' AND created_by='enterprise_ai'",(know_id,)).fetchone()
+        if refresh_material and cursor.rowcount == 0:
+            con.execute("""UPDATE knowledge SET title=?,body=?,version=version+1,updated_at=datetime('now')
+                WHERE id=? AND (title!=? OR body!=?)""",
+                (item['title'][:130],item['body'],know_id,item['title'][:130],item['body']))
+        if cursor.rowcount > 0 or refresh_material:
             con.execute('''UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=?,
                 quality_reason=?,attribution=?,outcome=?,extraction_version=? WHERE id=?''',
                 (item_scope,item_project,item_key,item.get('topic',item['title'])[:100],
@@ -125,7 +131,7 @@ def store_candidates(con: sqlite3.Connection, doc_id: int, chunks: list[tuple[in
                 continue
             part = next((r for r in rows if quote[:60] in r['text']),None)
             con.execute("INSERT INTO knowledge_evidence(knowledge_id,document_id,chunk_id,quote,is_current,occurred_at) VALUES(?,?,?,?,1,?) "
-                        "ON CONFLICT(knowledge_id,document_id,quote) DO UPDATE SET is_current=1,chunk_id=excluded.chunk_id,"
+                        "ON CONFLICT(knowledge_id,document_id,quote) DO UPDATE SET is_current=1,superseded=0,chunk_id=excluded.chunk_id,"
                         "occurred_at=COALESCE(excluded.occurred_at,knowledge_evidence.occurred_at)",
                         (know_id,doc_id,part['id'] if part else None,quote[:1200],occurred_at or None))
         if created_by == 'enterprise_ai':
