@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
+from macos_stapler import stapler
 import uuid
 
 
@@ -52,18 +52,7 @@ def main():
         raise RuntimeError('Apple submission was not Accepted')
     print(f'Apple notarization Accepted: {args.artifact.name}; submission {submission_id}', flush=True)
     for operation in ('staple', 'validate'):
-        for attempt in range(3):
-            result = subprocess.run(['xcrun', 'stapler', operation, str(args.staple_target)],
-                                    capture_output=True, text=True)
-            print(result.stdout, end='')
-            print(result.stderr, end='', file=sys.stderr)
-            if result.returncode == 0:
-                break
-            network_interrupted = (result.returncode == 68 and
-                                   'NSURLErrorDomain' in result.stdout + result.stderr)
-            if not network_interrupted or attempt == 2:
-                result.check_returncode()
-            time.sleep(5 * (attempt + 1))
+        stapler(operation, args.staple_target)
 
 
 if __name__ == '__main__':
