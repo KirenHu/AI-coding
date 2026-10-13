@@ -8,6 +8,7 @@ from worktwin.db import Database
 from worktwin.search import search
 from worktwin.twin_access import effective_notes
 from tests.test_article_maintenance import material,article
+from tests.support import editor_review
 
 
 def test_meetings_and_later_rule_become_one_current_document_with_separate_history(tmp_path):
@@ -24,6 +25,11 @@ def test_meetings_and_later_rule_become_one_current_document_with_separate_histo
     class Editor:
         configured=True
         def chat(self,messages,max_tokens):
+            req=json.loads(messages[-1]['content'])
+            if req.get('stage')=='article_review': return editor_review(req)
+            if req.get('stage')=='article_routing':
+                return json.dumps({'items':[{'topic':'任务机制','material_ids':[m['id'] for m in req['materials']],
+                    'article_ids':[a['id'] for a in req['articles']]}]})
             request=json.loads(messages[-1]['content'])
             assert any(d['id']==current_doc for d in request['source_documents'])
             return json.dumps({'items':[{'complete':True,'kind':'process','title':'当前审批与任务机制',
@@ -54,6 +60,11 @@ def test_changed_source_waits_for_correction_instead_of_answering_old_current_te
     class Editor:
         configured=True
         def chat(self,messages,max_tokens):
+            req=json.loads(messages[-1]['content'])
+            if req.get('stage')=='article_review': return editor_review(req)
+            if req.get('stage')=='article_routing':
+                return json.dumps({'items':[{'topic':'任务机制','material_ids':[m['id'] for m in req['materials']],
+                    'article_ids':[a['id'] for a in req['articles']]}]})
             return json.dumps({'items':[{'complete':True,'kind':'process','title':'任务验收',
                 'article_summary':text,'body':text,'source_refs':[{'source_id':f'D{did}:0'}]}]},ensure_ascii=False)
     ArticleMaintainer(db,Editor()).process_next()
@@ -76,6 +87,11 @@ def test_open_question_does_not_hide_the_rest_of_current_project_knowledge(tmp_p
     class Editor:
         configured=True
         def chat(self,messages,max_tokens):
+            req=json.loads(messages[-1]['content'])
+            if req.get('stage')=='article_review': return editor_review(req)
+            if req.get('stage')=='article_routing':
+                return json.dumps({'items':[{'topic':'任务机制','material_ids':[m['id'] for m in req['materials']],
+                    'article_ids':[a['id'] for a in req['articles']]}]})
             return json.dumps({'items':[{'complete':True,'unresolved_conflict':True,
                 'kind':'process','title':'当前任务规则','article_summary':'业务负责人验收任务。',
                 'body':known,'source_refs':[{'source_id':f'D{did}:0'}]}]},ensure_ascii=False)

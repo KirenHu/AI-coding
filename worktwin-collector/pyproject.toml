@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "worktwin-collector"
-version = "1.5.1"
+version = "1.5.2"
 description = "Local-first work memory collector with grounded, editable knowledge"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,7 @@ worktwin = "worktwin.__main__:main"
 worktwin = ["static/*", "browser_extension/*"]
 
 [tool.setuptools.data-files]
+"share/worktwin/third_party/letta-code" = ["third_party/letta-code/LICENSE", "third_party/letta-code/NOTICE.md"]
 "share/worktwin/third_party/rowboat" = ["third_party/rowboat/LICENSE", "third_party/rowboat/NOTICE.md"]
 
 [tool.pytest.ini_options]

@@ -37,6 +37,8 @@ args=(
   --copy-metadata mcp-types
   --collect-submodules uvicorn
   --collect-submodules keyring.backends
+  --add-data 'third_party/letta-code/LICENSE:third_party/letta-code'
+  --add-data 'third_party/letta-code/NOTICE.md:third_party/letta-code'
   --add-data 'third_party/rowboat/LICENSE:third_party/rowboat'
   --add-data 'third_party/rowboat/NOTICE.md:third_party/rowboat'
 )
@@ -74,7 +76,7 @@ suffix="-unsigned"
 if [[ "$formal" == 1 ]]; then
   suffix=""
 fi
-dmg="release/WorkTwin-Collector-1.5.1-macOS-$(uname -m)${suffix}.dmg"
+dmg="release/WorkTwin-Collector-1.5.2-macOS-$(uname -m)${suffix}.dmg"
 # macOS Intel GitHub runners occasionally leave DiskImages busy at the
 # first attempt. Retry only this specific observed hdiutil failure once.
 if output=$(hdiutil create -volname 'WorkTwin Collector' -srcfolder "$app" -ov -format UDZO "$dmg" 2>&1); then

@@ -54,6 +54,8 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                 answer=json.dumps({'items':[{'topic':'审批架构',
                     'material_ids':[m['id'] for m in payload['materials']],
                     'article_ids':[],'defer':False}]},ensure_ascii=False)
+            elif '"article_review"' in raw:
+                answer=json.dumps({'items':[{'approved':True,'issues':[],'resolutions':[]}]})
             elif '"source_materials"' in raw:
                 assert expected_quote in raw
                 answer=json.dumps({'items':[{'complete':True,'unchanged':False,
@@ -129,7 +131,7 @@ def test_real_enterprise_gateway_transport_and_knowledge_authorization(tmp_path)
                 'question': '为什么把审批配置为工作流节点？'})
             assert answer.status_code == 200, answer.text
             assert answer.json()['citations'][0]['knowledge_id'] == knowledge_id
-            assert len(requests) == 3
+            assert len(requests) == 5
             assert all(auth == 'Bearer enterprise-provider-only-secret' for auth, _ in requests)
             assert all(payload['model'] == 'centrally-billed-model' for _, payload in requests)
             assert 'SECRET-9988' not in json.dumps(requests, ensure_ascii=False)

@@ -8,7 +8,7 @@ from worktwin.knowledge import store_candidates
 from worktwin.reconcile import review_flags
 from worktwin.twin_access import effective_notes
 from tests.test_article_maintenance import material
-from tests.support import current_refs
+from tests.support import current_refs, editor_review
 
 
 class TopicWriter:
@@ -21,14 +21,10 @@ class TopicWriter:
     def chat(self,messages,max_tokens):
         request=json.loads(messages[-1]['content'])
         self.requests.append(request)
+        if request.get('stage')=='article_review': return editor_review(request)
         if 'materials' in request:
-            groups={}
-            for item in request['materials']:
-                group=groups.setdefault(item['topic'],{'topic':item['topic'],
-                    'material_ids':[],'article_ids':[a['id'] for a in request['articles']
-                                                   if a['topic']==item['topic']]})
-                group['material_ids'].append(item['id'])
-            return json.dumps({'items':list(groups.values())},ensure_ascii=False)
+            return json.dumps({'items':[{'topic':'任务办理机制','material_ids':[m['id'] for m in request['materials']],
+                'article_ids':[a['id'] for a in request['articles']]}]},ensure_ascii=False)
         if self.fail_once:
             self.fail_once=False
             raise RuntimeError('provider-error-with-private-token-do-not-store')
@@ -52,8 +48,8 @@ def test_one_off_rebuild_reads_only_its_document_set(tmp_path):
         _,outside=add_material(con,'范围之外','只有此范围之外资料记载的规则。','任务办理机制')
     writer=TopicWriter()
     assert ArticleMaintainer(db,writer).process_next(authorized_documents={selected_doc})['articles']==1
-    assert [m['id'] for m in writer.requests[0]['source_materials']]==[selected]
-    assert all(e['document_id']==selected_doc for m in writer.requests[0]['source_materials'] for e in m['sources'])
+    assert [m['id'] for m in writer.requests[1]['source_materials']]==[selected]
+    assert all(e['document_id']==selected_doc for m in writer.requests[1]['source_materials'] for e in m['sources'])
     with db.connect() as con:
         assert con.execute('SELECT 1 FROM article_material_receipts WHERE material_id=?',(outside,)).fetchone() is None
 
@@ -179,6 +175,8 @@ def test_incomplete_project_waits_for_context_without_publishing_small_point(tmp
     class PartialWriter(TopicWriter):
         complete=False
         def chat(self,messages,max_tokens):
+            payload=json.loads(messages[-1]['content'])
+            if payload.get('stage') in ('article_routing','article_review'): return super().chat(messages,max_tokens)
             if not self.complete:
                 return '{"items":[{"complete":false}]}'
             return super().chat(messages,max_tokens)

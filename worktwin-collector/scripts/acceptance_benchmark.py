@@ -23,6 +23,8 @@ class DeterministicModel:
         request=messages[-1]['content']
         if request.lstrip().startswith('{'):
             data=json.loads(request)
+            if data.get('stage')=='article_review':
+                return json.dumps({'items':[{'approved':True,'issues':[],'resolutions':[]}]})
             if 'materials' in data and 'articles' in data:
                 return json.dumps({'items':[{'topic':'审批架构',
                     'material_ids':[m['id'] for m in data['materials']],
@@ -86,7 +88,7 @@ def run():
             indexed = con.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
             knowledge_before = con.execute('SELECT COUNT(*) FROM knowledge').fetchone()[0]
             jobs_before = con.execute('SELECT COUNT(*) FROM ai_jobs').fetchone()[0]
-            hits = search(con, '为什么把审批作为工作流节点？')['documents']
+            hits = search(con, '为什么把审批作为工作流节点？', include_sources=True)['documents']
             # Artificially authorize just the 50 business documents for AI processing.
             con.execute('UPDATE sources SET allow_ai=1 WHERE id=?', (docs_source,))
             con.execute("""INSERT INTO ai_jobs(document_id,content_sha,state) SELECT id,sha256,'queued'
@@ -113,7 +115,7 @@ def run():
             remaining = con.execute("SELECT COUNT(*) FROM ai_jobs WHERE state='queued'").fetchone()[0]
             restricted = con.execute("SELECT COUNT(*) FROM ai_jobs j JOIN documents d ON d.id=j.document_id WHERE d.source_id=?", (codex_source,)).fetchone()[0]
         assert materials==articles==1 and article_sources=={docs_source}
-        assert evidence == 2 and remaining == 49 and restricted == 0 and model.requests==3
+        assert evidence == 2 and remaining == 49 and restricted == 0 and model.requests==4
         print(json.dumps({'result': 'PASS', 'documents': indexed, 'initial_scan_seconds': round(initial, 3),
                           'incremental_seconds': round(incremental, 3), 'no_consent_jobs': jobs_before,
                           'model_requests': model.requests, 'knowledge_evidence': evidence,

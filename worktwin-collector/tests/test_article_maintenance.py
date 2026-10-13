@@ -5,7 +5,7 @@ from worktwin.db import Database
 from worktwin.knowledge import store_candidates
 from worktwin.scope import snapshot_history
 from worktwin.twin_access import effective_notes
-from tests.support import current_refs
+from tests.support import current_refs, editor_review
 
 
 def material(con, name, quote, *, project='project:worktwin', allow_ai=True, context=''):
@@ -36,6 +36,7 @@ class Writer:
     def chat(self,messages,max_tokens):
         self.requests.append(messages)
         request=json.loads(messages[-1]['content'])
+        if request.get('stage')=='article_review': return editor_review(request)
         if 'materials' in request:
             groups = self.groups or [{'topic':'任务办理机制',
                 'material_ids':[m['id'] for m in request['materials']],
@@ -59,8 +60,8 @@ def test_materials_are_not_articles_and_periodic_writer_reads_original_context(t
     model=Writer();worker=ArticleMaintainer(db,model)
     assert worker.process_next()['articles']==1
     assert worker.process_next()['state']=='idle'
-    assert len(model.requests)==1
-    authored=json.loads(model.requests[0][-1]['content'])
+    assert len(model.requests)==3
+    authored=json.loads(model.requests[1][-1]['content'])
     assert '工作任务代表' in authored['source_documents'][0]['content']
     with db.connect() as con:
         result=con.execute("SELECT * FROM knowledge WHERE organization='article'").fetchone()
@@ -154,9 +155,9 @@ def test_large_article_continuation_stays_bounded_and_unchanged_keeps_prior_rewr
         def chat(self,messages,max_tokens):
             assert sum(len(m['content']) for m in messages)<128000
             req=json.loads(messages[-1]['content'])
-            if 'materials' in req: return super().chat(messages,max_tokens)
+            if 'materials' in req or req.get('stage')=='article_review': return super().chat(messages,max_tokens)
             self.requests.append(messages)
-            if len(self.requests)==1:
+            if len([m for m in self.requests if json.loads(m[-1]['content']).get('stage') not in ('article_routing','article_review')])==1:
                 return json.dumps({'items':[{'complete':True,'kind':'process','title':'完整任务机制',
                     'article_summary':'任务定义及办理机制','body':'重写后的当前章节。'*2500,'change_summary':'重写章节','source_refs':current_refs(req)}]},ensure_ascii=False)
             assert req['existing_articles'][0]['body'].startswith('重写后的')

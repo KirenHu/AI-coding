@@ -12,6 +12,10 @@ def current_refs(payload):
     return list({r.get('source_id') or (r['document_id'],r['quote']):r for r in refs}.values())
 
 
+def editor_review(payload):
+    return json.dumps({'items':[{'approved':True,'issues':[],'resolutions':[]}]})
+
+
 class FakeModel:
     configured=True
 
@@ -23,6 +27,8 @@ class FakeModel:
         body=messages[-1]['content']
         if '<source>\n' not in body and body.lstrip().startswith('{'):
             payload=json.loads(body)
+            if payload.get('stage')=='article_review':
+                return editor_review(payload)
             if 'materials' in payload and 'articles' in payload:
                 groups={}
                 for material in payload['materials']:
