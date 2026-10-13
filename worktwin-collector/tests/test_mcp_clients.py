@@ -22,7 +22,9 @@ def test_client_configs_merge_existing_and_keep_backup(tmp_path,monkeypatch):
     install('cursor',config['cursor'])
     data=json.loads(path.read_text())
     assert data['other'] and 'existing' in data['mcpServers'] and 'worktwin-3' in data['mcpServers']
-    assert list(tmp_path.glob('*.bak')) and path.stat().st_mode&0o777==0o600
+    assert list(tmp_path.glob('*.bak'))
+    if os.name == 'posix':
+        assert path.stat().st_mode & 0o777 == 0o600
     assert 'servers' in config['vscode'] and 'env' in config['claude']['mcpServers']['worktwin-3']
 
 
