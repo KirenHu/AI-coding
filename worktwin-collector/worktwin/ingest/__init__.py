@@ -102,18 +102,25 @@ def pending_batch(con, document_id: int, max_events: int = 80, context_events: i
     policy = con.execute('SELECT since FROM assistant_processing_policy WHERE source_id=?',(stream['source_id'],)).fetchone()
     start = (history['after_seq'] if history else stream["processed_seq"]) if after_seq is None else after_seq
     end = stream["captured_seq"] if through_seq is None else through_seq
-    rows = con.execute("SELECT * FROM transcript_events WHERE document_id=? AND generation=? AND seq>? AND seq<=? ORDER BY seq",
-                       (document_id, stream["generation"], start, end)).fetchall()
-    if history:
-        selected_ids = set(json.loads(history['event_ids']))
-        rows = [r for r in rows if r['seq'] in selected_ids]
-    elif policy:
-        rows = [r for r in rows if not r['timestamp'] or r['timestamp'] >= policy['since']]
-    # Prefer a completed native task; old formats retain the bounded event fallback.
-    boundary = next((i+1 for i,r in enumerate(rows) if r['kind']=='task_complete'), None)
-    if boundary is None and any(r['kind']=='task_started' for r in rows) and not history:
+    events = con.execute("SELECT * FROM transcript_events WHERE document_id=? AND generation=? AND seq>? AND seq<=? ORDER BY seq",
+                         (document_id, stream["generation"], start, end))
+    selected_ids=set(json.loads(history['event_ids'])) if history else set()
+    rows, boundary, task_started = [], None, False
+    for event in events:
+        if history and event['seq'] not in selected_ids:
+            continue
+        if not history and policy and event['timestamp'] and event['timestamp']<policy['since']:
+            continue
+        rows.append(event)
+        task_started = task_started or event['kind']=='task_started'
+        if event['kind']=='task_complete':
+            boundary=len(rows)
+            break
+        if not task_started and len(rows)>=max_events:
+            break
+    # A native task is processed only when it ends. Legacy formats use bounded batches.
+    if boundary is None and task_started and not history:
         return dict(content='',new_content='',generation=stream['generation'],from_seq=start,through_seq=start,new_event_ids=[],waiting_for_task=True)
-    rows = rows[:boundary] if boundary else rows[:max_events]
     picked, length = [], 0
     for row in rows:
         event = dict(row)

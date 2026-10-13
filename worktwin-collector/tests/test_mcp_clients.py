@@ -43,7 +43,8 @@ def test_bundled_stdio_bridge_initializes_lists_and_reads(tmp_path):
             owner.put(f'/api/twins/{twin}/knowledge',json={'knowledge_ids':[note]})
             token=owner.post(f'/api/twins/{twin}/mcp').json()['token']
             async def scenario():
-                params=StdioServerParameters(command=sys.executable,args=['-m','worktwin','mcp-bridge'],env={**os.environ,'WORKTWIN_MCP_URL':f'http://127.0.0.1:{port}/mcp/','WORKTWIN_MCP_TOKEN':token})
+                executable=os.getenv('WORKTWIN_BRIDGE_EXECUTABLE')
+                params=StdioServerParameters(command=executable or sys.executable,args=['mcp-bridge'] if executable else ['-m','worktwin','mcp-bridge'],env={**os.environ,'WORKTWIN_MCP_URL':f'http://127.0.0.1:{port}/mcp/','WORKTWIN_MCP_TOKEN':token})
                 async with stdio_client(params) as (read,write):
                     async with ClientSession(read,write) as session:
                         await session.initialize()

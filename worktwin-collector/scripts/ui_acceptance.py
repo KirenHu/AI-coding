@@ -115,7 +115,7 @@ def main():
                         expect(page.get_by_text('为什么审批采用工作流节点').first).to_be_visible(timeout=15000)
                         page.get_by_text('为什么审批采用工作流节点').first.click()
                         expect(page.locator('.detail-drawer')).to_be_visible()
-                        page.get_by_role('button', name='关闭').last.click()
+                        page.locator('#drawer-close').click()
                         page.locator('[data-page=twins]').click()
                         page.get_by_role('button', name='创建数字分身').first.click()
                         page.locator('#twin-name').fill('项目交接助手')

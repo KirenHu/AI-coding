@@ -43,6 +43,16 @@ def install(client, config):
 
 
 async def bridge():
+    # PyInstaller's Windows GUI launcher leaves Python streams unset even when
+    # the MCP client supplies inherited pipes. Reattach those pipes for stdio.
+    if sys.platform=='win32' and sys.stdin is None:
+        import ctypes, io, msvcrt
+        from ctypes import wintypes
+        get_handle=ctypes.WinDLL('kernel32').GetStdHandle
+        get_handle.argtypes=[wintypes.DWORD];get_handle.restype=wintypes.HANDLE
+        for name,number,mode,flags in [('stdin',-10,'rb',os.O_RDONLY),('stdout',-11,'wb',os.O_WRONLY),('stderr',-12,'wb',os.O_WRONLY)]:
+            fd=msvcrt.open_osfhandle(get_handle(number),flags|os.O_BINARY)
+            setattr(sys,name,io.TextIOWrapper(os.fdopen(fd,mode,buffering=0),encoding='utf-8',write_through=True))
     import httpx2
     from urllib.parse import urlparse
     from mcp import ClientSession

@@ -66,6 +66,10 @@ def assistant_rows(con) -> list[dict]:
                        'detected': bool(detection['recognized']), 'detection': detection,
                        'source_id': source['id'] if source else None,
                        'document_count': source['document_count'] if source else 0,
+                       'waiting_tasks': con.execute('''SELECT count(*) FROM transcript_streams t WHERE t.source_id=?
+                           AND EXISTS(SELECT 1 FROM transcript_events e WHERE e.document_id=t.document_id AND e.seq>t.processed_seq AND e.kind='task_started')
+                           AND NOT EXISTS(SELECT 1 FROM transcript_events e WHERE e.document_id=t.document_id AND e.seq>t.processed_seq AND e.kind='task_complete')''',
+                           (source['id'] if source else None,)).fetchone()[0],
                        'allow_ai': bool(source and source['allow_ai']),
                        'allow_share': bool(source and source['allow_share']),
                        'legacy_sources': [s for s in rows if s['adapter'] == tool and s['collection_scope'] != 'assistant']})

@@ -90,3 +90,17 @@ def test_native_active_task_waits_until_end_without_losing_cursor(tmp_path):
     with db.connect() as con:
         batch=pending_batch(con,1)
         assert '设计审批机制' in batch['content'] and '最终确认' in batch['content']
+
+
+def test_typical_long_task_is_read_together_for_confirmation():
+    from worktwin.inference import extract_knowledge
+    class Reader:
+        calls=[]
+        def chat(self,messages,max_tokens=1800):
+            self.calls.append(messages)
+            return '{"items":[]}'
+    client=Reader()
+    text='### AI · 2026-10-10 10:00:00\n建议采用一名主管审批。\n'+('实施背景与操作过程。'*2000)+'\n### 用户 · 2026-10-10 10:10:00\n同意这个方案。'
+    extract_knowledge(text,transcript=True,client=client)
+    assert len(client.calls)==1
+    assert '一名主管审批' in client.calls[0][-1]['content'] and '同意这个方案' in client.calls[0][-1]['content']

@@ -83,7 +83,7 @@ def main():
                 expect(page.locator('.drawer-top h2')).to_have_text('审批细则')
                 page.locator('.source-reference > summary',has_text='关联文章').click();page.locator(f'[data-open-knowledge="{kid}"]').click()
                 expect(page.locator('.drawer-top h2')).to_have_text('审批节点说明')
-                page.get_by_role('button',name='关闭').last.click()
+                page.locator('#drawer-close').click()
                 page.locator('[data-page=twins]').click()
                 page.get_by_role('button',name='创建数字分身').click()
                 page.locator('#twin-name').fill('项目交接分身')

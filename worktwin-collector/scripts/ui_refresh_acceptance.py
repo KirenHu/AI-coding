@@ -56,7 +56,8 @@ def main():
                     legacy_path=state/'old-session-scope';legacy_path.mkdir()
                     legacy=client.post('/api/sources',headers=auth,json={'kind':'codex','root':str(legacy_path),'name':'原局部会话'}).json()['id']
                     page.locator('[data-source-tab=assistants]').click()
-                    expect(page.locator('[data-assistant]')).to_have_count(3)
+                    expect(page.locator('[data-assistant]')).to_have_count(4)
+                    expect(page.locator('[data-assistant=antigravity]')).to_be_visible()
                     expect(page.locator('#new-source-path')).to_have_count(0)
                     page.locator('[data-assistant=codex]').check()
                     expect(page.locator('[data-assistant=codex]')).to_be_checked()
@@ -138,6 +139,8 @@ def main():
                     kid=client.post('/api/knowledge',headers=auth,json=original).json()['id']
                     page.locator('[data-page=knowledge]').click()
                     expect(page.locator(f'[data-entry="{kid}"]')).to_be_visible()
+                    page.wait_for_function('window.__JOB_POLL__ != null')
+                    page.evaluate('clearInterval(window.__JOB_POLL__); window.__JOB_POLL__=null')
                     client.put(f'/api/knowledge/{kid}',headers=auth,json=dict(original,body='后台新正文'))
                     page.locator(f'[data-entry="{kid}"]').click()
                     expect(page.locator('#refresh-notice')).to_contain_text('已更新')

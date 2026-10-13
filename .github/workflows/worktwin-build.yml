@@ -68,6 +68,8 @@ jobs:
         run: PYTHONPATH=. python scripts/ui_layout_acceptance.py
       - name: Browser acceptance of twin MCP and separate log authorization
         run: PYTHONPATH=. python scripts/ui_mcp_acceptance.py
+      - name: Assistant history range and reference UI
+        run: PYTHONPATH=. python scripts/ui_assistant_processing_acceptance.py
       - name: Chromium MV3 acceptance of signed task capture and navigation stop
         run: PYTHONPATH=. python scripts/ui_browser_extension_acceptance.py
       - uses: actions/upload-artifact@v4
@@ -119,6 +121,10 @@ jobs:
         run: zsh desktop/build-macos.sh
       - name: Mount verified DMG and Gatekeeper-test the installed app
         run: zsh desktop/verify-macos-dmg.sh
+      - name: Verify packaged stdio MCP bridge
+        run: |
+          .build-venv/bin/python -m pip install pytest httpx
+          WORKTWIN_BRIDGE_EXECUTABLE="$PWD/dist/WorkTwin.app/Contents/MacOS/WorkTwin" .build-venv/bin/python -m pytest tests/test_mcp_clients.py
       - uses: actions/upload-artifact@v4
         with:
           name: WorkTwin-${{ matrix.runner }}-${{ env.WORKTWIN_REQUIRE_NOTARIZATION == '1' && 'notarized' || 'unsigned' }}
@@ -151,6 +157,12 @@ jobs:
         run: ./desktop/build-windows.ps1
       - name: Verify the packaged application starts
         run: python scripts/smoke_desktop.py dist/WorkTwin/WorkTwin.exe
+      - name: Verify packaged stdio MCP bridge
+        shell: pwsh
+        run: |
+          & .\.build-venv\Scripts\python.exe -m pip install pytest httpx
+          $env:WORKTWIN_BRIDGE_EXECUTABLE = (Resolve-Path 'dist/WorkTwin/WorkTwin.exe').Path
+          & .\.build-venv\Scripts\python.exe -m pytest tests/test_mcp_clients.py
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release
