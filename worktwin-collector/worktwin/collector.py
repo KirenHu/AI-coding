@@ -26,6 +26,10 @@ def eligible_file(path: Path, kind: str) -> bool:
 
 
 def source_files(root: Path, kind: str, onerror=None):
+    if kind == 'antigravity':
+        from .antigravity import artifact_files
+        yield from artifact_files(root)
+        return
     resolved_root = Path(root).resolve()
     for current, dirs, files in os.walk(root, followlinks=False, onerror=onerror):
         dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink() and d not in EXCLUDED_FOLDERS and not (d.startswith(".") and kind not in TRANSCRIPT_ADAPTERS)]

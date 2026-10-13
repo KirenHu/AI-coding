@@ -41,3 +41,7 @@ def claude_projects_path() -> Path:
 def cursor_exports_path() -> Path:
     """Only recognizable CLI JSONL under Cursor's local directory is collected."""
     return Path('~/.cursor').expanduser()
+
+
+def antigravity_path() -> Path:
+    return Path('~/.gemini/antigravity').expanduser()

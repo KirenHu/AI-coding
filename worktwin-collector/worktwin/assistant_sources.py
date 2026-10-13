@@ -6,13 +6,14 @@ from fastapi import HTTPException
 from . import config
 from .source_detection import detect_transcripts
 
-TOOLS = {'codex': 'Codex', 'claude': 'Claude Code', 'cursor': 'Cursor CLI'}
+TOOLS = {'codex': 'Codex', 'claude': 'Claude Code', 'cursor': 'Cursor CLI', 'antigravity': 'Google Antigravity'}
 
 
 def tool_root(tool: str) -> Path:
     return {'codex': config.codex_sessions_path,
             'claude': config.claude_projects_path,
-            'cursor': config.cursor_exports_path}[tool]().expanduser().resolve()
+            'cursor': config.cursor_exports_path,
+            'antigravity': config.antigravity_path}[tool]().expanduser().resolve()
 
 
 def migrate(con):
@@ -30,12 +31,16 @@ def migrate(con):
 def assistant_rows(con) -> list[dict]:
     rows = [dict(r) for r in con.execute('''SELECT s.*,COUNT(d.id) document_count FROM sources s
         LEFT JOIN documents d ON d.source_id=s.id AND d.deleted=0
-        WHERE s.adapter IN ('codex','claude','cursor') GROUP BY s.id''')]
+        WHERE s.adapter IN ('codex','claude','cursor','antigravity') GROUP BY s.id''')]
     result = []
     for tool, name in TOOLS.items():
         source = next((s for s in rows if s['adapter'] == tool and s['collection_scope'] == 'assistant'), None)
         root = Path(source['root']) if source else tool_root(tool)
-        detection = detect_transcripts(tool, str(root))
+        if tool == 'antigravity':
+            from .antigravity import detect_artifacts
+            detection = detect_artifacts(root)
+        else:
+            detection = detect_transcripts(tool, str(root))
         result.append({'tool': tool, 'name': name, 'selected': bool(source and source['enabled']),
                        'detected': bool(detection['recognized']), 'detection': detection,
                        'source_id': source['id'] if source else None,
