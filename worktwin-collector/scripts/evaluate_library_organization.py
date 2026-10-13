@@ -18,11 +18,10 @@ def main():
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     with sqlite3.connect(args.credentials_from.resolve().as_uri()+'?mode=ro',uri=True) as con:
         settings=dict(con.execute("SELECT key,value FROM settings WHERE key IN ('edition','personal_base_url','personal_model')"))
-    class Settings:
-        def setting(self,key,default=''):return settings.get(key,default)
-    model=ModelRuntime(Settings(),DesktopSecrets(args.credentials_from))
-    if not model.configured:raise RuntimeError('Model not configured')
     db=Database(args.output/'synthetic.sqlite')
+    for key,value in settings.items(): db.set_setting(key,value)
+    model=ModelRuntime(db,DesktopSecrets(args.credentials_from))
+    if not model.configured:raise RuntimeError('Model not configured')
     sources=[
         ('辰星引擎架构','辰星（Stellar）流程引擎通过 Java 服务执行流程，PostgreSQL 保存流程状态，可作为独立服务部署。它是本次流程平台选型的研究对象。'),
         ('Stellar 对外集成','Stellar 是辰星流程引擎的英文名。其 REST 接口接收 JSON，供业务系统发起流程、查询任务并完成任务，执行状态由引擎统一保存。'),

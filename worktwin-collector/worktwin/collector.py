@@ -36,7 +36,8 @@ def source_files(root: Path, kind: str, onerror=None):
         dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink() and d not in EXCLUDED_FOLDERS and not (d.startswith(".") and kind not in TRANSCRIPT_ADAPTERS)]
         for name in files:
             path = Path(current) / name
-            if not eligible_file(path, kind) or path.is_symlink():
+            from .reference_roles import vendor_reference
+            if vendor_reference(path) or not eligible_file(path, kind) or path.is_symlink():
                 continue
             try:
                 if path.resolve().is_relative_to(resolved_root):
@@ -326,6 +327,11 @@ class Collector:
                                              (src["id"],key,relative,title,path.suffix.lower(),project,content,data_digest,stat.st_size,stat.st_mtime_ns))
                         document_id = int(cursor.lastrowid)
                         counts["new"] += 1
+                    from .reference_roles import reference_role, reference_scope
+                    role=reference_role(path)
+                    if role:
+                        con.execute("INSERT INTO assistant_references(document_id,role,scope_path) VALUES(?,?,?) ON CONFLICT(document_id) DO UPDATE SET role=excluded.role,scope_path=excluded.scope_path",
+                            (document_id,role,reference_scope(path,root)))
                     for idx, (start, end, chunk) in enumerate(chunks):
                         con.execute("INSERT INTO chunks(document_id,ordinal,start_offset,end_offset,text) VALUES(?,?,?,?,?)", (document_id, idx, start, end, chunk))
                     record_file_observation(con, document_id,

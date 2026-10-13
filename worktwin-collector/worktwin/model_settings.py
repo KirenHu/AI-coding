@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from .update_filter import ModelText, processing_run
+from .update_filter import ModelText, processing_run, model_stage
 from urllib.parse import urlparse
 from urllib.request import Request
 
@@ -64,8 +64,14 @@ class PersonalModel:
     def chat(self, messages, max_tokens=1800):
         if not self.configured:
             raise RuntimeError('请先配置个人模型')
+        payload = chat_payload(self.url,self.model,messages,max_tokens)
+        if urlparse(self.url).hostname == 'openrouter.ai':
+            payload['usage'] = {'include':True}
+        instructions = messages[0].get('content','') if messages and messages[0].get('role')=='system' else ''
+        if urlparse(self.url).hostname == 'openrouter.ai' and any(phrase in instructions for phrase in ('输出JSON','返回JSON','只返回 JSON','只返回JSON','JSON {')):
+            payload['response_format'] = {'type':'json_object'}
         request = Request(self.url + '/chat/completions', method='POST',
-                          data=json.dumps(chat_payload(self.url,self.model,messages,max_tokens),ensure_ascii=False).encode(),
+                          data=json.dumps(payload,ensure_ascii=False).encode(),
                           headers={'Authorization':'Bearer '+self.key,'Content-Type':'application/json'})
         try:
             with model_urlopen(request, timeout=600) as response:
@@ -78,7 +84,10 @@ class PersonalModel:
             raise ModelConnectionError('模型输出达到长度上限，未返回完整答案；请使用非思考模型或增加输出额度')
         if not isinstance(content, str) or not content.strip():
             raise ModelConnectionError('模型没有返回有效答案，可能只返回了思考内容；请确认模型支持非思考模式')
-        return ModelText(content, data.get('usage'))
+        usage = dict(data.get('usage') or {})
+        if urlparse(self.url).hostname == 'openrouter.ai' and isinstance(usage.get('cost'),(int,float)):
+            usage['cost_usd'] = usage['cost']
+        return ModelText(content, usage)
 
 
 class ModelRuntime:
@@ -162,10 +171,10 @@ class ModelRuntime:
         finally:
             usage = getattr(result,'usage',{})
             with self.db.connect() as con:
-                con.execute('''INSERT INTO model_call_metrics(model,state,processing_run_id,input_tokens,output_tokens,elapsed_ms) VALUES(?,?,?,?,?,?)''',
+                con.execute('''INSERT INTO model_call_metrics(model,state,processing_run_id,input_tokens,output_tokens,elapsed_ms,stage,cost_usd) VALUES(?,?,?,?,?,?,?,?)''',
                     (getattr(client,'model','enterprise'), 'done' if result is not None else 'error',
                      processing_run.get(),usage.get('prompt_tokens'),usage.get('completion_tokens'),
-                     int((time.monotonic()-started)*1000)))
+                     int((time.monotonic()-started)*1000),model_stage(messages),usage.get('cost_usd')))
         with self.lock:
             if client is not self.client:
                 raise RuntimeError('模型设置已更改，请重试')

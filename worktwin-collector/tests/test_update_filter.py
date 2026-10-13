@@ -219,3 +219,19 @@ def test_reconfirmed_material_updates_body_when_quote_survives(tmp_path):
         store_candidates(con,evidence['document_id'],[],[item],created_by='enterprise_ai')
         current=con.execute('SELECT body,version FROM knowledge WHERE id=?',(material['id'],)).fetchone()
         assert current['body']==item['body'] and current['version']==material['version']+1
+
+
+def test_openrouter_structured_work_uses_json_and_reports_cost(monkeypatch):
+    import io
+    from worktwin.model_settings import PersonalModel
+    calls=[]
+    def respond(request,**kwargs):
+        calls.append(json.loads(request.data))
+        return io.BytesIO(json.dumps({'choices':[{'message':{'content':'{"items":[]}'},'finish_reason':'stop'}],
+            'usage':{'prompt_tokens':100,'completion_tokens':20,'cost':0.0002}}).encode())
+    monkeypatch.setattr('worktwin.model_settings.model_urlopen',respond)
+    client=PersonalModel('https://openrouter.ai/api/v1','test-key','test-model')
+    result=client.chat([{'role':'system','content':'返回JSON {"items":[]}'},{'role':'user','content':'sample'}])
+    assert calls[0]['response_format']=={'type':'json_object'}
+    assert calls[0]['usage']=={'include':True}
+    assert result.usage['cost_usd']==0.0002

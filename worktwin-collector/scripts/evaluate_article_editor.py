@@ -23,11 +23,10 @@ def main():
     args.output.mkdir(parents=True,exist_ok=True)
     with sqlite3.connect(args.credentials_from.resolve().as_uri()+'?mode=ro',uri=True) as con:
         settings=dict(con.execute("SELECT key,value FROM settings WHERE key IN ('edition','personal_base_url','personal_model')"))
-    class ConnectionSettings:
-        def setting(self,key,default=''): return settings.get(key,default)
-    model=ModelRuntime(ConnectionSettings(),DesktopSecrets(args.credentials_from))
-    if not model.configured: raise RuntimeError('Existing model unavailable')
     db=Database(args.output/'synthetic.sqlite')
+    for key,value in settings.items(): db.set_setting(key,value)
+    model=ModelRuntime(db,DesktopSecrets(args.credentials_from))
+    if not model.configured: raise RuntimeError('Existing model unavailable')
     with db.connect() as con:
         material(con,'退款规则确认','2026-09-01，示例商城业务负责人确认：退款申请由客服审核，需要两名审批人同意后按原支付渠道退回。特殊情况由客服主管处理。')
         material(con,'退款流程补充','2026-09-02，示例商城退款流程会议确认：用户提交订单号及退款理由。客服核对订单与支付记录，审批完成后执行退款。查询超时应重试，不得重复退款。')

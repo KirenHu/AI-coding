@@ -37,8 +37,12 @@ def main():
                     page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
                     page.locator('[data-page=twins]').click();page.locator('[data-twin="1"]').click()
                     page.locator('[data-twin-tab=sharing]').click();page.locator('#generate-mcp').click();expect(page.locator('#mcp-config')).to_be_visible()
+                    page.locator('#test-mcp-config').click();expect(page.locator('#mcp-install-result')).to_contain_text('连接正常')
                     config=json.loads(page.locator('#mcp-config').input_value())
                     assert config['mcpServers']['worktwin-1']['url'].endswith('/mcp/')
+                    for client,key in [('vscode','servers'),('claude','mcpServers'),('cursor','mcpServers')]:
+                        page.locator(f'[data-mcp-client={client}]').click()
+                        assert key in json.loads(page.locator('#mcp-config').input_value())
                     page.locator('.dialog-footer [data-close]').click()
                     expect(page.locator('#allow-mcp-logs')).not_to_be_checked()
                     page.locator('#allow-mcp-logs').check()

@@ -67,10 +67,14 @@ def chat_payload(url, model, messages, max_tokens, temperature=0.1):
     elif host.endswith('aliyuncs.com') and model.startswith('qwen'):
         payload['enable_thinking'] = deliberate
         payload['preserve_thinking'] = False
-    elif host == 'openrouter.ai' and model == 'xiaomi/mimo-v2.6-flash':
+    elif host == 'openrouter.ai' and model == 'z-ai/glm-5.3-flash':
+        # GLM's endpoint requires reasoning, including connection probes.
+        payload['reasoning'] = {'effort':'medium','exclude':True}
+        payload['max_tokens'] = max(max_tokens,4096)
+    elif host == 'openrouter.ai':
         payload['reasoning'] = {'enabled':deliberate,'exclude':True}
     if deliberate and (host == 'api.deepseek.com' or host.endswith('aliyuncs.com') or
-                       host == 'openrouter.ai' and model == 'xiaomi/mimo-v2.6-flash'):
+                       host == 'openrouter.ai'):
         payload['max_tokens'] = max(max_tokens,65536)
     return payload
 

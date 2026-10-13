@@ -67,6 +67,8 @@ def ensure_schema(con):
 
 
 def render_event(event: dict) -> str:
+    if event['kind'] in ('task_started','task_complete'):
+        return '任务开始' if event['kind']=='task_started' else '任务结束'
     if event["kind"] == "message":
         who = "用户" if event["role"] == "user" else "AI"
         return f"### {who} · {event['timestamp']}\n{event['text']}"
@@ -96,24 +98,42 @@ def pending_batch(con, document_id: int, max_events: int = 80, context_events: i
     if row is None:
         return None
     stream = dict(row)
-    start = stream["processed_seq"] if after_seq is None else after_seq
+    history = con.execute('SELECT * FROM assistant_history_requests WHERE document_id=?',(document_id,)).fetchone()
+    policy = con.execute('SELECT since FROM assistant_processing_policy WHERE source_id=?',(stream['source_id'],)).fetchone()
+    start = (history['after_seq'] if history else stream["processed_seq"]) if after_seq is None else after_seq
     end = stream["captured_seq"] if through_seq is None else through_seq
-    rows = con.execute("SELECT * FROM transcript_events WHERE document_id=? AND generation=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
-                       (document_id, stream["generation"], start, end, max_events)).fetchall()
+    rows = con.execute("SELECT * FROM transcript_events WHERE document_id=? AND generation=? AND seq>? AND seq<=? ORDER BY seq",
+                       (document_id, stream["generation"], start, end)).fetchall()
+    if history:
+        selected_ids = set(json.loads(history['event_ids']))
+        rows = [r for r in rows if r['seq'] in selected_ids]
+    elif policy:
+        rows = [r for r in rows if not r['timestamp'] or r['timestamp'] >= policy['since']]
+    # Prefer a completed native task; old formats retain the bounded event fallback.
+    boundary = next((i+1 for i,r in enumerate(rows) if r['kind']=='task_complete'), None)
+    if boundary is None and any(r['kind']=='task_started' for r in rows) and not history:
+        return dict(content='',new_content='',generation=stream['generation'],from_seq=start,through_seq=start,new_event_ids=[],waiting_for_task=True)
+    rows = rows[:boundary] if boundary else rows[:max_events]
     picked, length = [], 0
     for row in rows:
         event = dict(row)
         rendered = render_event(event)
-        if picked and length + len(rendered) > max_chars:
+        if picked and not boundary and length + len(rendered) > max_chars:
             break
         picked.append(event)
         length += len(rendered)
     result = dict(content="", new_content="", generation=stream["generation"],
                   from_seq=start, through_seq=start, new_event_ids=[])
+    result['history'] = bool(history)
     if not picked:
+        if history:
+            con.execute('DELETE FROM assistant_history_requests WHERE document_id=?',(document_id,))
+        elif policy:
+            con.execute('UPDATE transcript_streams SET processed_seq=captured_seq WHERE document_id=?',(document_id,))
         return result
     prior = con.execute("SELECT * FROM transcript_events WHERE document_id=? AND generation=? AND seq<=? ORDER BY seq DESC LIMIT ?",
                         (document_id, stream["generation"], start, context_events)).fetchall()
+    prior = [r for r in prior if (r['seq'] in selected_ids if history else not policy or not r['timestamp'] or r['timestamp']>=policy['since'])]
     context = "\n\n".join(render_event(dict(row)) for row in reversed(prior))
     # Keep whole quoted events in the new region; only old context is bounded.
     context = context[-max_chars // 2:]
@@ -128,6 +148,13 @@ def pending_batch(con, document_id: int, max_events: int = 80, context_events: i
 
 
 def ack_batch(con, document_id: int, through_seq: int, generation: int) -> bool:
+    history = con.execute('SELECT event_ids FROM assistant_history_requests WHERE document_id=?',(document_id,)).fetchone()
+    if history:
+        if through_seq >= max(json.loads(history[0])):
+            con.execute('DELETE FROM assistant_history_requests WHERE document_id=?',(document_id,))
+        else:
+            con.execute('UPDATE assistant_history_requests SET after_seq=? WHERE document_id=?',(through_seq,document_id))
+        return True
     return bool(con.execute("UPDATE transcript_streams SET processed_seq=MAX(processed_seq,?),updated_at=datetime('now') WHERE document_id=? AND generation=? AND captured_seq>=?",
                             (through_seq, document_id, generation, through_seq)).rowcount)
 

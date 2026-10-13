@@ -47,3 +47,9 @@ ARM64 Runner 使用 `macos-15`，Intel 使用 `macos-15-intel`。GitHub 已公�
 ## 1.2.0 集成后发布触发条件
 
 日常 PR 和 main 的自动验收始终使用 unsigned 的测试 DMG，不触发 Apple 公证，也不自动新建 Release。正式签名需在 main 的 GitHub Actions 上手动运行 WorkTwin 工作流，选择 macos_architecture=all 且 signed_release=true。只有这次受控执行才会导入受保护证书、执行两个架构公证并启动正式发布 Job。单架构手动构建仅用于验收，不生成正式 Release。公证与实际安装验收尚未开始，须满足证书条件后再启用。
+
+## 1.5.9 签名验收与本地更新
+
+手动 `signed_validation=true` 可在研发分支生成签名、公证后的测试 artifact，不触发 Release。正式发布条件仍为 main + all + signed_release=true。两个签名任务均不被后续提交自动取消。
+
+本机可执行 `python desktop/install-local-macos.py dist/WorkTwin.app`：验证签名、停止旧进程、通过 SQLite backup API 保存一致快照、保留旧 App、安装并核对运行版本。备份路径记录在应用数据目录 backups/install-时间.json 中。恢复旧版时需停止当前 App，再使用配对的旧 App 与 SQLite 快照；不能在数据库正在写入时替换文件。Windows 当前仍是未签名测试包，本次不宣称获得 Windows 签名。

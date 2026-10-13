@@ -42,6 +42,26 @@ def migrate(con):
             article_id INTEGER PRIMARY KEY REFERENCES knowledge(id) ON DELETE CASCADE,
             revision INTEGER NOT NULL DEFAULT 1);
     ''')
+    if 'stage' not in {r[1] for r in con.execute('PRAGMA table_info(model_call_metrics)')}:
+        con.execute("ALTER TABLE model_call_metrics ADD COLUMN stage TEXT NOT NULL DEFAULT 'unclassified'")
+    if 'cost_usd' not in {r[1] for r in con.execute('PRAGMA table_info(model_call_metrics)')}:
+        con.execute('ALTER TABLE model_call_metrics ADD COLUMN cost_usd REAL')
+
+
+def model_stage(messages):
+    if not messages:
+        return 'connection_test'
+    try:
+        payload=json.loads(messages[-1].get('content',''))
+        if isinstance(payload,dict) and payload.get('stage'):
+            return str(payload['stage'])[:60]
+    except ValueError:
+        pass
+    system=messages[0].get('content','') if messages[0].get('role')=='system' else ''
+    if '工作知识整理器' in system: return 'extraction'
+    if '判断工作事项是否属于' in system: return 'project_routing'
+    if len(messages)==1 and '回复 OK' in messages[0].get('content',''): return 'connection_test'
+    return 'answer_or_other'
 
 
 def canonical(text):
@@ -125,6 +145,6 @@ def measured_call(db, model, call):
     finally:
         usage = result.get('usage',{}) if isinstance(result,dict) else getattr(result,'usage',{})
         with db.connect() as con:
-            con.execute('''INSERT INTO model_call_metrics(model,state,processing_run_id,input_tokens,output_tokens,elapsed_ms) VALUES(?,?,?,?,?,?)''',
+            con.execute('''INSERT INTO model_call_metrics(model,state,processing_run_id,input_tokens,output_tokens,elapsed_ms,stage,cost_usd) VALUES(?,?,?,?,?,?,?,?)''',
                 (model,'done' if result is not None else 'error',processing_run.get(),
-                 usage.get('prompt_tokens'),usage.get('completion_tokens'),int((time.monotonic()-started)*1000)))
+                 usage.get('prompt_tokens'),usage.get('completion_tokens'),int((time.monotonic()-started)*1000),'project_routing',usage.get('cost_usd')))

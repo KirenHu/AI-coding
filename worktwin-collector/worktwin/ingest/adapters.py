@@ -24,7 +24,14 @@ def safe_text(text: str) -> str:
 
 def _timestamp(event: dict) -> str:
     if event.get("timestamp"):
-        return str(event["timestamp"])[:19].replace("T", " ")
+        value=str(event['timestamp'])
+        try:
+            stamp=datetime.fromisoformat(value.replace('Z','+00:00'))
+            if stamp.tzinfo is not None:
+                stamp=stamp.astimezone(timezone.utc)
+            return stamp.strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return ''
     if isinstance(event.get("timestamp_ms"), (int, float)):
         return datetime.fromtimestamp(event["timestamp_ms"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     return ""
@@ -82,6 +89,8 @@ def normalize(adapter: str, event: dict, state: dict, offset: int) -> list[dict]
                 call_id = str(payload.get("call_id") or "")
                 add("tool_result", call_id=call_id, native_id=call_id,
                     failed=payload.get("is_error") is True, exit_code=exit_code_from_output(payload.get("output")))
+        elif typ == 'event_msg' and payload.get('type') in ('task_started','task_complete','turn_aborted'):
+            add('task_complete' if payload['type']=='turn_aborted' else payload['type'], native_id=str(payload.get('turn_id') or ''), origin='event_msg')
         elif typ == "event_msg" and payload.get("type") in ("user_message", "agent_message"):
             text = payload.get("message")
             if isinstance(text, str) and text.strip() and not text.startswith("<environment_context>"):

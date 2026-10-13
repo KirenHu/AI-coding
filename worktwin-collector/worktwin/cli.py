@@ -33,6 +33,11 @@ def _configure_frozen_stdio() -> None:
 
 
 def main():
+    if len(sys.argv)>1 and sys.argv[1]=='mcp-bridge':
+        import asyncio
+        from .mcp_clients import bridge
+        asyncio.run(bridge())
+        return
     _configure_frozen_stdio()
     parser = argparse.ArgumentParser(description="WorkTwin Collector — local work knowledge")
     parser.add_argument("command", nargs="?", choices=["serve", "scan", "where"], default="serve")

@@ -663,22 +663,40 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/sources/{source_id}/ai", dependencies=[Depends(authorized)])
     def source_ai_permission(source_id: int, payload: SourcePermissionInput):
         with db.connect() as con:
-            row = con.execute("SELECT id FROM sources WHERE id=?", (source_id,)).fetchone()
+            row = con.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
             if not row:
                 raise HTTPException(404, "数据源不存在")
             con.execute("UPDATE sources SET allow_ai=? WHERE id=?", (int(payload.allow_ai), source_id))
-            if payload.allow_ai:
+            if payload.allow_ai and not row['allow_ai'] and row['adapter'] in ('codex','claude','cursor'):
+                from .assistant_sources import start_new_processing
+                start_new_processing(con, source_id)
+            elif payload.allow_ai and row['adapter'] not in ('codex','claude','cursor'):
                 con.execute("""INSERT INTO ai_jobs(document_id,content_sha,state,attempts,error)
                     SELECT id,sha256,'queued',0,NULL FROM documents WHERE source_id=?
                     ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
                     attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now')""", (source_id,))
-            else:
+            elif not payload.allow_ai:
                 con.execute("""DELETE FROM ai_jobs WHERE document_id IN
                     (SELECT id FROM documents WHERE source_id=?)""", (source_id,))
         db.event("source_ai_permission", f"{'允许' if payload.allow_ai else '停止'}企业模型整理", source_id)
         if payload.allow_ai:
             knowledge_worker.schedule()
         return {"allow_ai":payload.allow_ai}
+
+    @app.get("/api/sources/{source_id}/references", dependencies=[Depends(authorized)])
+    def source_references(source_id:int):
+        with db.connect() as con:
+            return [dict(r) for r in con.execute("""SELECT d.id,d.title,d.relative_path,d.content,r.role,r.scope_path
+                FROM assistant_references r JOIN documents d ON d.id=r.document_id
+                WHERE d.source_id=? AND d.deleted=0 ORDER BY d.relative_path""",(source_id,))]
+
+    @app.post("/api/sources/{source_id}/history", dependencies=[Depends(authorized)])
+    def source_history(source_id: int, payload: dict):
+        from .assistant_sources import request_history
+        with db.connect() as con:
+            result = request_history(con, source_id, str(payload.get('start','')), str(payload.get('end','')))
+        knowledge_worker.schedule()
+        return result
 
     @app.put("/api/sources/{source_id}/share", dependencies=[Depends(authorized)])
     def source_share_permission(source_id: int, payload: SharePermissionInput):
@@ -1284,11 +1302,12 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 SUM(source_chars) source_chars,SUM(submitted_chars) submitted_chars,
                 SUM(model_calls) extraction_calls,SUM(elapsed_ms) elapsed_ms
                 FROM knowledge_processing_runs GROUP BY mode,reason,state""")]
-            models=[dict(r) for r in con.execute("""SELECT model,COUNT(*) calls,
+            models=[dict(r) for r in con.execute("""SELECT model,stage,COUNT(*) calls,
                 SUM(CASE WHEN state='error' THEN 1 ELSE 0 END) failed_calls,
                 SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,
                 SUM(CASE WHEN input_tokens IS NULL THEN 1 ELSE 0 END) unknown_input_usage_calls,
-                SUM(elapsed_ms) elapsed_ms FROM model_call_metrics GROUP BY model""")]
+                SUM(cost_usd) reported_cost_usd,SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) unknown_cost_calls,
+                SUM(elapsed_ms) elapsed_ms FROM model_call_metrics GROUP BY model,stage""")]
         return {'decisions':decisions,'models':models,'cost':None,
                 'document_incremental_enabled':db.setting('document_incremental_enabled',os.getenv('WORKTWIN_DOCUMENT_INCREMENTAL','1'))=='1'}
 
@@ -1462,8 +1481,46 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             except LookupError as exc:
                 raise HTTPException(404,str(exc)) from None
         url=str(request.base_url).rstrip('/')+'/mcp/'
-        return {'url':url,'token':token,'config':{'mcpServers':{f'worktwin-{twin_id}':
+        from .mcp_clients import configurations
+        return {'clients':configurations(twin_id,url,token),'url':url,'token':token,'config':{'mcpServers':{f'worktwin-{twin_id}':
             {'type':'http','url':url,'headers':{'Authorization':'Bearer '+token}}}}}
+
+    @app.post('/api/twins/{twin_id}/mcp/test',dependencies=[Depends(authorized)])
+    async def test_mcp_connection(twin_id:int,payload:dict,request:Request):
+        import httpx2
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+        from .twin_mcp import grant
+        token=str(payload.get('token',''))
+        with db.connect() as con:
+            access=grant(con,token)
+            if not access or access['twin_id']!=twin_id:
+                raise HTTPException(403,'连接凭据已失效，请重新生成')
+        url=str(request.base_url).rstrip('/')+'/mcp/'
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app),headers={'Authorization':'Bearer '+token}) as http:
+            async with streamable_http_client(url,http_client=http) as streams:
+                async with ClientSession(streams[0],streams[1]) as session:
+                    await session.initialize()
+                    result=await session.list_tools()
+        return {'connected':True,'tools':len(result.tools)}
+
+    @app.post('/api/twins/{twin_id}/mcp/install/{client}',dependencies=[Depends(authorized)])
+    def install_mcp_client(twin_id:int,client:str,payload:dict,request:Request):
+        from .mcp_clients import configurations, install
+        from .twin_mcp import grant
+        if client not in ('cursor','vscode','claude'):
+            raise HTTPException(400,'不支持的客户端')
+        token=str(payload.get('token',''))
+        with db.connect() as con:
+            access=grant(con,token)
+            if not access or access['twin_id']!=twin_id:
+                raise HTTPException(403,'连接凭据已失效，请重新生成')
+        url=str(request.base_url).rstrip('/')+'/mcp/'
+        try:
+            path=install(client,configurations(twin_id,url,token)[client])
+        except (ValueError,OSError):
+            raise HTTPException(409,'现有客户端配置无法更新，请使用复制配置') from None
+        return {'path':path,'installed':True}
 
     @app.delete('/api/twins/{twin_id}/mcp',dependencies=[Depends(authorized)])
     def disable_mcp(twin_id:int):

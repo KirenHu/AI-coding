@@ -140,6 +140,15 @@ class KnowledgeWorker:
                     WHERE id=?""", (batch['generation'], batch['from_seq'], batch['through_seq'], job['job_id']))
             job['claim_token']=secrets.token_hex(16)
             con.execute("UPDATE ai_jobs SET state='running',claim_token=?,attempts=attempts+1,updated_at=datetime('now') WHERE id=?", (job['claim_token'],job["job_id"]))
+        from .reference_roles import reference_role, reference_scope
+        role = reference_role(job['path']) if batch is None else ''
+        if role:
+            with self.db.connect() as con:
+                root=con.execute('SELECT root FROM sources WHERE id=?',(job['source_id'],)).fetchone()[0]
+                con.execute("INSERT INTO assistant_references(document_id,role,scope_path) VALUES(?,?,?) ON CONFLICT(document_id) DO UPDATE SET role=excluded.role,scope_path=excluded.scope_path",
+                    (job['document_id'],role,reference_scope(job['path'],root)))
+                con.execute("UPDATE ai_jobs SET state='done',claim_token=NULL,error=NULL WHERE id=? AND claim_token=?",(job['job_id'],job['claim_token']))
+            return {'state':'done','reference_role':role,'candidates':0,'added':0}
         full_content = job['content']
         selection = {'mode':'incremental','reason':'transcript_watermark','content':full_content,'changes':[]}
         with self.db.connect() as con:
@@ -255,7 +264,8 @@ class KnowledgeWorker:
                     apply_assignments(con,job['document_id'],items,links)
                     if batch is None:
                         save_baseline(con,job['document_id'],job['content_sha'],full_content)
-                    has_more = batch and current['captured_seq'] > batch['through_seq']
+                    has_more = batch and (bool(con.execute('SELECT 1 FROM assistant_history_requests WHERE document_id=?',(job['document_id'],)).fetchone()) or
+                        con.execute('SELECT captured_seq>processed_seq FROM transcript_streams WHERE document_id=?',(job['document_id'],)).fetchone()[0])
                     con.execute("""UPDATE ai_jobs SET state=?,content_sha=?,error=NULL,next_run_at=NULL,
                         claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL,
                         attempts=CASE WHEN ? THEN 0 ELSE attempts END,updated_at=datetime('now')

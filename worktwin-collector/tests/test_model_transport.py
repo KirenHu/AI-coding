@@ -133,10 +133,15 @@ def test_editor_stages_enable_reasoning_but_probe_remains_small():
     assert probe['enable_thinking'] is False and probe['max_tokens']==64
 
 
-def test_mimo_openrouter_reasoning_has_room_for_final_answer():
+@pytest.mark.parametrize('model', ['xiaomi/mimo-v2.6-flash', 'z-ai/glm-5.3-flash', 'inclusionai/ling-3.0-flash'])
+def test_openrouter_reasoning_has_room_for_final_answer(model):
     messages=[{'role':'user','content':json.dumps({'stage':'article_writing'})}]
-    draft=transport.chat_payload('https://openrouter.ai/api/v1','xiaomi/mimo-v2.6-flash',messages,12000)
-    assert draft['reasoning']=={'enabled':True,'exclude':True}
+    draft=transport.chat_payload('https://openrouter.ai/api/v1',model,messages,12000)
+    expected = {'effort':'medium','exclude':True} if model == 'z-ai/glm-5.3-flash' else {'enabled':True,'exclude':True}
+    assert draft['reasoning']==expected
     assert draft['max_tokens']==65536
-    probe=transport.chat_payload('https://openrouter.ai/api/v1','xiaomi/mimo-v2.6-flash',[{'role':'user','content':'OK'}],64)
-    assert probe['reasoning']['enabled'] is False and probe['max_tokens']==64
+    probe=transport.chat_payload('https://openrouter.ai/api/v1',model,[{'role':'user','content':'OK'}],64)
+    if model == 'z-ai/glm-5.3-flash':
+        assert probe['reasoning']==expected and probe['max_tokens']==4096
+    else:
+        assert probe['reasoning']['enabled'] is False and probe['max_tokens']==64
