@@ -87,6 +87,10 @@ class LibraryOrganizer:
         self.db,self.client,self.maintainer=db,client,maintainer
 
     def process_next(self):
+        result = self.process_grouping()
+        return self.process_merge() if result['state'] == 'idle' else result
+
+    def process_merge(self):
         if not self.client.configured:
             return {'state':'not_configured'}
         with self.db.connect() as con:
@@ -101,6 +105,11 @@ class LibraryOrganizer:
                 con.execute("UPDATE article_merge_queue SET state=?,error=?,updated_at=datetime('now') WHERE id=?",
                     (result['state'],result.get('error',''),queued['id']))
             return result
+        return {'state':'idle'}
+
+    def process_grouping(self):
+        if not self.client.configured:
+            return {'state':'not_configured'}
         with self.db.connect() as con:
             con.execute('BEGIN IMMEDIATE')
             buckets={}
@@ -123,7 +132,12 @@ class LibraryOrganizer:
             with self.db.connect() as con:
                 con.execute('BEGIN IMMEDIATE')
                 current=[a for a in articles_for_organization(con) if (a['scope'],a['project_key'])==key]
-                if signature(current)!=stamp:raise ValueError('整理期间文章或来源授权已变化')
+                owned=con.execute('SELECT 1 FROM library_organization_runs WHERE scope=? AND project_key=? AND claim=?',(*key,claim)).fetchone()
+                if not owned:
+                    return {'state':'superseded'}
+                if signature(current)!=stamp:
+                    con.execute("UPDATE library_organization_runs SET state='queued',claim=NULL,attempts=0 WHERE scope=? AND project_key=? AND claim=?",(*key,claim))
+                    return {'state':'superseded'}
                 for group in groups:
                     name=group['group_name'].strip()
                     group_key=hashlib.sha256((key[0]+':'+key[1]+':'+name.casefold()).encode()).hexdigest()[:24] if name else ''

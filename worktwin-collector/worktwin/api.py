@@ -512,6 +512,17 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     'article_jobs':{state:count(f"SELECT count(*) FROM article_maintenance_runs WHERE state='{state}'")
                                     for state in ('running','waiting','error')} | {'queued':queued_articles}}
 
+    @app.get('/api/library/status', dependencies=[Depends(authorized)])
+    def library_status():
+        with db.connect() as con:
+            rows=[tuple(r) for r in con.execute("SELECT id,version,group_key,status,quality FROM knowledge WHERE organization='article' ORDER BY id")]
+            counts={table:{r[0]:r[1] for r in con.execute(f"SELECT state,count(*) FROM {table} GROUP BY state")}
+                    for table in ('ai_jobs','library_organization_runs','article_maintenance_runs','article_merge_queue')}
+        return {'revision':hashlib.sha256(json.dumps(rows).encode()).hexdigest(),
+                'extraction':counts['ai_jobs'], 'grouping':counts['library_organization_runs'],
+                'maintenance':{state:counts['article_maintenance_runs'].get(state,0)+counts['article_merge_queue'].get(state,0)
+                               for state in ('queued','running','error')}}
+
     @app.get('/api/articles/jobs',dependencies=[Depends(authorized)])
     def article_jobs():
         with db.connect() as con:

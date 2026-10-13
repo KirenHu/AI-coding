@@ -19,6 +19,7 @@ from .artifacts import work_context, context_for_model
 from .article_maintenance import ArticleMaintainer
 from .library_organization import LibraryOrganizer
 from .gardener import KnowledgeGardener
+from .job_lease import renew_lease
 
 
 class KnowledgeWorker:
@@ -28,6 +29,8 @@ class KnowledgeWorker:
         self.interval = interval
         self._wake = threading.Event()
         self._stop = threading.Event()
+        self._editor_wake = threading.Event()
+        self._editor_thread = None
         self._thread: threading.Thread | None = None
         self.processing = False
         self.decision_router=decision_router or DecisionRouter(db,DesktopSecrets(db.path),self.client)
@@ -41,6 +44,9 @@ class KnowledgeWorker:
     def start(self):
         if self._thread and self._thread.is_alive():
             return
+        self._stop.clear()
+        self._editor_thread = threading.Thread(target=self._editor_loop, name="worktwin-editor", daemon=True)
+        self._editor_thread.start()
         self._thread = threading.Thread(target=self._loop, name="worktwin-knowledge", daemon=True)
         self._thread.start()
         self.schedule()
@@ -48,39 +54,46 @@ class KnowledgeWorker:
     def stop(self):
         self._stop.set()
         self._wake.set()
+        self._editor_wake.set()
+        if self._editor_thread:
+            self._editor_thread.join(timeout=4)
         if self._thread:
             self._thread.join(timeout=4)
 
     def schedule(self):
         self._wake.set()
+        self._editor_wake.set()
 
     def _loop(self):
         while not self._stop.is_set():
             self._wake.wait(self.interval)
             self._wake.clear()
-            if self.client.configured and not self._stop.is_set():
-                # A bounded batch avoids a growing backlog while limiting the
-                # number of enterprise model calls per scheduling cycle.
-                result = "idle"
-                for _ in range(3):
-                    if self._stop.is_set():
-                        break
-                    result = self.process_next()["state"]
-                    if result in ("idle", "not_configured"):
-                        break
-                # Maintenance is lower priority than fresh capture: one note
-                # per idle cycle and no call if extraction is still backed up.
-                if not self._stop.is_set():
-                    self.article_maintainer.client = self.client
-                    self.article_maintainer.process_next()
-                if not self._stop.is_set():
-                    self.library_organizer.client = self.client
-                    self.library_organizer.process_next()
-                if result == "idle" and not self._stop.is_set():
-                    # A new project may resolve previously isolated sessions.
-                    # Work through a bounded batch before lower priority text
-                    # curation; no user confirmation or full-corpus re-extraction.
-                    self.project_rechecker.process_next()
+            if self._stop.is_set() or not self.client.configured:
+                continue
+            result = self.process_next()["state"]
+            if result not in ("idle", "not_configured"):
+                self._editor_wake.set()
+                self._wake.set()
+            elif result == "idle":
+                self.project_rechecker.process_next()
+
+    def _editor_loop(self):
+        # One editor owns all scheduled article writes. Extraction has its own
+        # thread, so even a long document cannot block existing-article grouping.
+        while not self._stop.is_set():
+            self._editor_wake.wait(self.interval)
+            self._editor_wake.clear()
+            if self._stop.is_set() or not self.client.configured:
+                continue
+            self.article_maintainer.client = self.client
+            self.library_organizer.client = self.client
+            result = self.library_organizer.process_grouping()
+            if result['state'] == 'idle':
+                result = self.library_organizer.process_merge()
+                if result['state'] in ('idle', 'queued'):
+                    result = self.article_maintainer.process_next()
+            if result['state'] not in ('idle', 'not_configured', 'queued'):
+                self._editor_wake.set()
 
     def process_next(self) -> dict:
         if not self.client.configured:
@@ -125,79 +138,80 @@ class KnowledgeWorker:
             con.execute("UPDATE ai_jobs SET state='running',claim_token=?,attempts=attempts+1,updated_at=datetime('now') WHERE id=?", (job['claim_token'],job["job_id"]))
         self.processing = True
         try:
-            outer=self
-            class LeasedClient:
-                configured=True
-                def chat(self,messages,max_tokens=1800):
-                    with outer.db.connect() as con:
-                        claimed=con.execute("UPDATE ai_jobs SET updated_at=datetime('now') WHERE id=? AND content_sha=? AND claim_token=?",(job['job_id'],job['content_sha'],job['claim_token']))
-                        if not claimed.rowcount:
-                            raise RuntimeError('job superseded')
-                    return outer.client.chat(messages,max_tokens=max_tokens)
-            leased_client=LeasedClient()
-            with self.db.connect() as con:
-                con.execute('BEGIN IMMEDIATE')
-                metadata=document_scope(job)
-                metadata['project_context'] = source_context(con, job)
-                metadata['candidate_projects'] = [{'project_key':p['project_key'], 'name':p['name'],
-                    'summary':p.get('summary','')} for p in catalog(con)][:30]
-                con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],job['document_id']))
-                known = existing_for_project(con, job["document_id"])
-                context = work_context(con, job['document_id'],
-                                       event_start=batch['from_seq'] + 1 if batch else None,
-                                       event_end=batch['through_seq'] if batch else None)
-            class ExtractionClient:
-                configured=True
-                def chat(self, messages, max_tokens=1800):
-                    messages = [dict(message) for message in messages]
-                    if batch:
-                        messages[0]['content'] += (
-                            '\n这是会话的增量批次。前序对话仅供理解指代和确认关系，'
-                            '只整理本次新增事件带来的知识或变化，不重复提炼前序知识；'
-                            'quote或confirmation_quote必须出自本次新增事件。')
-                    messages[-1]['content'] += '\n工作成果上下文（供关联，不替代对话原文）：\n' + context_for_model(context)
-                    return leased_client.chat(messages, max_tokens=max_tokens)
-            items = extract_knowledge(job["content"], transcript=batch is not None or job["adapter"] in ("codex", "claude", "cursor"),
-                                      client=ExtractionClient(),scope=metadata,existing=known)
-            if batch:
-                items = [item for item in items if any(
-                    item.get(field) and item[field] in batch['new_content']
-                    for field in ('quote', 'confirmation_quote'))]
-            with self.db.connect() as con:
-                document=con.execute('SELECT * FROM documents WHERE id=?',(job['document_id'],)).fetchone()
-                known_projects=catalog(con)
-                for item in items:
-                    item['project_context'] = metadata['project_context']
-                    item['work_context'] = work_context(con, job['document_id'], quote=item['quote'],
-                                                       event_start=batch['from_seq'] + 1 if batch else None,
-                                                       event_end=batch['through_seq'] if batch else None)
-            links=plan_work_units(items,document,known_projects,self.decision_router)
-            for item,link in zip(items,links):
-                item.update({k:link[k] for k in ('scope','project_key','project')})
-            with self.db.connect() as con:
-                con.execute('BEGIN IMMEDIATE')
-                # A revoked source or edited document must never be resurrected by an in-flight response.
-                current = con.execute("""SELECT d.sha256,d.deleted,s.enabled,s.allow_ai,t.generation,t.captured_seq
-                    FROM documents d JOIN sources s ON s.id=d.source_id
-                    LEFT JOIN transcript_streams t ON t.document_id=d.id WHERE d.id=?""", (job["document_id"],)).fetchone()
-                claimed=con.execute('SELECT 1 FROM ai_jobs WHERE id=? AND claim_token=? AND content_sha=?',(job['job_id'],job['claim_token'],job['content_sha'])).fetchone()
-                unchanged = current and (current['generation'] == batch['generation'] if batch else current['sha256'] == job['content_sha'])
-                if not claimed or not unchanged or current['deleted'] or not current["enabled"] or not current["allow_ai"]:
-                    return {"state": "superseded"}
-                if batch and not ack_batch(con, job['document_id'], batch['through_seq'], batch['generation']):
-                    return {'state': 'superseded'}
-                n = store_candidates(con, job["document_id"], [], items,
-                                     created_by="enterprise_ai")
-                apply_assignments(con,job['document_id'],items,links)
-                has_more = batch and current['captured_seq'] > batch['through_seq']
-                con.execute("""UPDATE ai_jobs SET state=?,content_sha=?,error=NULL,next_run_at=NULL,
-                    claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL,
-                    attempts=CASE WHEN ? THEN 0 ELSE attempts END,updated_at=datetime('now')
-                    WHERE id=? AND content_sha=? AND claim_token=?""",
-                    ('queued' if has_more else 'done',current['sha256'],bool(has_more),
-                     job["job_id"], job["content_sha"],job["claim_token"]))
-            self.db.event("ai_extracted", f"记录 {len(items)} 条待整理材料，新增 {n} 条")
-            return {"state": "done", "candidates": len(items), "added": n, "proposals": 0,'automatic':0}
+            with renew_lease(self.db,"UPDATE ai_jobs SET updated_at=datetime('now') WHERE id=? AND claim_token=?",(job['job_id'],job['claim_token'])):
+                outer=self
+                class LeasedClient:
+                    configured=True
+                    def chat(self,messages,max_tokens=1800):
+                        with outer.db.connect() as con:
+                            claimed=con.execute("UPDATE ai_jobs SET updated_at=datetime('now') WHERE id=? AND content_sha=? AND claim_token=?",(job['job_id'],job['content_sha'],job['claim_token']))
+                            if not claimed.rowcount:
+                                raise RuntimeError('job superseded')
+                        return outer.client.chat(messages,max_tokens=max_tokens)
+                leased_client=LeasedClient()
+                with self.db.connect() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    metadata=document_scope(job)
+                    metadata['project_context'] = source_context(con, job)
+                    metadata['candidate_projects'] = [{'project_key':p['project_key'], 'name':p['name'],
+                        'summary':p.get('summary','')} for p in catalog(con)][:30]
+                    con.execute('UPDATE documents SET project_key=?,scope=? WHERE id=?',(metadata['project_key'],metadata['scope'],job['document_id']))
+                    known = existing_for_project(con, job["document_id"])
+                    context = work_context(con, job['document_id'],
+                                           event_start=batch['from_seq'] + 1 if batch else None,
+                                           event_end=batch['through_seq'] if batch else None)
+                class ExtractionClient:
+                    configured=True
+                    def chat(self, messages, max_tokens=1800):
+                        messages = [dict(message) for message in messages]
+                        if batch:
+                            messages[0]['content'] += (
+                                '\n这是会话的增量批次。前序对话仅供理解指代和确认关系，'
+                                '只整理本次新增事件带来的知识或变化，不重复提炼前序知识；'
+                                'quote或confirmation_quote必须出自本次新增事件。')
+                        messages[-1]['content'] += '\n工作成果上下文（供关联，不替代对话原文）：\n' + context_for_model(context)
+                        return leased_client.chat(messages, max_tokens=max_tokens)
+                items = extract_knowledge(job["content"], transcript=batch is not None or job["adapter"] in ("codex", "claude", "cursor"),
+                                          client=ExtractionClient(),scope=metadata,existing=known)
+                if batch:
+                    items = [item for item in items if any(
+                        item.get(field) and item[field] in batch['new_content']
+                        for field in ('quote', 'confirmation_quote'))]
+                with self.db.connect() as con:
+                    document=con.execute('SELECT * FROM documents WHERE id=?',(job['document_id'],)).fetchone()
+                    known_projects=catalog(con)
+                    for item in items:
+                        item['project_context'] = metadata['project_context']
+                        item['work_context'] = work_context(con, job['document_id'], quote=item['quote'],
+                                                           event_start=batch['from_seq'] + 1 if batch else None,
+                                                           event_end=batch['through_seq'] if batch else None)
+                links=plan_work_units(items,document,known_projects,self.decision_router)
+                for item,link in zip(items,links):
+                    item.update({k:link[k] for k in ('scope','project_key','project')})
+                with self.db.connect() as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    # A revoked source or edited document must never be resurrected by an in-flight response.
+                    current = con.execute("""SELECT d.sha256,d.deleted,s.enabled,s.allow_ai,t.generation,t.captured_seq
+                        FROM documents d JOIN sources s ON s.id=d.source_id
+                        LEFT JOIN transcript_streams t ON t.document_id=d.id WHERE d.id=?""", (job["document_id"],)).fetchone()
+                    claimed=con.execute('SELECT 1 FROM ai_jobs WHERE id=? AND claim_token=? AND content_sha=?',(job['job_id'],job['claim_token'],job['content_sha'])).fetchone()
+                    unchanged = current and (current['generation'] == batch['generation'] if batch else current['sha256'] == job['content_sha'])
+                    if not claimed or not unchanged or current['deleted'] or not current["enabled"] or not current["allow_ai"]:
+                        return {"state": "superseded"}
+                    if batch and not ack_batch(con, job['document_id'], batch['through_seq'], batch['generation']):
+                        return {'state': 'superseded'}
+                    n = store_candidates(con, job["document_id"], [], items,
+                                         created_by="enterprise_ai")
+                    apply_assignments(con,job['document_id'],items,links)
+                    has_more = batch and current['captured_seq'] > batch['through_seq']
+                    con.execute("""UPDATE ai_jobs SET state=?,content_sha=?,error=NULL,next_run_at=NULL,
+                        claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL,
+                        attempts=CASE WHEN ? THEN 0 ELSE attempts END,updated_at=datetime('now')
+                        WHERE id=? AND content_sha=? AND claim_token=?""",
+                        ('queued' if has_more else 'done',current['sha256'],bool(has_more),
+                         job["job_id"], job["content_sha"],job["claim_token"]))
+                self.db.event("ai_extracted", f"记录 {len(items)} 条待整理材料，新增 {n} 条")
+                return {"state": "done", "candidates": len(items), "added": n, "proposals": 0,'automatic':0}
         except Exception as exc:
             # Do not persist provider error bodies, URLs, or credentials. Retry
             # transient failures a bounded number of times with backoff.

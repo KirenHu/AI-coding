@@ -85,7 +85,7 @@ def test_revoked_permission_and_concurrent_edits_do_not_publish(tmp_path):
         with db.connect() as con:con.execute('UPDATE sources SET allow_ai=0')
     model=Organizer(hook=revoke)
     result=LibraryOrganizer(db,model,ArticleMaintainer(db,model)).process_next()
-    assert result['state']=='error'
+    assert result['state']=='superseded'
     with db.connect() as con:
         assert not articles_for_organization(con)
         assert con.execute("SELECT count(*) FROM knowledge WHERE group_name!=''").fetchone()[0]==0

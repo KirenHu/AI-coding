@@ -83,6 +83,7 @@ class ModelRuntime:
     def __init__(self, db, secrets, *, enterprise=None, injected=None, defer_credentials=False):
         self.db, self.secrets = db, secrets
         self.lock = threading.RLock()
+        self.request_slots = threading.BoundedSemaphore(2)
         self.error = ''
         self.injected = injected is not None
         default = 'enterprise' if enterprise and enterprise.configured else 'personal'
@@ -147,7 +148,8 @@ class ModelRuntime:
         with self.lock:
             client = self.client
         try:
-            result = client.chat(messages, max_tokens=max_tokens)
+            with self.request_slots:
+                result = client.chat(messages, max_tokens=max_tokens)
         except Exception as exc:
             with self.lock:
                 if client is self.client:

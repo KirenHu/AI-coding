@@ -136,8 +136,8 @@ async function processingDetails(jobs,source=null){
   const rows=jobs.filter(j=>j.state!=='done'&&(!source||j.source_id===source.id));
   const [articles,stats]=source?[[],null]:await Promise.all([api('articles/jobs'),api('stats')]);
   const queuedArticles=stats?.article_jobs.queued||0;
-  const articleRows=articles.map(j=>`<div class="job-row"><span>${esc(j.project||'文章维护')}${j.task?` · ${esc(j.task)}`:''}<small>${esc(localUpdateTime(j.updated_at))}</small></span><span>${{queued:'等待维护文章',running:'正在维护文章',waiting:'等待更多材料',error:'文章整理失败'}[j.state]}${j.error?`<small>${esc(j.error)}</small>`:''}</span></div>`).join('');
-  dialog(source?source.name+' · 整理任务':'整理任务',`${!state.modelReady?'<p>配置模型后可整理已授权资料。</p>':''}${rows.map(j=>`<div class="job-row"><span>${esc(j.title)}<small>${esc(j.source_name)}</small></span><span>${{queued:'等待整理',running:'正在整理',error:'整理失败'}[j.state]}${j.error?`<small>${esc(j.error)}</small>`:''}</span></div>`).join('')}${articleRows}${queuedArticles?`<p class="field-note" id="queued-article-jobs">${queuedArticles} 个项目等待整理。</p>`:''}${!rows.length&&!articles.length&&!queuedArticles?'<p class="muted">没有待处理任务</p>':''}`,`<button class="btn secondary" data-close>关闭</button>${rows.some(j=>j.state==='error')||articles.some(j=>j.state==='error')?'<button class="btn" id="retry-ai">重试失败任务</button>':''}`,true);
+  const articleRows=articles.map(j=>`<div class="job-row"><span>${esc(j.project||'文章维护')}${j.task?` · ${esc(j.task)}`:''}<small>${esc(localUpdateTime(j.updated_at))}</small></span><span>${{queued:'等待'+(j.task||'文章维护'),running:'正在'+(j.task||'文章维护'),waiting:'等待更多材料',error:(j.task||'文章维护')+'失败'}[j.state]}${j.error?`<small>${esc(j.error)}</small>`:''}</span></div>`).join('');
+  dialog(source?source.name+' · 整理任务':'整理任务',`${!state.modelReady?'<p>配置模型后可整理已授权资料。</p>':''}${rows.map(j=>`<div class="job-row"><span>${esc(j.title)}<small>${esc(j.source_name)}</small></span><span>${{queued:'等待提取',running:'正在提取',error:'提取失败'}[j.state]}${j.error?`<small>${esc(j.error)}</small>`:''}</span></div>`).join('')}${articleRows}${queuedArticles?`<p class="field-note" id="queued-article-jobs">${queuedArticles} 个项目等待整理。</p>`:''}${!rows.length&&!articles.length&&!queuedArticles?'<p class="muted">没有待处理任务</p>':''}`,`<button class="btn secondary" data-close>关闭</button>${rows.some(j=>j.state==='error')||articles.some(j=>j.state==='error')?'<button class="btn" id="retry-ai">重试失败任务</button>':''}`,true);
   el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry'+(source?'?source_id='+source.id:''),{method:'POST'}))){closeOverlay();await go('sources',true)}}));
 }
 function sourceDetail(s){
@@ -306,7 +306,7 @@ async function renderKnowledge(){
   const [articles,proposals]=await Promise.all([loadKnowledge('article'),api('knowledge/proposals')]);state.knowledge=articles;state.proposals=proposals;
   const projects=[...new Set(articles.map(entryProject))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
   if(!projects.includes(state.project))state.project='all';
-  content.innerHTML=pageHeader('','知识库','',`<button class="btn" id="create-knowledge">${icon('plus')} 新建知识</button><details class="action-menu"><summary class="icon-button" aria-label="知识库更多操作">${icon('ellipsis')}</summary><div><button id="knowledge-refresh">刷新内容</button><button id="library-jobs">整理任务</button><button id="reprocess-knowledge">重新整理资料</button><button id="library-export">导出 Markdown</button></div></details>`)+`<div class="tabs lifecycle-filters" role="tablist">${[['active','全部'],['confirmed','可用'],['review','待处理'],['archived','已归档'],['disabled','已停用']].map(([value,label])=>`<button role="tab" aria-selected="${state.lifecycle===value}" class="${state.lifecycle===value?'active':''}" data-lifecycle="${value}">${label}</button>`).join('')}</div><div class="library-toolbar"><div class="search-bar">${icon('search')}<input type="search" id="knowledge-search" aria-label="搜索主题文章" placeholder="搜索主题文章" value="${esc(state.query)}"></div><select id="knowledge-project" aria-label="筛选项目"><option value="all">全部项目</option>${projects.map(name=>`<option ${state.project===name?'selected':''}>${esc(name)}</option>`).join('')}</select><select id="knowledge-kind" aria-label="筛选类型">${[['all','全部类型'],['fact','知识'],['decision','决策'],['process','流程'],['preference','个人偏好']].map(([key,label])=>`<option value="${key}" ${state.kind===key?'selected':''}>${label}</option>`).join('')}</select><div class="toolbar-fill"></div><button class="btn secondary small" id="knowledge-proposals">更新建议 ${proposals.length}</button></div><div id="knowledge-breadcrumb" class="library-breadcrumb"></div><div id="knowledge-list"></div><div class="table-count" id="knowledge-count"></div>`;
+  content.innerHTML=pageHeader('','知识库','',`<button class="btn" id="create-knowledge">${icon('plus')} 新建知识</button><details class="action-menu"><summary class="icon-button" aria-label="知识库更多操作">${icon('ellipsis')}</summary><div><button id="knowledge-refresh">刷新内容</button><button id="library-jobs">整理任务</button><button id="reprocess-knowledge">重新整理资料</button><button id="library-export">导出 Markdown</button></div></details>`)+`<div class="tabs lifecycle-filters" role="tablist">${[['active','全部'],['confirmed','可用'],['review','待处理'],['archived','已归档'],['disabled','已停用']].map(([value,label])=>`<button role="tab" aria-selected="${state.lifecycle===value}" class="${state.lifecycle===value?'active':''}" data-lifecycle="${value}">${label}</button>`).join('')}</div><div class="library-toolbar"><div class="search-bar">${icon('search')}<input type="search" id="knowledge-search" aria-label="搜索主题文章" placeholder="搜索主题文章" value="${esc(state.query)}"></div><select id="knowledge-project" aria-label="筛选项目"><option value="all">全部项目</option>${projects.map(name=>`<option ${state.project===name?'selected':''}>${esc(name)}</option>`).join('')}</select><select id="knowledge-kind" aria-label="筛选类型">${[['all','全部类型'],['fact','知识'],['decision','决策'],['process','流程'],['preference','个人偏好']].map(([key,label])=>`<option value="${key}" ${state.kind===key?'selected':''}>${label}</option>`).join('')}</select><div class="toolbar-fill"></div><button class="btn secondary small" id="knowledge-proposals">更新建议 ${proposals.length}</button></div><button class="info-link" id="library-progress" aria-live="polite"></button><div id="knowledge-breadcrumb" class="library-breadcrumb"></div><div id="knowledge-list"></div><div class="table-count" id="knowledge-count"></div>`;
   content.querySelectorAll('[data-lifecycle]').forEach(b=>b.onclick=()=>{state.lifecycle=b.dataset.lifecycle;renderKnowledgeList();content.querySelectorAll('[data-lifecycle]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-selected',String(x===b))})});
   el('knowledge-search').oninput=e=>{state.query=e.target.value;renderKnowledgeList()};
   el('knowledge-project').onchange=e=>{state.project=e.target.value;state.group='';renderKnowledgeList()};
@@ -321,7 +321,38 @@ async function renderKnowledge(){
     el('overlay-root').querySelectorAll('[data-proposal]').forEach(b=>b.onclick=()=>openProposal(Number(b.dataset.proposal)));
   };
   renderKnowledgeList();
+  await pollLibrary();
+  window.__JOB_POLL__=setInterval(()=>pollLibrary().catch(()=>{}),5000);
   if(state.scrollPosition)requestAnimationFrame(()=>document.querySelector('.main-area').scrollTop=state.scrollPosition);
+}
+let libraryRevision='', libraryPolling=false;
+async function pollLibrary(){
+  if(libraryPolling||state.page!=='knowledge')return;
+  libraryPolling=true;
+  try{
+    const status=await api('library/status');
+    if(state.page!=='knowledge'||!el('library-progress'))return;
+    const labels=[];
+    if(status.extraction.running)labels.push('资料提取中');
+    if(status.grouping.running)labels.push('正在整理分组');
+    else if(status.grouping.queued)labels.push('分组待整理');
+    if(status.maintenance.running)labels.push('正在维护文章');
+    if(status.grouping.error)labels.push(status.grouping.error+' 项分组失败');
+    el('library-progress').textContent=labels.join(' · ');
+    el('library-progress').onclick=async()=>processingDetails(await api('ai/jobs'));
+    if(libraryRevision&&status.revision!==libraryRevision){
+      if(state.dirty||state.overlayDirty||el('overlay-root').children.length){
+        offerRefresh('知识库已更新，关闭详情后自动刷新。');
+        return;
+      }
+      const articles=await loadKnowledge('article');
+      if(state.page!=='knowledge'||state.dirty||state.overlayDirty||el('overlay-root').children.length)return;
+      state.knowledge=articles;
+      renderKnowledgeList();
+      el('refresh-notice')?.remove();
+    }
+    libraryRevision=status.revision;
+  }finally{libraryPolling=false}
 }
 function knowledgeStatus(k){return k.status==='archived'?['已归档','grey']:k.quality==='noise'?['已停用','grey']:k.can_use?['可用','']:k.unavailable_reason==='来源未允许 AI 使用'?['AI 未授权','grey']:['待处理','warn']}
 function renderKnowledgeList(){

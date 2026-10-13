@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from .job_lease import renew_lease
 
 from .articles import BODY_LIMIT
 from .inference import _parse_items
@@ -197,7 +198,8 @@ class ArticleMaintainer:
             project = next((p for p in catalog(con, authorized_documents=authorized_documents or None)
                             if p['project_key']==key[1]),{'name':materials[0]['project']})
         try:
-            count, deferred = self._maintain(key, materials, existing, project, token, authorized_documents,final_only=final_only,context_signature=context_signature)
+            with renew_lease(self.db,"UPDATE article_maintenance_runs SET updated_at=datetime('now') WHERE scope=? AND project_key=? AND claim_token=?",(*key,token)):
+                count, deferred = self._maintain(key, materials, existing, project, token, authorized_documents,final_only=final_only,context_signature=context_signature)
             with self.db.connect() as con:
                 con.execute("UPDATE article_maintenance_runs SET state=?,claim_token=NULL,updated_at=datetime('now') "
                     "WHERE scope=? AND project_key=? AND claim_token=?",
@@ -247,8 +249,9 @@ class ArticleMaintainer:
             materials=[m for m in source_materials(con) if m['id'] in mids]
             peers=[a for a in available.values() if (a['scope'],a['project_key'])==key]
         try:
-            wrote=self._compose(key,group_name+'：完整事项说明',materials,articles,
-                {'name':articles[0]['project'],'project_key':key[1]},token,(),peer_articles=peers)
+            with renew_lease(self.db,"UPDATE article_maintenance_runs SET updated_at=datetime('now') WHERE scope=? AND project_key=? AND claim_token=?",(*key,token)):
+                wrote=self._compose(key,group_name+'：完整事项说明',materials,articles,
+                    {'name':articles[0]['project'],'project_key':key[1]},token,(),peer_articles=peers)
             result={'state':'done' if wrote else 'error','articles':int(wrote),
                     'error':'' if wrote else '现有资料不足以形成完整文章'}
         except Exception as exc:

@@ -28,3 +28,12 @@
 自动测试覆盖完整正文归组、无新材料归并、版本历史、并发变更、授权隔离及模型参数。真实模型评估脚本 `scripts/evaluate_library_organization.py` 仅使用合成数据，读取现有连接设置，不读取真实文档。2026-10-13 首次调用遇到 DeepSeek HTTP 402，尚未得到真实模型语义效果结论。
 
 Qwen 参数依据：[百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking/)、[Chat Completions 参数](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions/)。既有维护机制的开源学习依据见 [KNOWLEDGE_EDITOR_RESEARCH.md](KNOWLEDGE_EDITOR_RESEARCH.md)。
+
+
+## 1.5.5 并行调度
+
+资料提取独立运行；目录分组、已有文章归并、文章维护在另一条线程按此顺序执行。模型运行时最多同时发送两个请求，原有推理及上下文配置不变。没有变化的文章签名不重复请求模型；一次处理读取整个项目现有文章，因此同一批变化合并处理。
+
+写作与归并共用项目租约，长任务每分钟续租。目录分组采用独立租约和提交时签名校验，不改正文和授权；文章编辑或来源授权变化会使结果作废并重新排队。崩溃后继续沿用租约超时恢复，不抢占仍在运行的请求。
+
+知识库每五秒检查状态和文章版本、分组变化。详情打开或有未保存内容时只提示更新，关闭后刷新列表。分类不等待提取队列清空。当前仅一个编辑通道，跨项目编辑不额外并发。
