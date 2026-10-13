@@ -254,6 +254,8 @@ class Database:
             migrate_articles(conn)
             from .article_maintenance import migrate as migrate_maintenance
             migrate_maintenance(conn)
+            from .library_organization import migrate as migrate_library
+            migrate_library(conn)
             conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('continuous_evidence_v1','1')")
         if os.name == "posix":
             self.path.chmod(0o600)
@@ -267,7 +269,7 @@ class Database:
             "SELECT 1 FROM settings WHERE key='continuous_evidence_v1'").fetchone()
         articles = 'settings' in tables and conn.execute("SELECT 1 FROM settings WHERE key='topic_articles_v1'").fetchone()
         maintained = 'settings' in tables and conn.execute("SELECT 1 FROM settings WHERE key='article_maintenance_v1'").fetchone()
-        marker, version = (('project_current_documents_v1','1.5.1') if maintained and articles else
+        marker, version = (('library_groups_v1','1.5.4') if maintained and articles else
             ('article_maintenance_v1','1.5.0') if articles else
             ('topic_articles_v1', '1.4.0') if continuous else ('continuous_evidence_v1', '1.3.0'))
         if 'settings' in tables and conn.execute('SELECT 1 FROM settings WHERE key=?', (marker,)).fetchone():

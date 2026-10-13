@@ -66,7 +66,7 @@ class PersonalModel:
                           data=json.dumps(chat_payload(self.url,self.model,messages,max_tokens),ensure_ascii=False).encode(),
                           headers={'Authorization':'Bearer '+self.key,'Content-Type':'application/json'})
         try:
-            with model_urlopen(request, timeout=120) as response:
+            with model_urlopen(request, timeout=600) as response:
                 data = json.load(response)
             choice = data['choices'][0]
             content = choice['message']['content']

@@ -40,7 +40,7 @@ class GatewayClient:
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",
         }, method="POST")
-        with model_urlopen(request, timeout=120) as response:
+        with model_urlopen(request, timeout=600) as response:
             data = json.load(response)
         return str(data["choices"][0]["message"]["content"])
 

@@ -517,7 +517,10 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             return [dict(r) for r in con.execute('''SELECT r.state,r.error,r.updated_at,
                 COALESCE((SELECT MIN(project) FROM knowledge k WHERE k.project_key=r.project_key),'') project
-                FROM article_maintenance_runs r WHERE r.state!='done' ORDER BY r.updated_at DESC''')]
+                FROM article_maintenance_runs r WHERE r.state!='done' ORDER BY r.updated_at DESC''')] + [dict(r) for r in con.execute('''SELECT r.state,r.error,r.updated_at,
+                COALESCE((SELECT MIN(project) FROM knowledge k WHERE k.project_key=r.project_key),'') project,
+                '目录分组' task FROM library_organization_runs r WHERE r.state!='done'
+                UNION ALL SELECT state,error,updated_at,group_name,'文章归并' FROM article_merge_queue WHERE state IN ('queued','running','error')''')]
 
     @app.get("/api/sources")
     def sources():
@@ -1099,7 +1102,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         db.set_setting('personal_base_url',candidate.url)
         db.set_setting('personal_model',candidate.model)
         model_client.replace(candidate,'personal',tested=True)
-        knowledge_worker.schedule()
+        retry_failed_jobs(source_id=None)
         return {'connected':True,'model':candidate.model}
 
     @app.post('/api/model/personal/models',dependencies=[Depends(authorized)])
@@ -1341,10 +1344,13 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             article_where = " AND EXISTS (SELECT 1 FROM knowledge k JOIN knowledge_evidence e ON e.knowledge_id=k.id JOIN documents d ON d.id=e.document_id WHERE k.scope=article_maintenance_runs.scope AND k.project_key=article_maintenance_runs.project_key AND d.source_id=?)" if source_id is not None else ''
             article_count = con.execute("UPDATE article_maintenance_runs SET state='queued',attempts=0,next_run_at=NULL,error='',updated_at=datetime('now') WHERE state='error'" + article_where, parameters).rowcount
             browser_count = 0
+            library_count = 0
             if source_id is None:
+                library_count = con.execute("UPDATE library_organization_runs SET state='queued',attempts=0,error='' WHERE state='error'").rowcount
+                library_count += con.execute("UPDATE article_merge_queue SET state='queued',error='' WHERE state='error'").rowcount
                 browser_count = con.execute("UPDATE browser_article_runs SET state='queued',error='',updated_at=datetime('now') WHERE state='error'").rowcount
         knowledge_worker.schedule()
-        return {"queued":updated.rowcount+article_count+browser_count,
+        return {"queued":updated.rowcount+article_count+browser_count+library_count,
                 "article_queued":article_count,"browser_queued":browser_count}
 
     @app.get("/api/twins")

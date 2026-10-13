@@ -1,5 +1,6 @@
 """Verified HTTPS and credential-free diagnostics for model providers."""
 from functools import lru_cache
+import json
 import socket
 import ssl
 from urllib.error import HTTPError, URLError
@@ -53,10 +54,21 @@ def model_urlopen(request, timeout=120):
 def chat_payload(url, model, messages, max_tokens, temperature=0.1):
     payload = {'model': model, 'messages': messages, 'max_tokens': max_tokens,
                'temperature': temperature, 'stream': False}
-    if urlparse(url).hostname == 'api.deepseek.com':
-        # DeepSeek now defaults to reasoning. Our structured extraction and
-        # connection probe need a final answer within a bounded output budget.
-        payload['thinking'] = {'type': 'disabled'}
+    stage = ''
+    if messages:
+        try:
+            stage = json.loads(messages[-1].get('content','')).get('stage','')
+        except (ValueError, AttributeError):
+            pass
+    deliberate = stage in {'article_routing','article_writing','article_review','library_organization','library_review'}
+    host = urlparse(url).hostname or ''
+    if host == 'api.deepseek.com':
+        payload['thinking'] = {'type':'enabled' if deliberate else 'disabled'}
+    elif host.endswith('aliyuncs.com') and model.startswith('qwen'):
+        payload['enable_thinking'] = deliberate
+        payload['preserve_thinking'] = False
+    if deliberate and (host == 'api.deepseek.com' or host.endswith('aliyuncs.com')):
+        payload['max_tokens'] = max(max_tokens,65536)
     return payload
 
 

@@ -142,7 +142,11 @@ def test_merge_keeps_duplicate_article_sources_and_article_grants(tmp_path):
         assert [k['id'] for k in effective_notes(con,tid)]==[a]
 
 
-def test_large_article_continuation_stays_bounded_and_unchanged_keeps_prior_rewrite(tmp_path):
+def test_large_article_continuation_stays_bounded_and_unchanged_keeps_prior_rewrite(tmp_path,monkeypatch):
+    # Exercise continuation with a smaller test envelope; production reads up to
+    # 700k characters rather than silently shortening the source or article.
+    monkeypatch.setattr('worktwin.article_maintenance.MAX_CONTEXT_CHARS',120000)
+    monkeypatch.setattr('worktwin.article_maintenance.PAGE_CONTEXT_CHARS',110000)
     db=Database(tmp_path/'db.sqlite')
     original='旧章节。'*7000
     with db.connect() as con:
@@ -153,8 +157,8 @@ def test_large_article_continuation_stays_bounded_and_unchanged_keeps_prior_rewr
             ids.append(mid)
     class Continuation(Writer):
         def chat(self,messages,max_tokens):
-            assert sum(len(m['content']) for m in messages)<128000
             req=json.loads(messages[-1]['content'])
+            assert sum(len(m['content']) for m in messages)<(128000 if req.get('stage')=='article_writing' else 750000)
             if 'materials' in req or req.get('stage')=='article_review': return super().chat(messages,max_tokens)
             self.requests.append(messages)
             if len([m for m in self.requests if json.loads(m[-1]['content']).get('stage') not in ('article_routing','article_review')])==1:

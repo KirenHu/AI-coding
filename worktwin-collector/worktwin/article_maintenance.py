@@ -16,10 +16,13 @@ from .model_transport import ModelConnectionError
 from .article_editor import route_articles, review_article
 
 
+MAX_CONTEXT_CHARS = 700000
+PAGE_CONTEXT_CHARS = 650000
+
 def migrate(con):
     for table in ('knowledge', 'knowledge_history'):
         fields = {r[1] for r in con.execute(f'PRAGMA table_info({table})')}
-        for field in ('article_summary', 'change_summary'):
+        for field in ('article_summary', 'change_summary', 'group_name', 'group_key'):
             if field not in fields:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
     con.executescript('''
@@ -75,10 +78,7 @@ def migrate(con):
 
 
 def _source_context(content, quote):
-    if len(content) <= 8000:
-        return content
-    at = content.find(quote)
-    return content[:1200] + '\n\n原文及邻近上下文：\n' + content[max(0, at-1800):at+len(quote)+2200]
+    return content
 
 
 def source_materials(con, *, authorized_documents=()):
@@ -220,6 +220,44 @@ class ArticleMaintainer:
                     'WHERE scope=? AND project_key=? AND claim_token=?',(diagnostic,*key,token))
             return {'state':'error','error':diagnostic}
 
+    def merge_existing(self, ids, versions, group_name):
+        """Re-edit existing articles even when no new extraction is pending."""
+        from .library_organization import articles_for_organization, grant_profile
+        with self.db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            available = {a['id']:a for a in articles_for_organization(con)}
+            if any(i not in available or available[i]['version'] != versions[str(i)]
+                   or available[i]['group_name'] != group_name for i in ids):
+                return {'state':'superseded'}
+            articles = [available[i] for i in ids]
+            key = articles[0]['scope'], articles[0]['project_key']
+            profiles = [grant_profile(con,i) for i in ids]
+            if any((a['scope'],a['project_key']) != key for a in articles) or any(p != profiles[0] for p in profiles):
+                return {'state':'superseded'}
+            lease = con.execute("SELECT 1 FROM article_maintenance_runs WHERE scope=? AND project_key=? AND state='running' AND updated_at>datetime('now','-20 minutes')",key).fetchone()
+            if lease:
+                return {'state':'queued'}
+            token=secrets.token_hex(16)
+            con.execute("""INSERT INTO article_maintenance_runs(scope,project_key,input_signature,state,claim_token)
+                VALUES(?,?,?,'running',?) ON CONFLICT(scope,project_key) DO UPDATE SET
+                input_signature=excluded.input_signature,state='running',claim_token=excluded.claim_token,
+                error='',updated_at=datetime('now')""",(*key,'merge:'+json.dumps(versions),token))
+            for a,profile in zip(articles,profiles): a['_grant_profile']=profile
+            mids={r[0] for i in ids for r in con.execute('SELECT material_id FROM article_materials WHERE article_id=?',(i,))}
+            materials=[m for m in source_materials(con) if m['id'] in mids]
+            peers=[a for a in available.values() if (a['scope'],a['project_key'])==key]
+        try:
+            wrote=self._compose(key,group_name+'：完整事项说明',materials,articles,
+                {'name':articles[0]['project'],'project_key':key[1]},token,(),peer_articles=peers)
+            result={'state':'done' if wrote else 'error','articles':int(wrote),
+                    'error':'' if wrote else '现有资料不足以形成完整文章'}
+        except Exception as exc:
+            result={'state':'error','error':'文章归并未完成：'+(str(exc) if isinstance(exc,ModelConnectionError) else type(exc).__name__)}
+        with self.db.connect() as con:
+            con.execute("UPDATE article_maintenance_runs SET state=?,error=?,claim_token=NULL,updated_at=datetime('now') WHERE scope=? AND project_key=? AND claim_token=?",
+                (result['state'],result['error'],*key,token))
+        return result
+
     def _maintain(self, key, materials, existing, project, token, authorized_documents, *, final_only=False, context_signature=""):
         groups = route_articles(self.client, project, materials, existing)
         count, deferred = 0, 0
@@ -239,7 +277,7 @@ class ArticleMaintainer:
             related = {mid:all_materials[mid] for a in selected for mid in memberships[a['id']] if mid in all_materials}
             related.update({m['id']:m for m in pending})
             wrote = self._compose(key, group['topic'], list(related.values()), selected,
-                                  project, token, authorized_documents, final_only=final_only)
+                                  project, token, authorized_documents, final_only=final_only,peer_articles=existing)
             count += int(wrote)
             deferred += 0 if wrote else len(pending)
             if not wrote:
@@ -247,7 +285,7 @@ class ArticleMaintainer:
                     con.executemany('INSERT OR REPLACE INTO article_material_deferrals VALUES(?,?)',[(m['id'],context_signature) for m in pending])
         return count, deferred
 
-    def _compose(self, key, topic, materials, articles, project, token, authorized_documents, *, final_only=False, revision_feedback=None):
+    def _compose(self, key, topic, materials, articles, project, token, authorized_documents, *, final_only=False, revision_feedback=None, peer_articles=()):
         # Project background helps route materials, but its independent source
         # passages must not become uncited facts in an unrelated article.
         writing_project = {k:project[k] for k in ('name','project_key') if k in project}
@@ -326,20 +364,20 @@ class ArticleMaintainer:
                         f"[{p['source_id']}]\n{p['quote']}" for p in source_spans(d)))
                     sources.append(source)
                     size+=len(json.dumps(source,ensure_ascii=False))+10
-                if size>120000:
+                if size>MAX_CONTEXT_CHARS:
                     raise ValueError('article context exceeds gateway envelope')
                 page=[self._material_payload(m) for m in materials if any(e['document_id'] not in priorities for e in m['sources'])]
                 if final_only:
                     page=[]
-                while page and size+len(json.dumps(page,ensure_ascii=False))>120000:
+                while page and size+len(json.dumps(page,ensure_ascii=False))>MAX_CONTEXT_CHARS:
                     page.pop()
             while remaining:
                 kind, payload = remaining[0]
                 cost = len(json.dumps(payload,ensure_ascii=False))+10
                 if page or sources:
-                    if size+cost>110000:
+                    if size+cost>PAGE_CONTEXT_CHARS:
                         break
-                if size+cost>120000:
+                if size+cost>MAX_CONTEXT_CHARS:
                     raise ValueError('article context exceeds gateway envelope')
                 remaining.pop(0)
                 (sources if kind=='document' else page).append(payload)
@@ -353,9 +391,9 @@ class ArticleMaintainer:
                 'authority_context说明哪些文档是现行基线、哪些只是下一轮方向，不是正文素材。正式现行规则与尚未改写基线的新方向不能混成同时生效的要求。'
                 '概要一两句话，只写产品用途和当前重点，不要出现文档名称和版本号。不要写会议、人物、版本管理、归档和资料使用规范。') if final_review else ''
             answer = self.client.chat([{'role':'system','content':prompt+final_instruction},
-                {'role':'user','content':json.dumps({'project':writing_project,'topic':topic,
+                {'role':'user','content':json.dumps({'stage':'article_writing','project':writing_project,'topic':topic,
                     'existing_articles':previous,'source_documents':sources,
-                    'authority_context':[{'title':d['title'],'content':d['content'][:2500]} for d in guides],
+                    'authority_context':[{'title':d['title'],'content':d['content']} for d in guides],
                     'source_materials':page},ensure_ascii=False)}],max_tokens=12000)
             parsed = _parse_items(answer)
             if len(parsed)!=1:
@@ -380,14 +418,14 @@ class ArticleMaintainer:
             current = [result]
         if result is None:
             return False
-        review = review_article(self.client, topic, result, articles, spans)
+        review = review_article(self.client, topic, result, articles, spans, peers=peer_articles)
         with self.db.connect() as con:
             review_id = con.execute('INSERT INTO article_editor_reviews(knowledge_id,project_key,approved,report_json) VALUES(?,?,?,?)',
                 (articles[0]['id'] if articles else None,key[1],int(review['approved']),json.dumps(review,ensure_ascii=False))).lastrowid
         if not review['approved']:
             if revision_feedback is None:
                 return self._compose(key,topic,materials,articles,project,token,authorized_documents,
-                    final_only=final_only,revision_feedback=review['issues'])
+                    final_only=final_only,revision_feedback=review['issues'],peer_articles=peer_articles)
             raise ValueError('article review rejected')
         with self.db.connect() as con:
             con.execute('BEGIN IMMEDIATE')
@@ -398,6 +436,10 @@ class ArticleMaintainer:
             if not claim or any(m['id'] not in fresh or _signature([m])!=_signature([fresh[m['id']]]) for m in materials):
                 raise RuntimeError('article inputs changed')
             for article in articles:
+                if '_grant_profile' in article:
+                    from .library_organization import grant_profile
+                    if grant_profile(con,article['id']) != article['_grant_profile']:
+                        raise RuntimeError('article grants changed during writing')
                 version = con.execute('SELECT version FROM knowledge WHERE id=?',(article['id'],)).fetchone()
                 if not version or version[0]!=article['version']:
                     raise RuntimeError('article changed during writing')
@@ -427,7 +469,7 @@ class ArticleMaintainer:
                     version=version+?,created_by='article_agent',extraction_version=2,updated_at=datetime('now') WHERE id=?''',
                     (result['title'][:130],result['body'],result.get('kind','fact'),result['article_summary'][:2000],
                      result.get('change_summary','形成完整事项说明')[:500],result.get('topic',topic)[:100],
-                     result.get('scope_detail',materials[0]['scope_detail'])[:500],*key,project.get('name',''),
+                     result.get('scope_detail',(materials or articles)[0]['scope_detail'])[:500],*key,project.get('name',''),
                      int(conflict),int(conflict),status,int(target is not None),kid))
                 con.execute("UPDATE knowledge_proposals SET status='dismissed',resolved_at=datetime('now') WHERE target_id=? AND status='pending' AND target_version<(SELECT version FROM knowledge WHERE id=?)",(kid,kid))
             for material in materials:

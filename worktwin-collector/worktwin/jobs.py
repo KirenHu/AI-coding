@@ -17,6 +17,7 @@ from .credentials import DesktopSecrets
 from .ingest import pending_batch, ack_batch
 from .artifacts import work_context, context_for_model
 from .article_maintenance import ArticleMaintainer
+from .library_organization import LibraryOrganizer
 from .gardener import KnowledgeGardener
 
 
@@ -32,6 +33,7 @@ class KnowledgeWorker:
         self.decision_router=decision_router or DecisionRouter(db,DesktopSecrets(db.path),self.client)
         self.project_rechecker=ProjectRechecker(db,self.decision_router)
         self.article_maintainer=ArticleMaintainer(db,self.client)
+        self.library_organizer=LibraryOrganizer(db,self.client,self.article_maintainer)
         # Retain explicit owner-reviewed curation and its existing proposal API.
         # Scheduled authorship is handled solely by the article maintainer.
         self.gardener=KnowledgeGardener(db,client=self.client)
@@ -71,6 +73,9 @@ class KnowledgeWorker:
                 if not self._stop.is_set():
                     self.article_maintainer.client = self.client
                     self.article_maintainer.process_next()
+                if not self._stop.is_set():
+                    self.library_organizer.client = self.client
+                    self.library_organizer.process_next()
                 if result == "idle" and not self._stop.is_set():
                     # A new project may resolve previously isolated sessions.
                     # Work through a bounded batch before lower priority text

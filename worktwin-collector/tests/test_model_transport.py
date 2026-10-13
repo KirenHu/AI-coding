@@ -120,3 +120,14 @@ def test_empty_reasoning_or_truncated_answers_are_not_success(monkeypatch,conten
     with pytest.raises(transport.ModelConnectionError) as exc:
         PersonalModel('https://other.example/v1','example','reasoning').chat([{'role':'user','content':'example'}])
     assert expected in str(exc.value)
+
+
+def test_editor_stages_enable_reasoning_but_probe_remains_small():
+    messages=[{'role':'user','content':json.dumps({'stage':'library_organization'})}]
+    deep=transport.chat_payload('https://api.deepseek.com','deepseek-flash',messages,16000)
+    qwen=transport.chat_payload('https://dashscope.aliyuncs.com/compatible-mode/v1','qwen3.8-flash',messages,16000)
+    assert deep['thinking']=={'type':'enabled'} and deep['max_tokens']==65536
+    assert qwen['enable_thinking'] is True and qwen['preserve_thinking'] is False
+    assert qwen['max_tokens']==65536
+    probe=transport.chat_payload('https://dashscope.aliyuncs.com/compatible-mode/v1','qwen3.8-flash',[{'role':'user','content':'Hi'}],64)
+    assert probe['enable_thinking'] is False and probe['max_tokens']==64
