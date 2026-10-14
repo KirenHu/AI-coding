@@ -36,9 +36,13 @@ def main():
                     page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text())
                     page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
                     page.locator('[data-page=twins]').click();page.locator('[data-twin="1"]').click()
-                    page.locator('#generate-mcp').click();expect(page.locator('#mcp-config')).to_be_visible()
+                    page.locator('[data-twin-tab=sharing]').click();page.locator('#generate-mcp').click();expect(page.locator('#mcp-config')).to_be_visible()
+                    page.locator('#test-mcp-config').click();expect(page.locator('#mcp-install-result')).to_contain_text('连接正常')
                     config=json.loads(page.locator('#mcp-config').input_value())
                     assert config['mcpServers']['worktwin-1']['url'].endswith('/mcp/')
+                    for client,key in [('vscode','servers'),('claude','mcpServers'),('cursor','mcpServers')]:
+                        page.locator(f'[data-mcp-client={client}]').click()
+                        assert key in json.loads(page.locator('#mcp-config').input_value())
                     page.locator('.dialog-footer [data-close]').click()
                     expect(page.locator('#allow-mcp-logs')).not_to_be_checked()
                     page.locator('#allow-mcp-logs').check()
@@ -48,7 +52,7 @@ def main():
                     expect(page.locator('#toast')).to_contain_text('已停止提供完整日志')
                     page.locator('#disable-mcp').click();expect(page.locator('#generate-mcp')).to_have_text('启用并获取连接配置')
                     assert not owner.get('/api/twins/1/mcp',headers=auth).json()['enabled']
-                    page.locator('#twin-edit-name').fill('未保存的更改');page.locator('#generate-mcp').click()
+                    page.locator('[data-twin-tab=info]').click();page.locator('#twin-edit-name').fill('未保存的更改');page.locator('[data-twin-tab=sharing]').click();page.locator('#generate-mcp').click()
                     expect(page.locator('#toast')).to_contain_text('请先保存分身的知识授权')
                     assert not owner.get('/api/twins/1/mcp',headers=auth).json()['enabled']
                     assert not errors,errors

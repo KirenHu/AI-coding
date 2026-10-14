@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import socket
 import sys
 import tempfile
 import time
@@ -19,7 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 
-def verify_mcp(opener, owner_headers, note_id, base_url='http://127.0.0.1:8765'):
+def verify_mcp(opener, owner_headers, note_id, base_url):
     """Exercise the shipped SDK and its schemas inside the frozen app."""
     def call(path, body, headers=owner_headers, method='POST'):
         request=Request(base_url+path,method=method,headers=headers,
@@ -38,7 +39,7 @@ def verify_mcp(opener, owner_headers, note_id, base_url='http://127.0.0.1:8765')
     headers['MCP-Protocol-Version']='2025-11-25'
     listed=call('/mcp/',{'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},headers)
     tools=listed['result']['tools']
-    assert {t['name'] for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log'},listed
+    assert {t['name'] for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log','search_article_sources'},listed
     assert all(t['annotations']['readOnlyHint'] for t in tools),listed
     result=call('/mcp/',{'jsonrpc':'2.0','id':3,'method':'tools/call',
                         'params':{'name':'read_knowledge','arguments':{'knowledge_id':note_id}}},headers)['result']
@@ -72,10 +73,14 @@ def main() -> int:
         env.pop("WORKTWIN_GATEWAY_TOKEN", None)
         env.pop("WORKTWIN_SERVER_URL", None)
         env.pop("WORKTWIN_SERVER_TOKEN", None)
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1',0))
+            port=listener.getsockname()[1]
+        base_url=f'http://127.0.0.1:{port}'
         native_log = Path(temp) / "native-stdout.log"
         with native_log.open("wb") as capture:
             process = subprocess.Popen(
-                [str(executable)],
+                [str(executable),'serve','--port',str(port)],
                 cwd=str(executable.parent),
                 env=env,
                 stdout=capture,
@@ -88,11 +93,11 @@ def main() -> int:
                 if process.poll() is not None:
                     raise RuntimeError(f"Native executable exited with status {process.returncode}")
                 try:
-                    with opener.open("http://127.0.0.1:8765/api/health", timeout=2) as response:
+                    with opener.open(base_url+'/api/health', timeout=2) as response:
                         health = json.load(response)
                     if health.get("ok") is not True or health.get("enterprise_model") is not False:
                         raise AssertionError(f"Unexpected health response: {health}")
-                    with opener.open("http://127.0.0.1:8765/", timeout=2) as response:
+                    with opener.open(base_url+'/', timeout=2) as response:
                         page = response.read().decode("utf-8")
                     if "WorkTwin" not in page:
                         raise AssertionError("Dashboard was not served by packaged app")
@@ -102,21 +107,21 @@ def main() -> int:
                         raise AssertionError("Packaged app did not initialize local database")
                     token = re.search(r'window\.__WORKTWIN_TOKEN__="(.*?)";', page).group(1)
                     headers = {'X-Worktwin-Token': token, 'Content-Type': 'application/json'}
-                    with opener.open(Request('http://127.0.0.1:8765/api/settings', headers=headers), timeout=5) as response:
+                    with opener.open(Request(base_url+'/api/settings', headers=headers), timeout=5) as response:
                         settings = json.load(response)
                     assert settings['edition'] == 'personal', settings
                     assert not settings['storage_error'] and not settings['model_error'], settings
                     if sys.platform in ('darwin', 'win32'):
                         expected_storage = '系统钥匙串' if sys.platform == 'darwin' else 'Windows 凭据管理器'
                         assert settings['secret_storage'] == expected_storage, settings
-                    request = Request('http://127.0.0.1:8765/api/edition', method='PUT', headers=headers,
+                    request = Request(base_url+'/api/edition', method='PUT', headers=headers,
                         data=b'{"edition":"personal"}')
                     with opener.open(request, timeout=5) as response:
                         assert json.load(response)['edition'] == 'personal'
                     # Reach the real provider from the *frozen app*, without a
                     # valid key or a billable generation. This catches missing
                     # CA certificates that localhost startup cannot exercise.
-                    request = Request('http://127.0.0.1:8765/api/model/personal/models', method='POST', headers=headers,
+                    request = Request(base_url+'/api/model/personal/models', method='POST', headers=headers,
                         data=json.dumps({'base_url':'https://api.deepseek.com', 'api_key':'worktwin-native-smoke-invalid-key'}).encode())
                     try:
                         opener.open(request, timeout=40)
@@ -125,24 +130,24 @@ def main() -> int:
                         detail=json.load(exc)['detail']
                         assert exc.code==400 and ('HTTP 401' in detail or 'HTTP 403' in detail), detail
                     print('PASS: frozen app verified real DeepSeek HTTPS and received authentication rejection; no real key or generation used')
-                    request = Request('http://127.0.0.1:8765/api/knowledge', method='POST', headers=headers,
+                    request = Request(base_url+'/api/knowledge', method='POST', headers=headers,
                         data=json.dumps({'title':'Native smoke', 'body':'**Packaged Markdown**', 'status':'confirmed'}).encode())
                     with opener.open(request, timeout=5) as response:
                         note_id=json.load(response)['id']
                         assert note_id > 0
-                    with opener.open(Request('http://127.0.0.1:8765/api/knowledge', headers=headers), timeout=5) as response:
+                    with opener.open(Request(base_url+'/api/knowledge', headers=headers), timeout=5) as response:
                         assert '<strong>Packaged Markdown</strong>' in json.load(response)[0]['rendered_body']
-                    verify_mcp(opener,headers,note_id)
+                    verify_mcp(opener,headers,note_id,base_url)
                     # The plugin installation entry must work from a *frozen*
                     # app, not just the editable source tree.
-                    with opener.open(Request('http://127.0.0.1:8765/api/browser-capture/extension',
+                    with opener.open(Request(base_url+'/api/browser-capture/extension',
                         headers=headers),timeout=5) as response:
                         from zipfile import ZipFile
                         import io
                         with ZipFile(io.BytesIO(response.read())) as packaged:
                             assert {'manifest.json','service-worker.js','content.js','popup.html','popup.js'} <= set(packaged.namelist())
                     print('PASS: packaged browser extension installation archive')
-                    with opener.open(Request('http://127.0.0.1:8765/api/shutdown', method='POST', headers=headers, data=b'{}'), timeout=5) as response:
+                    with opener.open(Request(base_url+'/api/shutdown', method='POST', headers=headers, data=b'{}'), timeout=5) as response:
                         assert json.load(response)['stopping'] is True
                     process.wait(timeout=15)
                     assert process.returncode == 0, process.returncode

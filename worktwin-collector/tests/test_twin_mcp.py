@@ -30,7 +30,7 @@ def test_mcp_is_bound_to_twin_and_only_returns_current_authorized_notes(tmp_path
                         async with ClientSession(streams[0],streams[1]) as session:
                             await session.initialize()
                             tools=(await session.list_tools()).tools
-                            assert {t.name for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log'}
+                            assert {t.name for t in tools}=={'list_projects','search_knowledge','read_knowledge','read_source_log','search_article_sources'}
                             assert all(t.annotations.read_only_hint for t in tools)
                             result=await session.call_tool('read_knowledge',{'knowledge_id':note})
                             assert not result.is_error and '工作流节点' in str(result.content)
@@ -49,7 +49,7 @@ def test_mcp_is_bound_to_twin_and_only_returns_current_authorized_notes(tmp_path
                 assert init.status_code==200 and init.json()['result']['protocolVersion']=='2025-11-25'
                 legacy['MCP-Protocol-Version']='2025-11-25'
                 tools=await owner.post('/mcp/',headers=legacy,json={'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}})
-                assert tools.status_code==200 and len(tools.json()['result']['tools'])==4
+                assert tools.status_code==200 and len(tools.json()['result']['tools'])==5
                 rotated=(await owner.post(f'/api/twins/{twin}/mcp')).json()
                 assert rotated['token']!=replacement['token']
                 assert (await owner.post('/mcp/',headers=legacy,json={})).status_code==401

@@ -13,7 +13,7 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
     if not twin:
         return []
     ready = SHARE_SQL if sharing else READY_SQL
-    candidates = [dict(k) for k in con.execute("SELECT k.* FROM knowledge k WHERE " + ready)]
+    candidates = [dict(k) for k in con.execute("SELECT k.* FROM knowledge k WHERE k.organization='article' AND " + ready)]
     pinned = {r[0] for r in con.execute("SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?", (twin_id,))}
     grant_rows = con.execute("""SELECT subject_type,subject_key,effect
         FROM twin_grants WHERE twin_id=?""",(twin_id,)).fetchall()
@@ -33,7 +33,7 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
             continue
         # Permission revocation or a deleted contributing document invalidates
         # the whole article, including any previously assigned pin.
-        if any(not r['enabled'] or r['deleted'] or not r['allow_ai'] or
+        if any(r['deleted'] or not r['allow_ai'] or
                (sharing and not r['allow_share']) for r in records):
             continue
         active_sources={str(r['source_id']) for r in records
@@ -70,9 +70,9 @@ def effective_notes(con, twin_id: int, *, sharing: bool = False) -> list[dict]:
 def grant_options(con):
     projects = [dict(row) for row in con.execute("""SELECT k.project_key,MIN(k.project) name,
         COUNT(*) knowledge_count FROM knowledge k
-        WHERE k.scope='project' AND k.project_key!='' AND k.status!='archived'
+        WHERE k.organization='article' AND k.scope='project' AND k.project_key!='' AND k.status!='archived'
         GROUP BY k.project_key ORDER BY name""")]
-    sources = [dict(row) for row in con.execute("""SELECT id,name,kind,enabled,allow_ai,allow_share
+    sources = [dict(row) for row in con.execute("""SELECT id,name,kind,root,adapter,enabled,allow_ai,allow_share
         FROM sources ORDER BY name,id""")]
     return {'projects':projects,'sources':sources}
 
@@ -83,3 +83,20 @@ def replace_grants(con, twin_id: int, grants: list[dict]) -> None:
     con.executemany("""INSERT INTO twin_grants(twin_id,subject_type,subject_key,effect)
         VALUES(?,?,?,?)""",[(twin_id,g['subject_type'],g['subject_key'],g['effect'])
                              for g in grants])
+
+
+def migrate_exclusions(con):
+    """Freeze each old exclusion policy as its current explicit knowledge set."""
+    if 'grants_migrated' not in {r[1] for r in con.execute('PRAGMA table_info(twins)')}:
+        con.execute('ALTER TABLE twins ADD COLUMN grants_migrated INTEGER NOT NULL DEFAULT 0')
+    if con.execute("SELECT 1 FROM settings WHERE key='twin_exclusions_removed_v1'").fetchone():
+        return
+    for row in con.execute("SELECT DISTINCT twin_id FROM twin_grants WHERE effect='deny'").fetchall():
+        twin_id = row['twin_id']
+        ids = [note['id'] for note in effective_notes(con, twin_id)]
+        con.execute('DELETE FROM twin_grants WHERE twin_id=?', (twin_id,))
+        con.execute('DELETE FROM twin_knowledge WHERE twin_id=?', (twin_id,))
+        con.executemany('INSERT INTO twin_knowledge(twin_id,knowledge_id) VALUES(?,?)',
+                        [(twin_id, kid) for kid in ids])
+        con.execute("UPDATE twins SET knowledge_mode='manual',grants_migrated=1 WHERE id=?", (twin_id,))
+    con.execute("INSERT INTO settings(key,value) VALUES('twin_exclusions_removed_v1','1')")

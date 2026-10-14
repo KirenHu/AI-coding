@@ -10,6 +10,7 @@ import json
 from urllib.request import Request
 
 from .model_settings import PersonalModel, validate_url
+from .update_filter import measured_call
 from .model_transport import ModelConnectionError, model_urlopen
 
 
@@ -105,7 +106,7 @@ class DecisionRouter:
         return {
             'same_project':{
                 'type':'noul',
-                'instructions':'Do these WORK UNITS belong to exactly the same business or software project (not just the same topic, folder or organization)? Judge identity rather than mere similarity.',
+                'instructions':'Do these WORK UNITS belong to the same durable business or software project? Use objective, source context, directory, chronology, nearby work and identifiers together. A directory or timestamp alone is not sufficient. For proposed_new_project, judge whether content supports that named durable objective.',
                 'criteria':{'true':'Same durable project with consistent identifiers and objective','false':'Only topic/name similarity or unrelated project'}
             },
             'different_project':{
@@ -124,18 +125,18 @@ class DecisionRouter:
         source='main'
         try:
             if getattr(self.main,'mode','personal')=='enterprise':
-                data=self._enterprise(state,questions)
+                data=measured_call(self.db,"enterprise-decision",lambda:self._enterprise(state,questions))
                 if data is not None:
                     score=self._score_jev(data);source='enterprise-specialized'
             else:
                 client=self._specialized()
                 if isinstance(client,JevDecisionModel) and client.configured:
-                    score=self._score_jev(client.evaluate(state,questions));source='jev'
+                    score=self._score_jev(measured_call(self.db,client.model,lambda:client.evaluate(state,questions)));source='jev'
                 elif client is not None and client.configured:
-                    response=client.chat([
-                        {'role':'system','content':'判断是否为完全相同的项目身份。只能返回 JSON: {"same_project":true|false,"different_project":true|false}，不要猜测，不要依据目录名或相似主题认定同一项目。'},
+                    response=measured_call(self.db,client.model,lambda:client.chat([
+                        {'role':'system','content':'判断工作事项是否属于候选业务项目。结合内容目标、文件夹/工作目录、时间和相邻上下文；目录或时间不能单独决定，但不要求每条引文重复项目名。proposed_new_project表示判断内容是否支持这个持续业务目标。只返回 JSON: {"same_project":true|false,"different_project":true|false}。'},
                         {'role':'user','content':json.dumps(state,ensure_ascii=False)}],
-                        max_tokens=160)
+                        max_tokens=160))
                     parsed=json.loads(response)
                     score=(1.0 if parsed.get('same_project') is True else 0.0,
                            1.0 if parsed.get('different_project') is True else 0.0)
@@ -146,7 +147,7 @@ class DecisionRouter:
         if score is None:
             try:
                 response=self.main.chat([
-                    {'role':'system','content':'你负责判断两个工作单元是否确实属于同一业务项目。不得仅凭同名、相似主题或目录推断。只返回 JSON {"same_project":bool,"different_project":bool}。'},
+                    {'role':'system','content':'判断工作事项是否属于候选业务项目。结合业务目标、正文、目录、时间和相邻上下文，不要求每条引文重复项目名；目录或时间不能单独决定。proposed_new_project表示判断内容是否支持这个持续业务目标。只返回 JSON {"same_project":bool,"different_project":bool}。'},
                     {'role':'user','content':json.dumps(state,ensure_ascii=False)}
                 ],max_tokens=180)
                 parsed=json.loads(response.strip().removeprefix('\x60\x60\x60json').removesuffix('\x60\x60\x60').strip())

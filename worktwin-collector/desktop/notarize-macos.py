@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from macos_stapler import stapler
 import uuid
 
 
@@ -51,7 +52,7 @@ def main():
         raise RuntimeError('Apple submission was not Accepted')
     print(f'Apple notarization Accepted: {args.artifact.name}; submission {submission_id}', flush=True)
     for operation in ('staple', 'validate'):
-        subprocess.run(['xcrun', 'stapler', operation, str(args.staple_target)], check=True)
+        stapler(operation, args.staple_target)
 
 
 if __name__ == '__main__':

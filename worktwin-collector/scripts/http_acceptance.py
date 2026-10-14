@@ -54,7 +54,7 @@ def main():
                 h = {'X-Worktwin-Token': token}
                 assert client.get('/api/documents').status_code == 403
                 assert client.get('/api/documents', headers=h).status_code == 200
-                assert '我的数字分身' in html
+                assert all(name in html for name in ('知识库', '数字分身', '知识来源'))
                 assert client.get('/', headers={'Host': 'attacker.invalid'}).status_code == 400
                 added = client.post('/api/sources', headers=h, json={'name': '项目资料', 'root': str(docs), 'kind': 'folder'})
                 assert added.status_code == 200, added.text
@@ -67,16 +67,19 @@ def main():
                 assert client.get('/api/knowledge', headers=h).json() == []
                 assert client.get('/api/ai/jobs', headers=h).json() == []
                 assert client.get('/api/projects', headers=h).json()
-                assert client.get('/api/search', headers=h, params={'q': '审批节点'}).json()['documents']
+                assert client.get('/api/search', headers=h, params={'q': '审批节点','include_sources':True}).json()['documents']
                 doc = client.get(f"/api/documents/{documents[0]['id']}", headers=h).json()
                 quote = doc['content'][:40]
                 assert len(quote) >= 8
                 created = client.post('/api/knowledge', headers=h, json={
                     'title': '工作流审批设计原则', 'kind': 'decision', 'status': 'confirmed',
+                    'article_summary':'审批作为工作流节点实现，复用已有流程能力，避免重复维护独立审批系统。',
                     'body': '复用工作流节点以避免审批系统重复维护。',
                     'document_id': doc['id'], 'quote': quote})
                 assert created.status_code == 200, created.text
                 kid = created.json()['id']
+                article=client.get(f'/api/knowledge-item/{kid}',headers=h).json()
+                assert article['organization']=='article' and article['article_summary']
                 twin = client.post('/api/twins', headers=h, json={'name': '交接助手'}).json()['id']
                 assert client.put(f'/api/sources/{added.json()["id"]}/ai',headers=h,json={'allow_ai':True}).status_code==200
                 assigned = client.put(f'/api/twins/{twin}/knowledge', headers=h, json={'knowledge_ids': [kid]})

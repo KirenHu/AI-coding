@@ -16,12 +16,12 @@ from .model_transport import chat_payload, model_urlopen
 
 class Message(BaseModel):
     role: str = Field(pattern='^(system|user|assistant)$')
-    content: str = Field(max_length=80000)
+    content: str = Field(max_length=750000)
 
 
 class ChatRequest(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=100)
-    max_tokens: int = Field(default=1800, ge=1, le=5000)
+    max_tokens: int = Field(default=1800, ge=1, le=65536)
     temperature: float = Field(default=0.1, ge=0, le=1)
 
 
@@ -64,9 +64,10 @@ class ProviderService:
             raise HTTPException(503,'企业模型尚未配置，请联系管理员')
         messages = [m.model_dump() for m in body.messages]
         chars = sum(len(m['content']) for m in messages)
-        if chars > 80000:
+        if chars > 750000:
             raise HTTPException(413, '模型请求文本过长')
-        reserved = chars * 3 + body.max_tokens
+        request_payload = chat_payload(self.url,self.model,messages,body.max_tokens,body.temperature)
+        reserved = chars * 3 + request_payload['max_tokens']
         actor_hash = hashlib.sha256(actor.encode()).hexdigest()
         request_id = secrets.token_hex(16)
         if not self.semaphore.acquire(blocking=False):
@@ -79,11 +80,11 @@ class ProviderService:
                 if calls >= self.daily_calls or tokens + reserved > self.daily_tokens or recent >= self.minute_calls:
                     raise HTTPException(429, '企业模型调用额度已达上限，请稍后重试或联系管理员')
                 con.execute('INSERT INTO usage(id,actor,state,reserved,model) VALUES(?,?,?,?,?)', (request_id, actor_hash, 'running', reserved, self.model))
-            payload = json.dumps(chat_payload(self.url,self.model,messages,body.max_tokens,body.temperature), ensure_ascii=False).encode()
+            payload = json.dumps(request_payload, ensure_ascii=False).encode()
             request = Request(self.url + '/chat/completions', data=payload, method='POST',
                               headers={'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json'})
             try:
-                with (transport or model_urlopen)(request, timeout=120) as response:
+                with (transport or model_urlopen)(request, timeout=600) as response:
                     data = json.load(response)
                 if not isinstance(data['choices'][0]['message']['content'], str):
                     raise ValueError('Invalid response')

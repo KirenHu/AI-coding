@@ -1,70 +1,38 @@
-# macOS 安装与“App 已损坏”排查（v1.2.0）
+# macOS 安装与启动排查
 
-WorkTwin 在 GitHub Actions 上用 PyInstaller 构建。1.0.0 曾在打包后的
-`WorkTwin.app` 内追加许可文件，可能使 PyInstaller 刚完成的资源签名失效。
-1.0.1 把这些资料纳入 PyInstaller 数据文件，再要求严格校验最终 App 签名、
-验证 DMG 完整性，并在 CI 里从 **真正的 DMG** 挂载、复制和运行。
+先核对下载版本，再选择适合自己芯片的安装包。Apple Silicon（M 系列）使用 arm64，Intel 使用 x86_64。
 
-**注意：v1.2.0 的 PR 预览安装包仍属于 ad-hoc 签名（文件名带 `-unsigned`），没有 Apple
-Developer ID 签名和 Apple 公证。签名完整不等于 macOS Gatekeeper 信任。**
-Chrome/Safari 下载后可能显示“无法验证开发者”或“已损坏，无法打开”等安全拦截。
-macOS 无需永久关闭任何系统安全保护。
+## 下载和安装
 
-## 安装前核对
+1. 前往 [GitHub Releases](https://github.com/KirenHu/AI-coding/releases)，查看目标版本的发布说明及附件。若未提供当前源码版本的安装包，可[从源码运行](GETTING_STARTED.md#从源码运行)。
+2. 如果发布页提供 `SHA256SUMS.txt`，用 `shasum -a 256 <下载的DMG路径>` 核对文件哈希。
+3. 打开 DMG，把 `WorkTwin.app` 拖入「应用程序」，再从应用程序目录启动。
+4. 如果页面没有自动出现，访问 <http://127.0.0.1:8765>。
 
-1. 只从 [WorkTwin GitHub Release](https://github.com/KirenHu/AI-coding/releases/tag/worktwin-v1.2.0) 下载对应架构。
-   Apple Silicon（M 系列）选择 `macOS-arm64-unsigned.dmg`；Intel 选择 `macOS-x86_64-unsigned.dmg`。
-2. 同页下载 `SHA256SUMS.txt`。打开终端执行（以 Apple Silicon 为例）：
+截至 2026-10-14，最新正式 Release 是 1.1.7。1.5.9 已有 Developer ID 签名、Apple 公证与本机安装验收记录，但尚未正式发布到 Releases；不要把研发验收产物与正式发布混为一谈。详细状态见 [1.5.9 交付记录](P0_P1_DELIVERY_1_5_9.md)。
 
-   ```bash
-   cd ~/Downloads
-   shasum -a 256 WorkTwin-Collector-1.2.0-macOS-arm64-unsigned.dmg
-   ```
+## 提示无法验证开发者或应用已损坏
 
-   将输出与 `SHA256SUMS.txt` 中对应一行**逐字比较**。不一致时删除文件重新下载，切勿绕过安全检查。
-3. 双击 DMG，并将 `WorkTwin.app` **复制到“应用程序 / Applications”目录**，不要直接从 DMG 长期运行。
-4. 在终端核对应用签名封装未损坏：
+文件名带 `-unsigned` 的预览包没有正式 Developer ID 签名与公证。签名封装完整也不等于 Gatekeeper 信任。
 
-   ```bash
-   codesign --verify --deep --strict --verbose=2 /Applications/WorkTwin.app
-   ```
-
-   如果失败，先停止，不要取消隔离；反馈 `codesign` 的报错以及所下载的文件名。
-
-## 试用版遇到 Gatekeeper 阻止
-
-推荐首先尝试 Finder 中右击应用选择“打开”；系统提供“仍要打开”选项时，
-在“系统设置 → 隐私与安全性”明确授权该**单独应用**。
-
-若仍然显示“已损坏”，而且已经确认来自上述 GitHub 发布、SHA256 与
-`codesign --verify` 均正确，且你明确愿意运行这个未经过 Apple 公证的测试程序，
-可以仅对该应用取消隔离：
+先核对来源、下载版本和哈希；可使用下面的命令检查应用签名是否完整：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/WorkTwin.app
-open /Applications/WorkTwin.app
+codesign --verify --deep --strict --verbose=2 /Applications/WorkTwin.app
 ```
 
-这属于**针对 WorkTwin 单个 App 的安全检查例外**，不能作为面向普通员工的正式安装流程。
-不要使用 `spctl --master-disable` 或关闭全局 Gatekeeper，也不要对其他下载程序批量执行 `xattr`。
+若校验失败，重新下载或反馈错误。校验通过但仍被拦截时，优先使用已签名、公证的对应版本，或选择源码运行。需要明确允许运行某个可信测试包时，使用 macOS「系统设置 → 隐私与安全性」提供的单应用打开选项；不要关闭全局 Gatekeeper。
 
-如果应用打开后但页面没有自动出现，可检查 `http://127.0.0.1:8765`。
-问题未解决时请提供 macOS 版本、芯片、DMG 文件名、`codesign` 输出以及本地服务是否响应，
-**不要**上传密钥、个人知识库、原始会话或企业访问令牌。
+反馈问题时附上 macOS 版本、芯片、DMG 文件名、错误提示和本地页面是否可访问即可，不需要上传个人知识库或密钥。
 
-## 生产发布必须补齐
+## 升级与回退
 
-- 使用 **Developer ID Application** 证书进行正式代码签名，并开启 Hardened Runtime。
-- 通过 Apple `notarytool` 公证，将票据 staple 到交付的 DMG/App，且在启用 Gatekeeper 的
-  全新 macOS 用户环境中验证从下载、复制到首次双击的完整流程。
-- 把证书和公证凭据放在 GitHub Actions 的受保护 Secrets/Keychain 中，绝不能提交到公开仓库。
-- CI 的 `codesign --verify` 只验证签名完整；`spctl --assess` 在没有 Developer ID
-  时会拒绝，无论 Python 测试和启动 smoke 是否成功。不得据此宣称生产可安装。
+升级前在 WorkTwin 设置中备份数据库，通过应用「退出」停止后台，再替换应用。关闭浏览器页面不会退出后台。
 
-官方背景：[Apple Developer 分发](https://developer.apple.com/macos/distribution/) ·
-[PyInstaller macOS 签名](https://pyinstaller.org/en/stable/feature-notes.html)
+回退应同时恢复与旧版本兼容的数据库备份。仅替换旧 App、继续使用已迁移的新数据库，不能视为可靠回退。
 
+## 面向发布维护者
 
-## 正式签名与 Gatekeeper 门禁
+正式交付需完成 Developer ID 签名、Apple 公证、票据附加以及 Gatekeeper 安装验证。CI 启动成功不能代替下载后的首次打开验证。流程见 [macOS 签名配置](MACOS_SIGNING.md)。
 
-最终正式版必须完成 Developer ID 签名、Apple App/DMG 公证、票据附加与隔离安装验证。详见 [macOS 签名配置](MACOS_SIGNING.md)。PR 预览包仍是 `-unsigned`，不代表正式发布已通过；公证正式验收当前暂停，功能集成完成后再执行。
+[返回入门指南](GETTING_STARTED.md) · [文档导航](README.md)

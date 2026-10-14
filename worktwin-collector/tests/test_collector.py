@@ -37,8 +37,8 @@ def test_incremental_scan_search_and_delete(tmp_path: Path):
         docs = con.execute("SELECT path,content FROM documents").fetchall()
         assert len(docs) == 2
         assert all("secret" not in r["content"] for r in docs)
-        assert len(search(con, "审批")["documents"]) >= 1  # two-character Chinese LIKE fallback
-        assert len(search(con, "最终决定")["documents"]) >= 1
+        assert len(search(con,"审批",include_sources=True)["documents"]) >= 1  # two-character Chinese LIKE fallback
+        assert len(search(con,"最终决定",include_sources=True)["documents"]) >= 1
         kinds = {r["kind"] for r in con.execute("SELECT kind FROM knowledge")}
         assert "decision" in kinds
         assert "preference" not in kinds  # Arbitrary documents cannot assert employee identity
@@ -52,7 +52,7 @@ def test_incremental_scan_search_and_delete(tmp_path: Path):
     md.unlink()
     assert collector.scan_all()["deleted"] == 1
     with db.connect() as con:
-        assert not search(con,"动态分支")["documents"]
+        assert not search(con,"动态分支",include_sources=True)["documents"]
         assert con.execute("SELECT count(*) FROM documents").fetchone()[0] == 1
 
 
@@ -68,7 +68,7 @@ def test_docx_and_subfolders(tmp_path: Path):
     result = Collector(db).scan_all()
     assert result["new"] == 1
     with db.connect() as con:
-        assert len(search(con,"人工复核")["documents"]) == 1
+        assert len(search(con,"人工复核",include_sources=True)["documents"]) == 1
 
 
 def test_source_removal_purges_derived_data(tmp_path: Path):

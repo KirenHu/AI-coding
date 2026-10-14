@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-images=(release/WorkTwin-Collector-1.2.0-macOS-$(uname -m)*.dmg)
+images=(release/WorkTwin-Collector-1.5.9-macOS-$(uname -m)*.dmg)
 if (( ${#images[@]} != 1 )); then
   echo "Expected one macOS DMG for $(uname -m), got ${#images[@]}" >&2
   exit 1
@@ -17,7 +17,7 @@ if [[ "${WORKTWIN_REQUIRE_NOTARIZATION:-0}" == 1 ]]; then
   fi
   [[ "$dmg" != *-unsigned.dmg ]]
   codesign --verify --strict --verbose=2 "$dmg"
-  xcrun stapler validate "$dmg"
+  python desktop/macos_stapler.py validate "$dmg"
   spctl --assess --type open --context context:primary-signature --verbose=3 "$dmg"
 fi
 
@@ -48,7 +48,7 @@ ditto "$app" "$temp/Applications/WorkTwin.app"
 staged="$temp/Applications/WorkTwin.app"
 codesign --verify --deep --strict --all-architectures --verbose=2 "$staged"
 if [[ "${WORKTWIN_REQUIRE_NOTARIZATION:-0}" == 1 ]]; then
-  xcrun stapler validate "$staged"
+  python desktop/macos_stapler.py validate "$staged"
   signature="$(codesign -dv --verbose=4 "$staged" 2>&1)"
   [[ "$signature" == *"Authority=Developer ID Application:"* ]]
   [[ "$signature" == *"(runtime)"* ]]

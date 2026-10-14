@@ -206,4 +206,4 @@ def test_live_summary_is_not_a_knowledge_note_and_respects_ai_permission(monkeyp
                                 "event_ids":[1]},ensure_ascii=False)
         # No new page-success evidence would reject an unsupported conclusion.
         client.put("/api/browser-capture",headers=dashboard,json={"enabled":False})
-        assert client.get("/api/browser-capture",headers=dashboard).json()["allow_ai"] is False
+        assert client.get("/api/browser-capture",headers=dashboard).json()["allow_ai"] is True

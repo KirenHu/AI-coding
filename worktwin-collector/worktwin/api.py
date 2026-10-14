@@ -13,11 +13,12 @@ import subprocess
 import sys
 import sqlite3
 import tempfile
+from urllib.error import HTTPError
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -34,9 +35,11 @@ from .model_settings import ModelInput, ModelListInput, PersonalModel, ModelRunt
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .knowledge_policy import READY_SQL, SHARE_SQL, unavailable_reason
 from .twin_access import effective_notes, grant_options, replace_grants
+from .article_sources import source_passages, source_versions
 from .decision_model import DecisionRouter, JevDecisionModel
 from .model_settings import validate_url
 from .answers import answer_from_knowledge
+from .conversation import ConversationQuestion, prepare_conversation
 from .publishing import Publisher, PublishingClient
 from . import __version__
 from .jobs import KnowledgeWorker
@@ -53,13 +56,24 @@ STATIC = Path(__file__).parent / "static"
 
 class SourceInput(BaseModel):
     name: str = Field(min_length=1, max_length=90)
-    kind: Literal["folder", "codex", "claude"] = "folder"
+    kind: Literal["folder", "codex", "claude", "cursor"] = "folder"
     root: str = Field(min_length=1)
     allow_ai: bool = False
     allow_share: bool = False
+    validate_transcript: bool = False
+
+
+class SourceFileProcessInput(BaseModel):
+    issue_ids: list[int] = Field(min_length=1)
+
+
+class SourceDetectionInput(BaseModel):
+    kind: Literal['codex','claude','cursor']
+    root: str | None = None
 
 
 class KnowledgeInput(BaseModel):
+    expected_version: int | None = Field(default=None, ge=1)
     title: str = Field(min_length=1, max_length=130)
     body: str = Field(min_length=1, max_length=50000)
     kind: Literal["fact", "decision", "process", "preference"] = "fact"
@@ -72,6 +86,7 @@ class KnowledgeInput(BaseModel):
     topic: str | None = Field(default=None,max_length=100)
     scope_detail: str | None = Field(default=None,max_length=500)
     quality: Literal['useful','uncertain','noise'] | None = None
+    article_summary: str | None = Field(default=None,max_length=2000)
 
 
 def knowledge_metadata(payload, old=None, document=None):
@@ -103,6 +118,10 @@ def knowledge_metadata(payload, old=None, document=None):
 
 class SourcePermissionInput(BaseModel):
     allow_ai: bool
+
+
+class AssistantSelection(BaseModel):
+    enabled: bool
 
 
 class SharePermissionInput(BaseModel):
@@ -141,7 +160,7 @@ class DecisionModelInput(BaseModel):
 class TwinGrantInput(BaseModel):
     subject_type: Literal['project','source','global','knowledge']
     subject_key: str = Field(min_length=1,max_length=1000)
-    effect: Literal['allow','deny'] = 'allow'
+    effect: Literal['allow'] = 'allow'
 
 
 class TwinPolicyInput(BaseModel):
@@ -153,10 +172,8 @@ class TwinKnowledgeInput(BaseModel):
     knowledge_ids: list[int] = Field(default_factory=list, max_length=1500)
 
 
-class AskInput(BaseModel):
-    question: str = Field(min_length=2, max_length=500)
+class AskInput(ConversationQuestion):
     scope: Literal['local','published'] = 'local'
-    project_key: str | None = Field(default=None,max_length=1000)
 
 
 class LogPermissionInput(BaseModel):
@@ -173,6 +190,20 @@ class CaptureToggle(BaseModel):
 
 class CaptureAiToggle(BaseModel):
     allow_ai: bool
+
+class CaptureHeartbeat(BaseModel):
+    version: str = Field(default='',max_length=32)
+    origins: list[str] | None = Field(default=None,max_length=100)
+
+class ManualCaptureInput(BaseModel):
+    enabled: bool
+    url: str = Field(default='',max_length=2048)
+
+class ManualCaptureRebind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
 
 class CapturePair(BaseModel):
     code: str = Field(min_length=10,max_length=128)
@@ -221,7 +252,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         storage_error = '系统凭据存储不可用，请解锁后重新连接企业服务'
     share_active=db.setting('share_connection_enabled','1')=='1'
     enterprise = GatewayClient(url=saved_url,token=saved_token) if saved_url and share_active else GatewayClient(url='',token='')
-    model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client)
+    model_client = ModelRuntime(db,secure,enterprise=enterprise,injected=inference_client,
+                                defer_credentials=start_worker)
     publisher = Publisher(db, client=publishing_client or (PublishingClient(url=saved_url,token=saved_token) if saved_url and share_active else PublishingClient(url='',token='')))
     decision_router=DecisionRouter(db,secure,model_client)
     knowledge_worker = KnowledgeWorker(db, client=model_client,
@@ -242,6 +274,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if start_worker:
+            model_client.start_credentials()
             collector.start()
             knowledge_worker.start()
             publisher.start()
@@ -325,6 +358,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(403,"只接受本地插件连接")
         return auth[7:]
 
+    from .browser_capture_sites import install_routes as install_site_routes
+    install_site_routes(app, browser_capture, authorized, capture_credential)
+
     @app.get("/api/browser-capture",dependencies=[Depends(authorized)])
     def browser_capture_settings():
         return browser_capture.settings()
@@ -336,6 +372,19 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/browser-capture/ai",dependencies=[Depends(authorized)])
     def browser_capture_ai_toggle(body: CaptureAiToggle):
         return browser_capture.toggle_ai(body.allow_ai)
+
+    @app.put("/api/browser-capture/manual",dependencies=[Depends(authorized)])
+    def configure_manual_capture(body: ManualCaptureInput, background_tasks: BackgroundTasks):
+        before=browser_capture.settings()
+        result=browser_capture.manual_config(enabled=body.enabled,url=body.url)
+        # Finish and publish the just-closed recording immediately. Background
+        # processing also covers navigation-based or expired termination.
+        previous_id=before["manual_session_id"]
+        if (previous_id and before["manual_enabled"] and
+            previous_id!=result["manual_session_id"]):
+            # Do not delay the UI stop action while a paid summary model runs.
+            background_tasks.add_task(browser_summary_service.generate,previous_id,force=True)
+        return result
 
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
     def browser_capture_extension_download():
@@ -353,8 +402,25 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return {"code":browser_capture.pairing_code(),"valid_seconds":300}
 
     @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
-    def browser_capture_sessions():
-        return browser_capture.recent()
+    def browser_capture_sessions(limit: int = Query(30,ge=1,le=100),
+                                 offset: int = Query(0,ge=0), mode: Literal['manual','task'] | None = None):
+        return browser_capture.recent(limit=limit,offset=offset,mode=mode)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/events",dependencies=[Depends(authorized)])
+    def browser_capture_events(session_id: str,limit: int = Query(100,ge=1,le=200),
+                               offset: int = Query(0,ge=0)):
+        return browser_capture.events(session_id,limit=limit,offset=offset)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/site-manual",dependencies=[Depends(authorized)])
+    def browser_capture_site_manual(session_id: str):
+        with db.connect() as con:
+            manuals=con.execute("""SELECT DISTINCT m.site,m.knowledge_id
+                FROM browser_capture_sessions s
+                JOIN browser_article_observations o ON o.session_id=s.id
+                JOIN browser_site_manuals m ON m.knowledge_id=o.knowledge_id
+                WHERE s.id=? AND s.mode='manual' ORDER BY m.knowledge_id""",(session_id,)).fetchall()
+            return (dict(manuals[0]) | {'knowledge_ids':[m['knowledge_id'] for m in manuals]}
+                    if manuals else {"knowledge_id":None,'knowledge_ids':[]})
 
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
@@ -373,8 +439,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return {"token":browser_capture.pair(body.code)}
 
     @app.post("/capture/heartbeat")
-    def capture_heartbeat(request: Request):
-        return browser_capture.heartbeat(capture_credential(request))
+    def capture_heartbeat(request: Request, body: CaptureHeartbeat | None = None):
+        payload=body or CaptureHeartbeat()
+        return browser_capture.heartbeat(capture_credential(request), payload.version, payload.origins)
 
     @app.post("/capture/sessions/status")
     def capture_sessions_status(request: Request,body: CaptureSessionsStatus):
@@ -385,6 +452,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         # An extension credential never authorizes a task on its own: the
         # external workflow must also sign the complete, expiring command.
         return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/manual/current")
+    def capture_manual_current(request: Request):
+        return browser_capture.manual_current(capture_credential(request))
+
+    @app.post("/capture/manual/rebind")
+    def capture_manual_rebind(request: Request,body: ManualCaptureRebind):
+        return browser_capture.manual_rebind(capture_credential(request),**body.model_dump())
 
     @app.post("/capture/bind")
     def capture_bind(request: Request,body: CaptureBind):
@@ -407,6 +482,19 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         with db.connect() as con:
             def count(sql):
                 return int(con.execute(sql).fetchone()[0])
+            from .article_maintenance import source_materials, _signature
+            receipts={r['material_id']:r['input_signature'] for r in con.execute('SELECT * FROM article_material_receipts')}
+            groups={}
+            for material in source_materials(con):
+                groups.setdefault((material['scope'],material['project_key']),[]).append(material)
+            queued_articles=0
+            for key,materials in groups.items():
+                if not any(receipts.get(m['id'])!=_signature([m]) for m in materials):
+                    continue
+                run=con.execute('SELECT state,input_signature FROM article_maintenance_runs WHERE scope=? AND project_key=?',key).fetchone()
+                if run and (run['state'] in ('running','error') or run['input_signature']==_signature(materials) and run['state'] in ('done','waiting')):
+                    continue
+                queued_articles+=1
             events = [dict(r) for r in con.execute("""SELECT e.action,e.details,e.at,s.name source_name FROM events e LEFT JOIN sources s ON s.id=e.source_id ORDER BY e.id DESC LIMIT 12""")]
             return {"sources":count("SELECT count(*) FROM sources"),
                     "documents":count("SELECT count(*) FROM documents"),
@@ -420,28 +508,81 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     "local_only":True,
                     "model_configured":model_client.configured,
                     "ai_jobs":{state:count(f"SELECT count(*) FROM ai_jobs WHERE state='{state}'")
-                               for state in ('queued','running','done','error')}}
+                               for state in ('queued','running','done','error')},
+                    'article_jobs':{state:count(f"SELECT count(*) FROM article_maintenance_runs WHERE state='{state}'")
+                                    for state in ('running','waiting','error')} | {'queued':queued_articles}}
+
+    @app.get('/api/library/status', dependencies=[Depends(authorized)])
+    def library_status():
+        with db.connect() as con:
+            rows=[tuple(r) for r in con.execute("SELECT id,version,group_key,status,quality FROM knowledge WHERE organization='article' ORDER BY id")]
+            permissions=[tuple(r) for r in con.execute('SELECT id,allow_ai,allow_share FROM sources ORDER BY id')]
+            counts={table:{r[0]:r[1] for r in con.execute(f"SELECT state,count(*) FROM {table} GROUP BY state")}
+                    for table in ('ai_jobs','library_organization_runs','article_maintenance_runs','article_merge_queue')}
+        return {'revision':hashlib.sha256(json.dumps([rows,permissions]).encode()).hexdigest(),
+                'extraction':counts['ai_jobs'], 'grouping':counts['library_organization_runs'],
+                'maintenance':{state:counts['article_maintenance_runs'].get(state,0)+counts['article_merge_queue'].get(state,0)
+                               for state in ('queued','running','error')}}
+
+    @app.get('/api/articles/jobs',dependencies=[Depends(authorized)])
+    def article_jobs():
+        with db.connect() as con:
+            return [dict(r) for r in con.execute('''SELECT r.state,r.error,r.updated_at,
+                COALESCE((SELECT MIN(project) FROM knowledge k WHERE k.project_key=r.project_key),'') project
+                FROM article_maintenance_runs r WHERE r.state!='done' ORDER BY r.updated_at DESC''')] + [dict(r) for r in con.execute('''SELECT r.state,r.error,r.updated_at,
+                COALESCE((SELECT MIN(project) FROM knowledge k WHERE k.project_key=r.project_key),'') project,
+                '目录分组' task FROM library_organization_runs r WHERE r.state!='done'
+                UNION ALL SELECT state,error,updated_at,group_name,'文章归并' FROM article_merge_queue WHERE state IN ('queued','running','error')''')]
 
     @app.get("/api/sources")
     def sources():
         with db.connect() as con:
-            return [dict(r) for r in con.execute("""
+            rows = [dict(r) for r in con.execute("""
                 SELECT s.*, COALESCE(s.adapter,s.kind) AS source_type, COUNT(d.id) AS document_count FROM sources s
                 LEFT JOIN documents d ON d.source_id=s.id
                 GROUP BY s.id ORDER BY s.id DESC""")]
+            for source in rows:
+                source['file_issues'] = [dict(r) for r in con.execute(
+                    "SELECT code,state,COUNT(*) count FROM source_file_issues WHERE source_id=? GROUP BY code,state",(source['id'],))]
+            return rows
+
+    @app.get('/api/sources/{source_id}/file-issues',dependencies=[Depends(authorized)])
+    def source_file_issues(source_id: int):
+        with db.connect() as con:
+            source = con.execute('SELECT root FROM sources WHERE id=?',(source_id,)).fetchone()
+            if not source:
+                raise HTTPException(404,'来源不存在')
+            rows = [dict(r) for r in con.execute('SELECT * FROM source_file_issues WHERE source_id=? ORDER BY path',(source_id,))]
+        for row in rows:
+            row['name'] = str(Path(row.pop('path')).relative_to(source['root']))
+        from .config import MAX_FILE_BYTES
+        return {'files':rows,'limit_bytes':MAX_FILE_BYTES}
+
+    @app.post('/api/sources/{source_id}/process-large-files',dependencies=[Depends(authorized)])
+    def process_large_files(source_id: int, payload: SourceFileProcessInput):
+        try:
+            count = collector.request_large_files(source_id,payload.issue_ids)
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from exc
+        return {'queued':count}
 
     @app.post("/api/sources", dependencies=[Depends(authorized)])
     def create_source(payload: SourceInput):
         root = Path(payload.root).expanduser().resolve()
         if not root.is_dir():
             raise HTTPException(400, "所选文件夹不存在或无法访问")
-        if payload.kind in ("codex", "claude") and root == Path.home():
-            raise HTTPException(400, "请选择 Codex sessions 目录，而不是整个主目录")
+        if payload.kind in ("codex", "claude", "cursor") and root == Path.home():
+            raise HTTPException(400, "请选择会话记录目录，而不是整个主目录")
+        if payload.validate_transcript and payload.kind != 'folder':
+            from .source_detection import detect_transcripts
+            detected = detect_transcripts(payload.kind, str(root))
+            if not detected['recognized']:
+                raise HTTPException(400, '没有检测到对应助手的会话记录，请先完成一次会话，或在高级设置中检查记录位置')
         with db.connect() as con:
             if con.execute("SELECT id FROM sources WHERE root=?",(str(root),)).fetchone():
                 raise HTTPException(409, "这个目录已添加")
             row = con.execute("INSERT INTO sources(name,kind,adapter,root,allow_ai,allow_share) VALUES(?,?,?,?,?,?)",
-                              (payload.name, "folder" if payload.kind == "claude" else payload.kind,
+                              (payload.name, "folder" if payload.kind in ("claude", "cursor") else payload.kind,
                                payload.kind, str(root), int(payload.allow_ai), int(payload.allow_share)))
             source_id = int(row.lastrowid)
         db.event("source_added", f"已授权：{payload.name}",source_id)
@@ -454,6 +595,27 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         claude = claude_projects_path()
         return {"codex": str(p), "codex_exists":p.is_dir(),
                 "claude":str(claude), "claude_exists":claude.is_dir(), "home":str(Path.home())}
+
+    @app.post('/api/sources/detect', dependencies=[Depends(authorized)])
+    def detect_source(payload: SourceDetectionInput):
+        from .source_detection import detect_transcripts
+        return detect_transcripts(payload.kind, payload.root)
+
+    @app.get('/api/sources/assistants')
+    def assistant_sources():
+        from .assistant_sources import assistant_rows
+        with db.connect() as con:
+            return assistant_rows(con)
+
+    @app.put('/api/sources/assistants/{tool}', dependencies=[Depends(authorized)])
+    def choose_assistant(tool: str, payload: AssistantSelection):
+        from .assistant_sources import assistant_rows, select_assistant
+        with db.connect() as con:
+            select_assistant(con, tool, payload.enabled)
+            selected = next(row for row in assistant_rows(con) if row['tool'] == tool)
+        if payload.enabled:
+            launch_scan()
+        return selected
 
     @app.post("/api/pick-folder", dependencies=[Depends(authorized)])
     def pick_folder():
@@ -501,22 +663,40 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/sources/{source_id}/ai", dependencies=[Depends(authorized)])
     def source_ai_permission(source_id: int, payload: SourcePermissionInput):
         with db.connect() as con:
-            row = con.execute("SELECT id FROM sources WHERE id=?", (source_id,)).fetchone()
+            row = con.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
             if not row:
                 raise HTTPException(404, "数据源不存在")
             con.execute("UPDATE sources SET allow_ai=? WHERE id=?", (int(payload.allow_ai), source_id))
-            if payload.allow_ai:
+            if payload.allow_ai and not row['allow_ai'] and row['adapter'] in ('codex','claude','cursor'):
+                from .assistant_sources import start_new_processing
+                start_new_processing(con, source_id)
+            elif payload.allow_ai and row['adapter'] not in ('codex','claude','cursor'):
                 con.execute("""INSERT INTO ai_jobs(document_id,content_sha,state,attempts,error)
                     SELECT id,sha256,'queued',0,NULL FROM documents WHERE source_id=?
                     ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
                     attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now')""", (source_id,))
-            else:
+            elif not payload.allow_ai:
                 con.execute("""DELETE FROM ai_jobs WHERE document_id IN
                     (SELECT id FROM documents WHERE source_id=?)""", (source_id,))
         db.event("source_ai_permission", f"{'允许' if payload.allow_ai else '停止'}企业模型整理", source_id)
         if payload.allow_ai:
             knowledge_worker.schedule()
         return {"allow_ai":payload.allow_ai}
+
+    @app.get("/api/sources/{source_id}/references", dependencies=[Depends(authorized)])
+    def source_references(source_id:int):
+        with db.connect() as con:
+            return [dict(r) for r in con.execute("""SELECT d.id,d.title,d.relative_path,d.content,r.role,r.scope_path
+                FROM assistant_references r JOIN documents d ON d.id=r.document_id
+                WHERE d.source_id=? AND d.deleted=0 ORDER BY d.relative_path""",(source_id,))]
+
+    @app.post("/api/sources/{source_id}/history", dependencies=[Depends(authorized)])
+    def source_history(source_id: int, payload: dict):
+        from .assistant_sources import request_history
+        with db.connect() as con:
+            result = request_history(con, source_id, str(payload.get('start','')), str(payload.get('end','')))
+        knowledge_worker.schedule()
+        return result
 
     @app.put("/api/sources/{source_id}/share", dependencies=[Depends(authorized)])
     def source_share_permission(source_id: int, payload: SharePermissionInput):
@@ -569,7 +749,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 GROUP BY project_key ORDER BY name,project_key""")]
 
     @app.get("/api/knowledge")
-    def list_knowledge(status: str = "active", kind: str = "all", limit: int = Query(default=300, ge=1, le=1000), offset: int = Query(default=0,ge=0)):
+    def list_knowledge(status: str = "active", kind: str = "all", organization: Literal['all','article','material'] = 'all',
+                       limit: int = Query(default=300, ge=1, le=1000), offset: int = Query(default=0,ge=0)):
         conditions, params = [], []
         if status == "active":
             conditions.append("k.status!='archived'")
@@ -579,13 +760,16 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         if kind in KIND_LABELS:
             conditions.append("k.kind=?")
             params.append(kind)
+        if organization != 'all':
+            conditions.append('k.organization=?')
+            params.append(organization)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         with db.connect() as con:
             rows = [dict(r) for r in con.execute("SELECT k.* FROM knowledge k" + where + " ORDER BY k.needs_review DESC,k.updated_at DESC,k.id DESC LIMIT ? OFFSET ?", [*params,limit,offset])]
             for row in rows:
                 from markdown_it import MarkdownIt
                 display_body=WIKILINK.sub(lambda m: '['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+str(int(m.group(1)))+')',row['body'])
-                row["rendered_body"] = MarkdownIt("commonmark", {"html": False}).render(display_body)
+                row["rendered_body"] = MarkdownIt("commonmark", {"html": False}).enable("table").render(display_body)
                 row["evidence"] = [dict(e) for e in con.execute("""
                     SELECT e.document_id,e.chunk_id,e.quote,e.is_current,e.superseded,d.title document_title,d.project,d.relative_path
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -597,12 +781,23 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 row['scope_label']=scope_description(row)
             return rows
 
+    @app.get('/api/knowledge/{knowledge_id}/sources', dependencies=[Depends(authorized)])
+    def knowledge_sources(knowledge_id: int):
+        with db.connect() as con:
+            if not con.execute('SELECT 1 FROM knowledge WHERE id=?',(knowledge_id,)).fetchone():
+                raise HTTPException(404,'文章不存在')
+            return [dict(r) for r in con.execute("""SELECT DISTINCT s.id,s.name,s.kind,s.root,s.allow_ai
+                FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
+                JOIN sources s ON s.id=d.source_id WHERE e.knowledge_id=? ORDER BY s.id""",(knowledge_id,))]
+
     @app.get('/api/knowledge-counts')
     def knowledge_counts():
         with db.connect() as con:
             return {'total':con.execute('SELECT count(*) FROM knowledge').fetchone()[0],
                     'draft':con.execute("SELECT count(*) FROM knowledge WHERE status='draft'").fetchone()[0],
-                    'archived':con.execute("SELECT count(*) FROM knowledge WHERE status='archived'").fetchone()[0]}
+                    'archived':con.execute("SELECT count(*) FROM knowledge WHERE status='archived'").fetchone()[0],
+                    'articles':con.execute("SELECT count(*) FROM knowledge WHERE organization='article'").fetchone()[0],
+                    'materials':con.execute("SELECT count(*) FROM knowledge WHERE organization='material'").fetchone()[0]}
 
     @app.get('/api/knowledge-item/{knowledge_id}')
     def get_knowledge(knowledge_id: int):
@@ -612,9 +807,25 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,'知识不存在')
             from markdown_it import MarkdownIt
             result=dict(row)
-            result['rendered_body']=MarkdownIt('commonmark',{'html':False}).render(WIKILINK.sub(lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',result['body']))
+            result['rendered_body']=MarkdownIt('commonmark',{'html':False}).enable('table').render(WIKILINK.sub(lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',result['body']))
             result['evidence']=[dict(e) for e in con.execute('''SELECT e.*,d.title document_title,d.project FROM knowledge_evidence e
                 JOIN documents d ON d.id=e.document_id WHERE e.knowledge_id=?''',(knowledge_id,))]
+            from .articles import detail_parts
+            result['parts'] = detail_parts(con, knowledge_id)
+            result['browser_sources'] = []
+            for source in con.execute('''SELECT o.session_id,o.event_ids_json,s.page_key,r.summary
+                    FROM browser_article_observations o JOIN browser_capture_sessions s ON s.id=o.session_id
+                    LEFT JOIN browser_capture_summaries r ON r.session_id=o.session_id
+                    WHERE o.knowledge_id=?''',(knowledge_id,)):
+                selected = set(json.loads(source['event_ids_json']))
+                result['browser_sources'].append({'session_id':source['session_id'],
+                    'source_title':source['page_key']+' · 操作记录','summary':source['summary'] or '',
+                    'events':[dict(e) for e in con.execute('SELECT seq,kind,label,location FROM browser_capture_events WHERE session_id=? ORDER BY seq',(source['session_id'],)) if e['seq'] in selected]})
+            result['unavailable_reason'] = unavailable_reason(con, result)
+            result['share_unavailable_reason'] = unavailable_reason(con, result, sharing=True)
+            result['can_use'] = not result['unavailable_reason']
+            result['can_share'] = not result['share_unavailable_reason']
+            result['scope_label'] = scope_description(result)
             return result
 
     @app.post('/api/knowledge/reprocess',dependencies=[Depends(authorized)])
@@ -623,9 +834,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             docs=con.execute('''SELECT d.id,d.sha256 FROM documents d JOIN sources s ON s.id=d.source_id
                 WHERE s.enabled=1 AND s.allow_ai=1 AND d.deleted=0''').fetchall()
             for d in docs:
+                con.execute('UPDATE transcript_streams SET processed_seq=0 WHERE document_id=?',(d['id'],))
                 con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state,attempts) VALUES(?,?,'queued',0)
                     ON CONFLICT(document_id) DO UPDATE SET content_sha=excluded.content_sha,state='queued',attempts=0,
-                    error=NULL,next_run_at=NULL,claim_token=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
+                    error=NULL,next_run_at=NULL,claim_token=NULL,batch_generation=NULL,batch_from_seq=NULL,
+                    batch_through_seq=NULL,updated_at=datetime('now')''',(d['id'],d['sha256']))
         knowledge_worker.schedule()
         return {'queued':len(docs)}
 
@@ -677,6 +890,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             res = con.execute("INSERT INTO knowledge(kind,title,body,status,created_by,source_bound) VALUES(?,?,?,?, 'human',?)",
                               (payload.kind,payload.title,payload.body,payload.status, int(payload.document_id is not None)))
             know_id = int(res.lastrowid)
+            con.execute('UPDATE knowledge SET article_summary=?,change_summary=? WHERE id=?',
+                        (payload.article_summary or '', '人工创建文章',know_id))
             con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=? WHERE id=?',
                         (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],know_id))
             if payload.document_id is not None:
@@ -688,14 +903,31 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     @app.put("/api/knowledge/{knowledge_id}", dependencies=[Depends(authorized)])
     def update_knowledge(knowledge_id: int, payload: KnowledgeInput):
         with db.connect() as con:
+            con.execute('BEGIN IMMEDIATE')
             old = con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
             if not old:
                 raise HTTPException(404,"知识不存在")
+            if payload.expected_version is not None and payload.expected_version != old['version']:
+                raise HTTPException(409,"知识已更新，请刷新后再保存；当前输入尚未丢弃")
             metadata=knowledge_metadata(payload,old=old)
             snapshot_history(con,old)
             con.execute("""UPDATE knowledge SET kind=?,title=?,body=?,status=?,version=version+1,
                 created_by='human',review_hold=0,updated_at=datetime('now') WHERE id=?""",
                         (payload.kind,payload.title,payload.body,payload.status,knowledge_id))
+            if payload.body != old['body'] or payload.status=='confirmed':
+                con.execute("UPDATE knowledge SET organization='article' WHERE id=?", (knowledge_id,))
+            changes = []
+            if payload.body!=old['body']:
+                changes.append('人工修订正文')
+            if payload.title!=old['title']:
+                changes.append('调整标题')
+            if payload.article_summary is not None and payload.article_summary!=old['article_summary']:
+                changes.append('修订概要')
+            if payload.status!=old['status']:
+                changes.append({'draft':'调整为待处理','confirmed':'确认文章','archived':'归档文章'}[payload.status])
+            con.execute('UPDATE knowledge SET article_summary=?,change_summary=? WHERE id=?',
+                (old['article_summary'] if payload.article_summary is None else payload.article_summary,
+                 '；'.join(changes) or '更新文章信息',knowledge_id))
             con.execute('UPDATE knowledge SET scope=?,project=?,project_key=?,topic=?,scope_detail=?,quality=?,attribution=? WHERE id=?',
                         (*[metadata[key] for key in ('scope','project','project_key','topic','scope_detail','quality')],
                          'human' if payload.body!=old['body'] else old['attribution'],knowledge_id))
@@ -712,7 +944,8 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 d.title source_title,d.project,d.sha256 current_sha
                 FROM knowledge_proposals p
                 JOIN knowledge k ON k.id=p.target_id JOIN documents d ON d.id=p.document_id
-                WHERE p.status='pending' ORDER BY p.id DESC LIMIT 100""")]
+                WHERE p.status='pending' AND k.organization='article' AND k.status!='archived'
+                  AND p.target_version=k.version ORDER BY p.id DESC LIMIT 100""")]
 
     @app.post("/api/knowledge/proposals/{proposal_id}/accept", dependencies=[Depends(authorized)])
     def accept_proposal(proposal_id: int):
@@ -746,10 +979,53 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,'知识不存在')
             return result
 
+    @app.post("/api/knowledge/{knowledge_id}/versions/{version}/restore", dependencies=[Depends(authorized)])
+    def restore_knowledge_version(knowledge_id: int, version: int):
+        """Copy a saved revision into a NEW current version; never rewrite history.
+
+        Project identity and source permissions belong to the current evidence
+        graph, so rolling back the text must not silently widen twin access.
+        """
+        with db.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            current=con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
+            if not current:
+                raise HTTPException(404,"知识不存在")
+            previous=con.execute("""SELECT * FROM knowledge_history
+                WHERE knowledge_id=? AND version=?""",(knowledge_id,version)).fetchone()
+            if not previous or version>=current['version']:
+                raise HTTPException(404,"历史版本不存在")
+            snapshot_history(con,current)
+            con.execute('UPDATE knowledge SET article_summary=?,change_summary=? WHERE id=?',
+                        (previous['article_summary'],f'恢复到 v{version} 的文章内容',knowledge_id))
+            con.execute("""UPDATE knowledge SET title=?,body=?,kind=?,status=?,topic=?,
+                scope_detail=?,quality=?,outcome=?,created_by='human',attribution='human',
+                review_hold=0,needs_review=0,version=version+1,updated_at=datetime('now')
+                WHERE id=?""",
+                (previous['title'],previous['body'],previous['kind'],previous['status'],
+                 previous['topic'],previous['scope_detail'],previous['quality'],
+                 previous['outcome'],knowledge_id))
+            # Pending AI proposals refer to the superseded current version.
+            # Never leave a restored note blocked by an obsolete proposal.
+            con.execute("""UPDATE knowledge_proposals
+                SET status='dismissed',resolved_at=datetime('now')
+                WHERE target_id=? AND status='pending'""",(knowledge_id,))
+            # The restored article keeps the latest project assignment and its
+            # unchanged source grants; downstream twin/MCP resolvers read them.
+            review_flags(con,[knowledge_id])
+            new_version=current['version']+1
+        db.event("knowledge_version_restored",f"知识 {knowledge_id} 从 v{version} 回退至 v{new_version}")
+        return {"restored":True,"from_version":version,"version":new_version}
+
     @app.get("/api/knowledge/{knowledge_id}/history")
     def history(knowledge_id: int):
         with db.connect() as con:
-            return [dict(r) for r in con.execute("SELECT * FROM knowledge_history WHERE knowledge_id=? ORDER BY version DESC",(knowledge_id,))]
+            from markdown_it import MarkdownIt
+            versions = [dict(r) for r in con.execute("SELECT * FROM knowledge_history WHERE knowledge_id=? ORDER BY version DESC",(knowledge_id,))]
+            for version in versions:
+                version['rendered_body'] = MarkdownIt('commonmark',{'html':False}).enable('table').render(WIKILINK.sub(
+                    lambda m:'['+(m.group(2) or 'K'+m.group(1))+'](#knowledge-'+m.group(1)+')',version['body']))
+            return versions
 
     @app.get("/api/projects")
     def projects():
@@ -793,9 +1069,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             return {"name":name,"documents":docs,"knowledge":entries,"decision_timeline":timeline}
 
     @app.get("/api/search")
-    def search_endpoint(q: str = Query(default="", max_length=160)):
+    def search_endpoint(q: str = Query(default="", max_length=160), include_sources: bool = False):
         with db.connect() as con:
-            return search(con,q)
+            return search(con,q,include_sources=include_sources)
 
     @app.get("/api/settings")
     def settings():
@@ -865,7 +1141,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         db.set_setting('personal_base_url',candidate.url)
         db.set_setting('personal_model',candidate.model)
         model_client.replace(candidate,'personal',tested=True)
-        knowledge_worker.schedule()
+        retry_failed_jobs(source_id=None)
         return {'connected':True,'model':candidate.model}
 
     @app.post('/api/model/personal/models',dependencies=[Depends(authorized)])
@@ -1019,6 +1295,22 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         from urllib.parse import quote
         return admin_request('DELETE','employees/'+quote(employee,safe=''))
 
+    @app.get('/api/processing/stats', dependencies=[Depends(authorized)])
+    def processing_stats():
+        with db.connect() as con:
+            decisions=[dict(r) for r in con.execute("""SELECT mode,reason,state,COUNT(*) runs,
+                SUM(source_chars) source_chars,SUM(submitted_chars) submitted_chars,
+                SUM(model_calls) extraction_calls,SUM(elapsed_ms) elapsed_ms
+                FROM knowledge_processing_runs GROUP BY mode,reason,state""")]
+            models=[dict(r) for r in con.execute("""SELECT model,stage,COUNT(*) calls,
+                SUM(CASE WHEN state='error' THEN 1 ELSE 0 END) failed_calls,
+                SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,
+                SUM(CASE WHEN input_tokens IS NULL THEN 1 ELSE 0 END) unknown_input_usage_calls,
+                SUM(cost_usd) reported_cost_usd,SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) unknown_cost_calls,
+                SUM(elapsed_ms) elapsed_ms FROM model_call_metrics GROUP BY model,stage""")]
+        return {'decisions':decisions,'models':models,'cost':None,
+                'document_incremental_enabled':db.setting('document_incremental_enabled',os.getenv('WORKTWIN_DOCUMENT_INCREMENTAL','1'))=='1'}
+
     @app.post("/api/sharing/sync", dependencies=[Depends(authorized)])
     def sync_sharing():
         return publisher.sync(force=True)
@@ -1064,7 +1356,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             # Also show disabled explicit pins for actionable reasons.
             disabled=[dict(r) for r in con.execute('SELECT k.* FROM knowledge k JOIN twin_knowledge tk ON tk.knowledge_id=k.id WHERE tk.twin_id=?',(twin_id,)) if r['id'] not in {k['id'] for k in rows}]
             rows += disabled
-            result=[{'id':r['id'],'title':r['title'],'local_reason':unavailable_reason(con,r),'share_reason':unavailable_reason(con,r,sharing=True)} for r in rows]
+            result=[{'id':r['id'],'title':r['title'],
+                'local_reason':unavailable_reason(con,r) if r['organization']=='article' else '材料尚未整理为文章',
+                'share_reason':unavailable_reason(con,r,sharing=True) if r['organization']=='article' else '材料尚未整理为文章'} for r in rows]
         return {'selected_count':len(rows),'usable_count':sum(not r['local_reason'] for r in result),
                 'publishable_count':sum(not r['share_reason'] for r in result),'knowledge':result}
 
@@ -1088,20 +1382,31 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             raise HTTPException(503,'撤销尚未完成，请恢复连接后重试；原链接目前仍可能可用') from exc
 
     @app.get("/api/ai/jobs")
-    def ai_jobs():
+    def ai_jobs(source_id: int | None = Query(default=None, ge=1)):
+        where, parameters = (' WHERE d.source_id=?', [source_id]) if source_id is not None else ('', [])
         with db.connect() as con:
             return [dict(r) for r in con.execute("""SELECT j.id,j.document_id,j.state,j.attempts,j.error,
-                j.updated_at,j.next_run_at,d.title,d.project,s.name source_name
+                j.updated_at,j.next_run_at,d.title,d.project,d.source_id,s.name source_name
                 FROM ai_jobs j JOIN documents d ON d.id=j.document_id
-                JOIN sources s ON s.id=d.source_id
-                ORDER BY j.updated_at DESC,j.id DESC LIMIT 100""")]
+                JOIN sources s ON s.id=d.source_id""" + where +
+                ' ORDER BY j.updated_at DESC,j.id DESC LIMIT 100', parameters)]
 
     @app.post("/api/ai/jobs/retry", dependencies=[Depends(authorized)])
-    def retry_failed_jobs():
+    def retry_failed_jobs(source_id: int | None = Query(default=None, ge=1)):
+        where, parameters = (' AND document_id IN (SELECT id FROM documents WHERE source_id=?)', [source_id]) if source_id is not None else ('', [])
         with db.connect() as con:
-            updated = con.execute("UPDATE ai_jobs SET state='queued',attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now') WHERE state='error'")
+            updated = con.execute("UPDATE ai_jobs SET state='queued',attempts=0,next_run_at=NULL,error=NULL,updated_at=datetime('now') WHERE state='error'" + where, parameters)
+            article_where = " AND EXISTS (SELECT 1 FROM knowledge k JOIN knowledge_evidence e ON e.knowledge_id=k.id JOIN documents d ON d.id=e.document_id WHERE k.scope=article_maintenance_runs.scope AND k.project_key=article_maintenance_runs.project_key AND d.source_id=?)" if source_id is not None else ''
+            article_count = con.execute("UPDATE article_maintenance_runs SET state='queued',attempts=0,next_run_at=NULL,error='',updated_at=datetime('now') WHERE state='error'" + article_where, parameters).rowcount
+            browser_count = 0
+            library_count = 0
+            if source_id is None:
+                library_count = con.execute("UPDATE library_organization_runs SET state='queued',attempts=0,error='' WHERE state='error'").rowcount
+                library_count += con.execute("UPDATE article_merge_queue SET state='queued',error='' WHERE state='error'").rowcount
+                browser_count = con.execute("UPDATE browser_article_runs SET state='queued',error='',updated_at=datetime('now') WHERE state='error'").rowcount
         knowledge_worker.schedule()
-        return {"queued":updated.rowcount}
+        return {"queued":updated.rowcount+article_count+browser_count+library_count,
+                "article_queued":article_count,"browser_queued":browser_count}
 
     @app.get("/api/twins")
     def twins():
@@ -1152,7 +1457,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     (kind=='source' and key not in known_sources) or
                     (kind=='global' and key!='*') or
                     (kind=='knowledge' and (not key.isdecimal() or not con.execute(
-                        'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                        "SELECT id FROM knowledge WHERE id=? AND organization='article'",(int(key),)).fetchone()))):
                     raise HTTPException(400,'授权范围无效或已不存在')
             replace_grants(con,twin_id,entries)
             con.execute("UPDATE twins SET knowledge_mode=?,updated_at=datetime('now') WHERE id=?",
@@ -1176,8 +1481,46 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             except LookupError as exc:
                 raise HTTPException(404,str(exc)) from None
         url=str(request.base_url).rstrip('/')+'/mcp/'
-        return {'url':url,'token':token,'config':{'mcpServers':{f'worktwin-{twin_id}':
+        from .mcp_clients import configurations
+        return {'clients':configurations(twin_id,url,token),'url':url,'token':token,'config':{'mcpServers':{f'worktwin-{twin_id}':
             {'type':'http','url':url,'headers':{'Authorization':'Bearer '+token}}}}}
+
+    @app.post('/api/twins/{twin_id}/mcp/test',dependencies=[Depends(authorized)])
+    async def test_mcp_connection(twin_id:int,payload:dict,request:Request):
+        import httpx2
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+        from .twin_mcp import grant
+        token=str(payload.get('token',''))
+        with db.connect() as con:
+            access=grant(con,token)
+            if not access or access['twin_id']!=twin_id:
+                raise HTTPException(403,'连接凭据已失效，请重新生成')
+        url=str(request.base_url).rstrip('/')+'/mcp/'
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app),headers={'Authorization':'Bearer '+token}) as http:
+            async with streamable_http_client(url,http_client=http) as streams:
+                async with ClientSession(streams[0],streams[1]) as session:
+                    await session.initialize()
+                    result=await session.list_tools()
+        return {'connected':True,'tools':len(result.tools)}
+
+    @app.post('/api/twins/{twin_id}/mcp/install/{client}',dependencies=[Depends(authorized)])
+    def install_mcp_client(twin_id:int,client:str,payload:dict,request:Request):
+        from .mcp_clients import configurations, install
+        from .twin_mcp import grant
+        if client not in ('cursor','vscode','claude'):
+            raise HTTPException(400,'不支持的客户端')
+        token=str(payload.get('token',''))
+        with db.connect() as con:
+            access=grant(con,token)
+            if not access or access['twin_id']!=twin_id:
+                raise HTTPException(403,'连接凭据已失效，请重新生成')
+        url=str(request.base_url).rstrip('/')+'/mcp/'
+        try:
+            path=install(client,configurations(twin_id,url,token)[client])
+        except (ValueError,OSError):
+            raise HTTPException(409,'现有客户端配置无法更新，请使用复制配置') from None
+        return {'path':path,'installed':True}
 
     @app.delete('/api/twins/{twin_id}/mcp',dependencies=[Depends(authorized)])
     def disable_mcp(twin_id:int):
@@ -1228,9 +1571,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                     (SELECT knowledge_id FROM knowledge_evidence WHERE document_id=?)''',(document_id,))
             con.execute("UPDATE documents SET project=?,project_key=?,scope='project',project_verified=1 WHERE id=?",(project,key,document_id))
             if changed:
+                con.execute('UPDATE transcript_streams SET processed_seq=0 WHERE document_id=?',(document_id,))
                 con.execute('''INSERT INTO ai_jobs(document_id,content_sha,state) VALUES(?,?,'queued')
                     ON CONFLICT(document_id) DO UPDATE SET state='queued',content_sha=excluded.content_sha,
-                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL''',(document_id,d['sha256']))
+                    attempts=0,error=NULL,next_run_at=NULL,claim_token=NULL,
+                    batch_generation=NULL,batch_from_seq=NULL,batch_through_seq=NULL''',(document_id,d['sha256']))
         if changed:
             knowledge_worker.schedule()
         return {'project':project,'project_key':key,'queued':changed}
@@ -1239,8 +1584,9 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def update_twin(twin_id: int,payload: TwinInput):
         with db.connect() as con:
             if payload.knowledge_ids is not None:
-                allowed={r[0] for r in con.execute('SELECT k.id FROM knowledge k WHERE '+READY_SQL)}
-                if not set(payload.knowledge_ids).issubset(allowed):
+                allowed={r[0] for r in con.execute("SELECT k.id FROM knowledge k WHERE k.organization='article' AND "+READY_SQL)}
+                retained={r[0] for r in con.execute('SELECT knowledge_id FROM twin_knowledge WHERE twin_id=?', (twin_id,))}
+                if not set(payload.knowledge_ids).issubset(allowed | retained):
                     raise HTTPException(400,'包含不可用知识，请核对状态后重新保存')
             row = con.execute("UPDATE twins SET name=?,description=?,updated_at=datetime('now') WHERE id=?",
                               (payload.name.strip(),payload.description.strip(),twin_id))
@@ -1263,7 +1609,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                         (kind=='source' and key not in known_sources) or
                         (kind=='global' and key!='*') or
                         (kind=='knowledge' and (not key.isdecimal() or not con.execute(
-                            'SELECT id FROM knowledge WHERE id=?',(int(key),)).fetchone()))):
+                            "SELECT id FROM knowledge WHERE id=? AND organization='article'",(int(key),)).fetchone()))):
                         raise HTTPException(400,'项目或来源授权范围无效')
                 replace_grants(con,twin_id,entries)
             if payload.knowledge_mode is not None:
@@ -1285,7 +1631,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if not con.execute("SELECT id FROM twins WHERE id=?",(twin_id,)).fetchone():
                 raise HTTPException(404,"数字分身不存在")
             allowed = {r[0] for r in con.execute("""SELECT k.id FROM knowledge k
-                WHERE """+READY_SQL)}
+                WHERE k.organization='article' AND """+READY_SQL)}
             if not requested.issubset(allowed):
                 raise HTTPException(400,"包含尚未确认、已归档、需要核对、个人偏好或未允许 AI 使用的知识")
             con.execute("DELETE FROM twin_knowledge WHERE twin_id=?",(twin_id,))
@@ -1299,7 +1645,11 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         if payload.scope=='published':
             try:
                 pubid=publisher.public_id(twin_id)
-                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',{'question':payload.question,'project_key':payload.project_key})
+                return publisher.client.request('POST','/v1/twins/'+pubid+'/preview-ask',payload.model_dump(exclude={'scope'}))
+            except HTTPError as exc:
+                if exc.code == 409:
+                    raise HTTPException(409, '已发布知识已更新，请开启新会话') from exc
+                raise HTTPException(503, '无法读取当前已发布版本，请检查分享服务') from exc
             except Exception as exc:
                 raise HTTPException(503,'无法读取当前已发布版本，请检查分享服务或先启用分享') from exc
         if not model_client.configured:
@@ -1310,18 +1660,21 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
                 raise HTTPException(404,"数字分身不存在")
             rows = effective_notes(con,twin_id)
             for r in rows:
+                query='\n'.join([m.content for m in payload.messages if m.role=='user']+[payload.question])
+                r['source_passages'] = source_passages(con,r['id'],query=query)
+                r['source_versions'] = source_versions(con,r['id'])
                 r['evidence'] = [dict(e) for e in con.execute("""SELECT e.quote,d.title document_title
                     FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
                     WHERE e.knowledge_id=? AND e.is_current=1 AND e.superseded=0 LIMIT 3""",(r['id'],))]
-        if not rows:
-            return {"answer":"这个分身还没有被分配可使用的知识。","context_count":0,"citations":[]}
         # Every contributing source must still permit sending derived text to AI.
         with db.connect() as con:
             rows=[r for r in rows if not con.execute("""SELECT 1 FROM knowledge_evidence e
                 JOIN documents d ON d.id=e.document_id JOIN sources s ON s.id=d.source_id
                 WHERE e.knowledge_id=? AND s.allow_ai=0 LIMIT 1""",(r['id'],)).fetchone()]
+        context_revision, messages = prepare_conversation(payload, rows, 'local:' + str(twin_id))
         try:
-            result=answer_from_knowledge(model_client,payload.question,rows,project_key=payload.project_key)
+            result=answer_from_knowledge(model_client,payload.question,rows,project_key=payload.project_key,
+                                         messages=messages)
         except Exception as exc:
             raise HTTPException(502,"模型请求失败，请检查设置、服务额度或稍后重试") from exc
         # Recheck authorization after a slow model call.
@@ -1329,7 +1682,7 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             current={(r['id'],r['version']) for r in effective_notes(con,twin_id)}
         if not {(r['id'],r['version']) for r in rows}.issubset(current):
             raise HTTPException(409,'分身知识授权已更新，请重新提问')
-        return result
+        return {**result, 'context_revision': context_revision}
 
     @app.get('/api/backup')
     def backup():

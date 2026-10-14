@@ -34,3 +34,12 @@
 ### 1.1 设置能力参考
 
 实际阅读 AnythingLLM 的模型设置和可用模型选择代码、Open WebUI 的管理员连接与后端权限实现；设计参考及文件版本见竞品审计第 7 节。本轮独立实现个人/企业设置与模型列表，没有新增两者运行依赖或复制源文件。密钥存储使用 `keyring`（MIT）与 `cryptography`（Apache-2.0/BSD），按其依赖方式分发。
+
+### 1.3 持续工作证据
+
+参考 memU 的会话适配边界，独立实现按字节位置读取的 Codex、Claude Code 和 Cursor CLI 适配器；未复制 memU 源码或引入其数据库。Hindsight 仅通过标准 HTTP 在独立研发脚本中验证，桌面程序没有新增 Hindsight SDK、PostgreSQL、Docker 或本地模型依赖。OpenViking 仅作设计参考，未复制 AGPL 主项目或 Apache 示例代码。具体版本、许可证核对与候选引擎采用条件见 [知识引擎验证](KNOWLEDGE_ENGINE_PROBE.md)。
+
+
+## 1.5.2 文章维护机制
+
+目录识别与全文整理参考 Rowboat；候选修改、独立审校和发布后消费材料的机制参考 Letta Code explicit integration。Python/SQLite 实现针对 WorkTwin 改写，未引入上游运行时。固定版本、许可和实际移植边界见 [研究记录](KNOWLEDGE_EDITOR_RESEARCH.md)；上游许可随包保留。Graphiti 与 Microsoft LLM Wiki 仅用于机制核查与对照，未复制其运行代码。

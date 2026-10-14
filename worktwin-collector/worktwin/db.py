@@ -19,6 +19,17 @@ CREATE TABLE IF NOT EXISTS sources (
   last_error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS source_file_issues (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  size_bytes INTEGER,
+  mtime_ns INTEGER,
+  state TEXT NOT NULL DEFAULT 'waiting',
+  UNIQUE(source_id,path)
+);
 CREATE TABLE IF NOT EXISTS documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -228,10 +239,50 @@ class Database:
         if os.name == "posix":
             self.path.parent.chmod(0o700)
         with self.connect() as conn:
+            self._backup_before_upgrade(conn)
             conn.executescript(SCHEMA)
             self._migrate(conn)
+            from .ingest import ensure_schema as ingest_schema
+            from .artifacts import ensure_schema as artifact_schema
+            ingest_schema(conn)
+            artifact_schema(conn)
+            from .assistant_sources import migrate as migrate_assistants
+            from .articles import migrate as migrate_articles
+            from .twin_access import migrate_exclusions
+            migrate_exclusions(conn)
+            migrate_assistants(conn)
+            migrate_articles(conn)
+            from .article_maintenance import migrate as migrate_maintenance
+            migrate_maintenance(conn)
+            from .library_organization import migrate as migrate_library
+            migrate_library(conn)
+            from .update_filter import migrate as migrate_update_filter
+            migrate_update_filter(conn)
+            conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('continuous_evidence_v1','1')")
         if os.name == "posix":
             self.path.chmod(0o600)
+
+    def _backup_before_upgrade(self, conn: sqlite3.Connection) -> None:
+        """Keep one recovery point before the first migration of each format."""
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'sources' not in tables:
+            return
+        continuous = 'settings' in tables and conn.execute(
+            "SELECT 1 FROM settings WHERE key='continuous_evidence_v1'").fetchone()
+        articles = 'settings' in tables and conn.execute("SELECT 1 FROM settings WHERE key='topic_articles_v1'").fetchone()
+        maintained = 'settings' in tables and conn.execute("SELECT 1 FROM settings WHERE key='article_maintenance_v1'").fetchone()
+        marker, version = (('library_groups_v1','1.5.4') if maintained and articles else
+            ('article_maintenance_v1','1.5.0') if articles else
+            ('topic_articles_v1', '1.4.0') if continuous else ('continuous_evidence_v1', '1.3.0'))
+        if 'settings' in tables and conn.execute('SELECT 1 FROM settings WHERE key=?', (marker,)).fetchone():
+            return
+        backup = self.path.with_name(self.path.name + '.pre-' + version + '.sqlite')
+        if not backup.exists():
+            with sqlite3.connect(backup) as destination:
+                conn.backup(destination)
+            import os
+            if os.name == 'posix':
+                backup.chmod(0o600)
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -249,7 +300,8 @@ class Database:
                 "topic": "TEXT NOT NULL DEFAULT ''", "scope_detail": "TEXT NOT NULL DEFAULT ''", "quality": "TEXT NOT NULL DEFAULT 'uncertain'", "outcome": "TEXT NOT NULL DEFAULT 'none'"},
             "knowledge_proposals": {"target_version": "INTEGER NOT NULL DEFAULT 1", "origin": "TEXT NOT NULL DEFAULT 'consolidation'",
                 "evidence_json": "TEXT NOT NULL DEFAULT '{}'", "occurred_at": "TEXT"},
-            "ai_jobs": {"next_run_at": "TEXT", "claim_token": "TEXT"},
+            "ai_jobs": {"next_run_at": "TEXT", "claim_token": "TEXT",
+                "batch_generation": "INTEGER", "batch_from_seq": "INTEGER", "batch_through_seq": "INTEGER"},
             "knowledge_evidence": {"is_current": "INTEGER NOT NULL DEFAULT 1", "occurred_at":"TEXT", "superseded":"INTEGER NOT NULL DEFAULT 0"},
         }
         for table, fields in additions.items():

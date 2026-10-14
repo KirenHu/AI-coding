@@ -19,8 +19,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='worktwin-layout-') as dirname:
         app=create_app(Path(dirname)/'db.sqlite',start_worker=False)
         with app.state.db.connect() as con:
-            con.executemany('''INSERT INTO knowledge(kind,title,body,status,created_by,scope,topic,scope_detail,quality)
-                VALUES('fact',?,?,'confirmed','human','global','界面验收','合成验收资料','useful')''',
+            con.executemany('''INSERT INTO knowledge(kind,title,body,status,created_by,scope,topic,scope_detail,quality,organization)
+                VALUES('fact',?,?,'confirmed','human','global','界面验收','合成验收资料','useful','article')''',
                 [(f'验收知识 {i:03}',f'这是第 {i} 篇知识的长正文。'*20) for i in range(260)])
         with TestClient(app) as client:
             html=client.get('/').text
@@ -44,7 +44,7 @@ def main():
                     }}''')
                     page.add_style_tag(content=(ROOT/'worktwin/static/styles.css').read_text())
                     page.add_script_tag(content=(ROOT/'worktwin/static/app.js').read_text())
-                    expect(page.locator('.knowledge-row')).to_have_count(260)
+                    expect(page.locator('[data-entry]')).to_have_count(260)
                     checks=[]
                     for width,height in [(1280,768),(1024,600),(900,480)]:
                         page.set_viewport_size({'width':width,'height':height})
@@ -61,9 +61,9 @@ def main():
                         # No scrolling to reach Settings. The button must really
                         # receive a click and load model settings at every size.
                         settings.click()
-                        expect(page.get_by_role('heading',name='模型设置',exact=True)).to_be_visible()
+                        expect(page.get_by_role('heading',name='模型配置',exact=True)).to_be_visible()
                         page.locator('[data-page=knowledge]').click()
-                        expect(page.locator('.knowledge-row')).to_have_count(260)
+                        expect(page.locator('[data-entry]')).to_have_count(260)
                         page.evaluate("document.querySelector('.main-area').scrollTop=999999")
                         scrolled=settings.bounding_box()
                         assert scrolled and abs(scrolled['y']-box['y'])<1

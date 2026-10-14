@@ -21,11 +21,18 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .answers import answer_from_knowledge
+from .conversation import ConversationQuestion, prepare_conversation
 from .provider import ChatRequest, ProviderService
 from .enterprise_settings import EnterpriseSettings
 from .model_settings import ModelInput, ModelListInput, PersonalModel, validate_url
 from .model_transport import ModelConnectionError, MODEL_TEST_TOKENS
 from .decision_model import JevDecisionModel, DecisionRouter
+
+
+class SourcePassage(BaseModel):
+    document_id: int = Field(ge=1)
+    title: str = Field(max_length=1000)
+    text: str = Field(max_length=3000)
 
 
 class Asset(BaseModel):
@@ -38,6 +45,7 @@ class Asset(BaseModel):
     project_key: str = Field(default='',max_length=1000)
     topic: str = Field(default='',max_length=100)
     scope_detail: str = Field(default='',max_length=500)
+    source_passages: list[SourcePassage] = Field(default_factory=list,max_length=40)
 
 
 class PublishedTwin(BaseModel):
@@ -58,9 +66,8 @@ class GrantInput(BaseModel):
     days: int = Field(default=7, ge=1, le=90)
 
 
-class Question(BaseModel):
-    question: str = Field(min_length=2, max_length=500)
-    project_key: str | None = Field(default=None,max_length=1000)
+class Question(ConversationQuestion):
+    pass
 
 
 class AdminModelInput(ModelInput):
@@ -390,12 +397,13 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                 if inference_client:
                     return inference_client.chat(messages,max_tokens=max_tokens)
                 return provider.complete(identity,ChatRequest(messages=messages,max_tokens=max_tokens))['choices'][0]['message']['content']
-        result=answer_from_knowledge(ScopedModel(),body.question,rows,project_key=body.project_key)
+        context_revision, messages = prepare_conversation(body, rows, f'published:{twin_id}:{revision}')
+        result=answer_from_knowledge(ScopedModel(),body.question,rows,project_key=body.project_key,messages=messages)
         owner(authorization)
         with store.connect() as con:
             if owned(con,twin_id,identity)['version']!=revision:
                 raise HTTPException(409,'发布版本已更新，请重新提问')
-        return {**result,'scope':'published','publication_version':revision}
+        return {**result,'scope':'published','publication_version':revision,'context_revision':context_revision}
 
     @app.put('/v1/publications/{installation}')
     def publish(installation: str, body: Publication, identity=Depends(owner)):
@@ -414,8 +422,8 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
             con.execute('INSERT INTO installations VALUES(?,?,?) ON CONFLICT(owner,installation) DO UPDATE SET revision=excluded.revision', (identity,installation,body.revision))
             con.execute('DELETE FROM assets WHERE owner=? AND installation=?', (identity,installation))
             con.executemany('INSERT INTO assets(owner,installation,local_id,title,body,version,metadata) VALUES(?,?,?,?,?,?,?)',
-                [(identity,installation,a.id,a.title,a.body,a.version,json.dumps({key:getattr(a,key) for key in
-                  ('scope','project','project_key','topic','scope_detail')},ensure_ascii=False)) for a in body.assets])
+                [(identity,installation,a.id,a.title,a.body,a.version,json.dumps(
+                    a.model_dump(exclude={'id','title','body','version'}),ensure_ascii=False)) for a in body.assets])
             old = con.execute('SELECT id,local_id FROM twins WHERE owner=? AND installation=?', (identity,installation)).fetchall()
             for t in old:
                 if t['local_id'] not in twin_ids:
@@ -482,7 +490,8 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
                     return inference_client.chat(messages,max_tokens=max_tokens)
                 result = provider.complete('grant:'+gid,ChatRequest(messages=messages,max_tokens=max_tokens))
                 return result['choices'][0]['message']['content']
-        result = answer_from_knowledge(ScopedModel(),body.question,knowledge,project_key=body.project_key)
+        context_revision, messages = prepare_conversation(body, knowledge, f"shared:{row['id']}:{revision}")
+        result = answer_from_knowledge(ScopedModel(),body.question,knowledge,project_key=body.project_key,messages=messages)
         # Revocation or publication during an in-flight call must not disclose
         # its former snapshot even if the provider already received it.
         with store.connect() as con:
@@ -490,7 +499,7 @@ def create_server(path: Path | None = None, *, inference_client=None, publisher_
             if current['version'] != revision:
                 raise HTTPException(409,'分身知识已更新，请重新提问')
             audit(con,'ask',row['owner'],gid)
-        return result
+        return {**result, 'context_revision': context_revision}
 
     @app.get('/share', response_class=HTMLResponse)
     def shared_page():

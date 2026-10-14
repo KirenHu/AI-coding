@@ -5,6 +5,8 @@ READY_SQL = """k.status='confirmed' AND k.needs_review=0 AND k.kind!='preference
     AND k.outcome!='reported' AND k.attribution!='assistant'
     AND (k.source_bound=0 OR EXISTS(SELECT 1 FROM knowledge_evidence e
         WHERE e.knowledge_id=k.id AND e.is_current=1 AND e.superseded=0))
+    AND NOT EXISTS(SELECT 1 FROM article_current_sources a JOIN documents d ON d.id=a.document_id
+        WHERE a.knowledge_id=k.id AND (a.content_sha!=d.sha256 OR d.deleted=1) AND EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=a.knowledge_id AND e.document_id=a.document_id AND e.quote=a.quote AND e.is_current=1 AND e.superseded=0))
     AND NOT EXISTS(SELECT 1 FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
         JOIN sources s ON s.id=d.source_id WHERE e.knowledge_id=k.id AND s.allow_ai=0)"""
 SHARE_SQL = READY_SQL + """ AND NOT EXISTS(SELECT 1 FROM knowledge_evidence e JOIN documents d ON d.id=e.document_id
@@ -24,6 +26,9 @@ def unavailable_reason(con, knowledge, *, sharing=False):
         return 'AI 建议尚未确认为工作知识'
     if knowledge['needs_review']:
         return '来源或更新需要核对'
+    if con.execute('''SELECT 1 FROM article_current_sources a JOIN documents d ON d.id=a.document_id
+        WHERE a.knowledge_id=? AND (a.content_sha!=d.sha256 OR d.deleted=1) AND EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=a.knowledge_id AND e.document_id=a.document_id AND e.quote=a.quote AND e.is_current=1 AND e.superseded=0)''',(knowledge['id'],)).fetchone():
+        return '来源已更新，文章正在等待校正'
     if knowledge['status']!='confirmed':
         return '尚未确认内容'
     if knowledge['kind']=='preference':

@@ -53,3 +53,20 @@ def test_runtime_dashboard_and_package_versions_are_identical():
     assert f'window.__WORKTWIN_VERSION__="{__version__}"' in html
     assert f'/assets/app.js?v={__version__}' in html
     assert f'/assets/styles.css?v={__version__}' in html
+
+
+def test_stale_editor_cannot_overwrite_newer_knowledge(tmp_path):
+    with TestClient(api.create_app(tmp_path/'conflict.sqlite',start_worker=False)) as client:
+        token=re.search(r'window.__WORKTWIN_TOKEN__="(.*?)";',client.get('/').text).group(1)
+        headers={'X-Worktwin-Token':token}
+        body={'title':'操作说明','body':'第一版正文','kind':'process','status':'confirmed'}
+        created=client.post('/api/knowledge',json=body,headers=headers)
+        assert created.status_code==200,created.text
+        kid=created.json()['id']
+        version=client.get(f'/api/knowledge-item/{kid}',headers=headers).json()['version']
+        newer=dict(body,body='后台已更新正文',expected_version=version)
+        assert client.put(f'/api/knowledge/{kid}',json=newer,headers=headers).status_code==200
+        stale=client.put(f'/api/knowledge/{kid}',json=dict(body,expected_version=version),headers=headers)
+        assert stale.status_code==409
+        assert client.get(f'/api/knowledge-item/{kid}',headers=headers).json()['body']=='后台已更新正文'
+        assert len(client.get(f'/api/knowledge/{kid}/history',headers=headers).json())==1

@@ -15,6 +15,36 @@ from worktwin.provider import ProviderService, ChatRequest
 from tests.test_phase1_settings import auth
 
 
+def test_keychain_permission_wait_does_not_block_desktop_server(tmp_path):
+    import threading
+    from worktwin.db import Database
+    path = tmp_path / 'local.sqlite'
+    db = Database(path)
+    db.set_setting('personal_base_url', 'https://model.invalid/v1')
+    db.set_setting('personal_model', 'test-model')
+    entered, release = threading.Event(), threading.Event()
+
+    class WaitingKeychain:
+        label = '系统钥匙串'
+        def get(self, name):
+            if name != 'personal_model_key':
+                return ''
+            entered.set()
+            assert release.wait(3)
+            return 'test-key'
+
+    app = create_app(path, secret_store=WaitingKeychain(), interval=100)
+    try:
+        with TestClient(app) as client:
+            assert entered.wait(1)
+            assert client.get('/api/health').status_code == 200
+            assert client.get('/api/settings',headers=auth(client)).json()['model_status'] == 'reading_credentials'
+            assert not app.state.model.configured
+            release.set()
+    finally:
+        release.set()
+
+
 def reply(content='OK', finish_reason='stop'):
     return io.BytesIO(json.dumps({'choices':[{'message':{'content':content},'finish_reason':finish_reason}]}).encode())
 
@@ -90,3 +120,28 @@ def test_empty_reasoning_or_truncated_answers_are_not_success(monkeypatch,conten
     with pytest.raises(transport.ModelConnectionError) as exc:
         PersonalModel('https://other.example/v1','example','reasoning').chat([{'role':'user','content':'example'}])
     assert expected in str(exc.value)
+
+
+def test_editor_stages_enable_reasoning_but_probe_remains_small():
+    messages=[{'role':'user','content':json.dumps({'stage':'library_organization'})}]
+    deep=transport.chat_payload('https://api.deepseek.com','deepseek-flash',messages,16000)
+    qwen=transport.chat_payload('https://dashscope.aliyuncs.com/compatible-mode/v1','qwen3.8-flash',messages,16000)
+    assert deep['thinking']=={'type':'enabled'} and deep['max_tokens']==65536
+    assert qwen['enable_thinking'] is True and qwen['preserve_thinking'] is False
+    assert qwen['max_tokens']==65536
+    probe=transport.chat_payload('https://dashscope.aliyuncs.com/compatible-mode/v1','qwen3.8-flash',[{'role':'user','content':'Hi'}],64)
+    assert probe['enable_thinking'] is False and probe['max_tokens']==64
+
+
+@pytest.mark.parametrize('model', ['xiaomi/mimo-v2.6-flash', 'z-ai/glm-5.3-flash', 'inclusionai/ling-3.0-flash'])
+def test_openrouter_reasoning_has_room_for_final_answer(model):
+    messages=[{'role':'user','content':json.dumps({'stage':'article_writing'})}]
+    draft=transport.chat_payload('https://openrouter.ai/api/v1',model,messages,12000)
+    expected = {'effort':'medium','exclude':True} if model == 'z-ai/glm-5.3-flash' else {'enabled':True,'exclude':True}
+    assert draft['reasoning']==expected
+    assert draft['max_tokens']==65536
+    probe=transport.chat_payload('https://openrouter.ai/api/v1',model,[{'role':'user','content':'OK'}],64)
+    if model == 'z-ai/glm-5.3-flash':
+        assert probe['reasoning']==expected and probe['max_tokens']==4096
+    else:
+        assert probe['reasoning']['enabled'] is False and probe['max_tokens']==64

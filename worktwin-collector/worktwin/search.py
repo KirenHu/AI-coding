@@ -54,7 +54,7 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def search(con: sqlite3.Connection, query: str, limit: int = 30) -> dict:
+def search(con: sqlite3.Connection, query: str, limit: int = 30, *, include_sources: bool = False) -> dict:
     query = query.strip()[:160]
     if not query:
         return {"query": "", "documents": [], "knowledge": []}
@@ -62,7 +62,7 @@ def search(con: sqlite3.Connection, query: str, limit: int = 30) -> dict:
     terms = terms_for(query)
     candidates = []
     long_terms = sorted((t for t in terms if len(t) >= 3), key=lambda t: -len(t))[:24]
-    if long_terms:
+    if include_sources and long_terms:
         match_query = " OR ".join('"' + t.replace('"', '""') + '"' for t in long_terms)
         try:
             candidates = con.execute("""
@@ -74,7 +74,7 @@ def search(con: sqlite3.Connection, query: str, limit: int = 30) -> dict:
                 WHERE chunks_fts MATCH ? LIMIT 1200""", (match_query,)).fetchall()
         except sqlite3.OperationalError:
             candidates = []
-    if not candidates:
+    if include_sources and not candidates:
         # Two-character Chinese queries can't use trigram FTS. If tokenized
         # natural-language query misses FTS, use title + content LIKE anchors.
         fallback = sorted(terms, key=lambda t: -len(t))[:5] or [query]
@@ -118,7 +118,10 @@ def search(con: sqlite3.Connection, query: str, limit: int = 30) -> dict:
     # Candidate knowledge can be retrieved even when the original file is gone,
     # but source-bound knowledge with stale evidence should be visibly marked.
     krows = con.execute("""SELECT id,kind,title,body,status,needs_review
-                           FROM knowledge WHERE status!='archived'
+                           FROM knowledge k WHERE organization='article' AND status='confirmed'
+                             AND needs_review=0 AND quality='useful'
+                             AND NOT EXISTS(SELECT 1 FROM article_current_sources a JOIN documents d ON d.id=a.document_id
+                               WHERE a.knowledge_id=k.id AND (a.content_sha!=d.sha256 OR d.deleted=1) AND EXISTS(SELECT 1 FROM knowledge_evidence e WHERE e.knowledge_id=a.knowledge_id AND e.document_id=a.document_id AND e.quote=a.quote AND e.is_current=1 AND e.superseded=0))
                            ORDER BY CASE status WHEN 'confirmed' THEN 0 ELSE 1 END,
                            updated_at DESC LIMIT 3000""").fetchall()
     knowledge = []
@@ -130,4 +133,4 @@ def search(con: sqlite3.Connection, query: str, limit: int = 30) -> dict:
             entry["matched_terms"] = count
             knowledge.append(entry)
     knowledge.sort(key=lambda entry: -entry["score"])
-    return {"query":query,"documents":list(unique.values()),"knowledge":knowledge[:limit]}
+    return {"query":query,"documents":list(unique.values()) if include_sources else [],"knowledge":knowledge[:limit]}
