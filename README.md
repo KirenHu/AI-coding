@@ -1,6 +1,24 @@
-# AI-coding
-该库内的项目均由vibe coding生成
+# WorkTwin
 
-## 项目
+**让每天的工作，成为可以持续复用的知识。**
 
-- [WorkTwin Collector](worktwin-collector/README.md)：后台采集本地工作资料、维护连贯知识库的桌面工具。支持文件夹与 Codex/Claude Code 的公开会话；已实现分身授权的本地只读 MCP；完整日志项目归属仍待完善。产品范围以 [一期边界](worktwin-collector/docs/PHASE1.md) 为准。
+WorkTwin 是一个 AI 驱动的个人知识数字分身工具。它从你授权的文件、AI 编程会话和浏览器操作中积累工作经验，持续整理成可阅读、可更新、可追溯的知识文章，再按你的授权提供给其他人或 AI 使用。
+
+例如，一项需求经历了讨论、修改和最终确认。WorkTwin 的目标是把这些分散记录维护成一篇讲清「现在怎么做、为什么这样做、依据是什么」的文章，让下次接手的人或 AI 能接着工作。
+
+## 你可以用它做什么
+
+- **积累经验**：在原有工具中继续工作，让已授权的新资料持续进入知识整理流程。
+- **找回当前结论**：阅读按项目和研究对象组织的文章，查看来源、修改内容与历史版本。
+- **复用自己的知识**：为不同用途创建数字分身，让它们在指定范围内回答问题。
+- **让 AI 接着工作**：通过 MCP（AI 工具读取外部资料的连接方式），把分身获准访问的知识接入其他 AI 客户端。
+
+**[了解功能与开始使用 →](worktwin-collector/README.md)** · [入门指南](worktwin-collector/docs/GETTING_STARTED.md) · [已发布版本](https://github.com/KirenHu/AI-coding/releases) · [文档导航](worktwin-collector/docs/README.md)
+
+## 当前进度
+
+本分支源码版本为 **1.5.9 测试版**，已实现持续文章维护、知识分组、来源追溯和数字分身 MCP 接入。GitHub Releases 中的安装包可能早于本分支，下载时请核对版本；源码版本与正式发布状态分别说明在[项目介绍](worktwin-collector/README.md#当前状态)。
+
+## 关于这个仓库
+
+仓库名为 `AI-coding`，用于实践 AI 辅助软件开发；目前主要项目是 [WorkTwin](worktwin-collector/)。产品实现、安装和开发文档都在该目录中。

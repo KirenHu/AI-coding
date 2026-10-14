@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "worktwin-collector"
 version = "1.5.9"
-description = "Local-first work memory collector with grounded, editable knowledge"
+description = "Turn everyday work into living knowledge articles and permission-scoped AI twins"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT AND Apache-2.0"
