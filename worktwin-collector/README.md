@@ -1,8 +1,16 @@
-# WorkTwin Collector 1.2.0（自动知识维护、项目识别、任务采集集成预览）
+# WorkTwin Collector
 
-在后台采集本人授权的本地工作资料，持续维护连贯的个人知识库，目标是通过 MCP 供其他 AI 使用。产品边界与未完成能力见 [一期边界](docs/PHASE1.md)：当前支持文件夹与 Codex/Claude Code 的公开双向会话；已补充编程工具的执行状态线索，原始工具结果仍待完善；工作单元级跨来源项目归属已进入 1.1.9 开发与验收；提供绑定数字分身授权的本地只读 MCP，完整日志单独授权。个人自行配置模型，企业使用统一分配的模型与 Token。
+**个人工作上下文中枢。**从本地项目、钉钉/飞书和 Claude Code、Codex、dsh、ChatGPT 的对话中收集本人授权的工作证据，整理成按项目组织的知识库，自动产出**项目进度一览、日报与周报**；同一个后台数据库以只读方式开放给各 AI 工具，让工作信息不再分散在各个工具里。
 
-[已发布安装包与源码](https://github.com/KirenHu/AI-coding/releases) · [MCP 接入](docs/MCP.md) · [部署](docs/DEPLOY.md) · [验收](docs/ACCEPTANCE.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
+- **给谁用**：同时在多个项目、多个 AI 工具和 OA 系统之间工作的个人。
+- **解决什么**：写日报、周报、整理项目进度要翻遍各处记录；每个 AI 工具都要重新交代背景。
+- **怎样算成功**：周报草稿人工改动少、进度一览的项目归属准确、每周节省整理时间、其他 AI 经 MCP 取到的上下文被实际采用。
+
+定位、一期范围、成功标准与关键决策见 [一期边界](docs/PHASE1.md)；版本状态见 [发布说明](RELEASE_NOTES.md)，验收情况见 [验收](docs/ACCEPTANCE.md)。
+
+[已发布安装包与源码](https://github.com/KirenHu/AI-coding/releases) · [MCP 接入](docs/MCP.md) · [部署](docs/DEPLOY.md) · [竞品与源码审计](docs/COMPETITOR_AUDIT.md)
+
+> 数字分身远程分享、企业服务端与浏览器任务采集已冻结：代码保留、不再扩建，下文相关说明仅供现有用户参考。
 
 ## 三个入口
 
