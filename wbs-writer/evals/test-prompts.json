@@ -1,0 +1,7 @@
+[
+  {"id": 1, "prompt": "帮我写本周的WBS", "expected": "先用 collect.py --plan-only 计算周次，读 style-guide 和 filter-rules 后再收集证据；在 ~/WBS/<周>/ 下产出 xlsx 和 md；回顾上周（上周每一行都有状态）并规划本周（含复盘会一行）；共 3～6 行；交付物写可验证的产物；所有数字都能在 evidence.md 里找到；不发送任何消息"},
+  {"id": 2, "prompt": "（定时任务）使用 wbs-writer skill，撰写我本周的周度计划表（WBS）。dws 未登录，claude-mem worker 未运行。", "expected": "按失败分支处理：改为只读查询 claude-mem.db；md 顶部写明钉钉来源失败及报错；状态无法判断的行写待确认，不改成已完成；仍然生成文件并发通知；不中途向用户提问"},
+  {"id": 3, "prompt": "这周我主要在配 Codex hooks、装 dsh，另外完成了智能决策原型 v0.3 并在 1105 评审过，帮我写 WBS", "expected": "工具和环境类工作不进表；智能决策原型写成一行：事项是动宾结构，交付物为“智能决策原型 v0.3”，备注里有“1105已评审”及评审结论（结论来自证据，没有证据就列为待确认）"},
+  {"id": 4, "prompt": "上周表里“2.0阶段开发需求沟通”这一行这周没有任何记录，帮我更新WBS", "expected": "保留这一行，事项原文不改；状态不能改成已完成；在 md 的待确认清单列出这一行，提示本人补充"},
+  {"id": 5, "prompt": "优化一下 wbs-writer", "expected": "调用 darwin-skill，在 git 仓库内基于 evals/test-prompts.json 评估；每轮只改一个维度，每轮停在 checkpoint 等用户确认；不执行 git reset --hard 或 push"}
+]
