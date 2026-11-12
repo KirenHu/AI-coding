@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -173,6 +173,16 @@ class CaptureToggle(BaseModel):
 
 class CaptureAiToggle(BaseModel):
     allow_ai: bool
+
+class ManualCaptureInput(BaseModel):
+    enabled: bool
+    url: str = Field(default='',max_length=2048)
+
+class ManualCaptureRebind(BaseModel):
+    session_id: str = Field(max_length=100)
+    tab_id: int
+    document_id: str = Field(max_length=100)
+    current_url: str = Field(max_length=2048)
 
 class CapturePair(BaseModel):
     code: str = Field(min_length=10,max_length=128)
@@ -337,6 +347,19 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
     def browser_capture_ai_toggle(body: CaptureAiToggle):
         return browser_capture.toggle_ai(body.allow_ai)
 
+    @app.put("/api/browser-capture/manual",dependencies=[Depends(authorized)])
+    def configure_manual_capture(body: ManualCaptureInput, background_tasks: BackgroundTasks):
+        before=browser_capture.settings()
+        result=browser_capture.manual_config(enabled=body.enabled,url=body.url)
+        # Finish and publish the just-closed recording immediately. Background
+        # processing also covers navigation-based or expired termination.
+        previous_id=before["manual_session_id"]
+        if (previous_id and before["manual_enabled"] and
+            previous_id!=result["manual_session_id"]):
+            # Do not delay the UI stop action while a paid summary model runs.
+            background_tasks.add_task(browser_summary_service.generate,previous_id,force=True)
+        return result
+
     @app.get("/api/browser-capture/extension",dependencies=[Depends(authorized)])
     def browser_capture_extension_download():
         extension_dir = Path(__file__).parent / "browser_extension"
@@ -353,8 +376,23 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         return {"code":browser_capture.pairing_code(),"valid_seconds":300}
 
     @app.get("/api/browser-capture/sessions",dependencies=[Depends(authorized)])
-    def browser_capture_sessions():
-        return browser_capture.recent()
+    def browser_capture_sessions(limit: int = Query(30,ge=1,le=100),
+                                 offset: int = Query(0,ge=0)):
+        return browser_capture.recent(limit=limit,offset=offset)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/events",dependencies=[Depends(authorized)])
+    def browser_capture_events(session_id: str,limit: int = Query(100,ge=1,le=200),
+                               offset: int = Query(0,ge=0)):
+        return browser_capture.events(session_id,limit=limit,offset=offset)
+
+    @app.get("/api/browser-capture/sessions/{session_id}/site-manual",dependencies=[Depends(authorized)])
+    def browser_capture_site_manual(session_id: str):
+        with db.connect() as con:
+            manual=con.execute("""SELECT m.site,m.knowledge_id
+                FROM browser_capture_sessions s
+                JOIN browser_site_manuals m ON m.site=s.page_key
+                WHERE s.id=? AND s.mode='manual'""",(session_id,)).fetchone()
+            return dict(manual) if manual else {"knowledge_id":None}
 
     @app.get("/api/browser-capture/sessions/{session_id}/steps",dependencies=[Depends(authorized)])
     def browser_capture_steps(session_id: str):
@@ -385,6 +423,14 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
         # An extension credential never authorizes a task on its own: the
         # external workflow must also sign the complete, expiring command.
         return browser_capture.command(capture_credential(request),body.sender_origin,body.envelope)
+
+    @app.post("/capture/manual/current")
+    def capture_manual_current(request: Request):
+        return browser_capture.manual_current(capture_credential(request))
+
+    @app.post("/capture/manual/rebind")
+    def capture_manual_rebind(request: Request,body: ManualCaptureRebind):
+        return browser_capture.manual_rebind(capture_credential(request),**body.model_dump())
 
     @app.post("/capture/bind")
     def capture_bind(request: Request,body: CaptureBind):
@@ -745,6 +791,42 @@ def create_app(path: Path | None = None, *, start_worker: bool = True, interval:
             if result is None:
                 raise HTTPException(404,'知识不存在')
             return result
+
+    @app.post("/api/knowledge/{knowledge_id}/versions/{version}/restore", dependencies=[Depends(authorized)])
+    def restore_knowledge_version(knowledge_id: int, version: int):
+        """Copy a saved revision into a NEW current version; never rewrite history.
+
+        Project identity and source permissions belong to the current evidence
+        graph, so rolling back the text must not silently widen twin access.
+        """
+        with db.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            current=con.execute("SELECT * FROM knowledge WHERE id=?",(knowledge_id,)).fetchone()
+            if not current:
+                raise HTTPException(404,"知识不存在")
+            previous=con.execute("""SELECT * FROM knowledge_history
+                WHERE knowledge_id=? AND version=?""",(knowledge_id,version)).fetchone()
+            if not previous or version>=current['version']:
+                raise HTTPException(404,"历史版本不存在")
+            snapshot_history(con,current)
+            con.execute("""UPDATE knowledge SET title=?,body=?,kind=?,status=?,topic=?,
+                scope_detail=?,quality=?,outcome=?,created_by='human',attribution='human',
+                review_hold=0,needs_review=0,version=version+1,updated_at=datetime('now')
+                WHERE id=?""",
+                (previous['title'],previous['body'],previous['kind'],previous['status'],
+                 previous['topic'],previous['scope_detail'],previous['quality'],
+                 previous['outcome'],knowledge_id))
+            # Pending AI proposals refer to the superseded current version.
+            # Never leave a restored note blocked by an obsolete proposal.
+            con.execute("""UPDATE knowledge_proposals
+                SET status='dismissed',resolved_at=datetime('now')
+                WHERE target_id=? AND status='pending'""",(knowledge_id,))
+            # The restored article keeps the latest project assignment and its
+            # unchanged source grants; downstream twin/MCP resolvers read them.
+            review_flags(con,[knowledge_id])
+            new_version=current['version']+1
+        db.event("knowledge_version_restored",f"知识 {knowledge_id} 从 v{version} 回退至 v{new_version}")
+        return {"restored":True,"from_version":version,"version":new_version}
 
     @app.get("/api/knowledge/{knowledge_id}/history")
     def history(knowledge_id: int):

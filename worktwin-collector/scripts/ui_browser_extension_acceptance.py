@@ -180,6 +180,85 @@ def main():
                         assert "新增审批规则" in data["summary"] and data["summary_status"]=="final",data
                         assert data["summary_source"]=="rule"
                         assert all(isinstance(n,int) for n in data["evidence_seq"]),data
+                        # Separate manual mode: the user explicitly enters
+                        # a site, then activates one matching browser tab.
+                        dashboard_page=browser.new_page()
+                        dashboard_page.goto(BASE,wait_until='domcontentloaded')
+                        dashboard_page.locator('button[data-page="sources"]').click()
+                        eventually(lambda:dashboard_page.locator('#browser-manual-site').count()>0)
+                        dashboard_page.locator('#browser-manual-site').fill('https://portal.example.com')
+                        dashboard_page.locator('#browser-manual-toggle').click()
+                        eventually(lambda:client.get('/api/browser-capture',headers=dashboard)
+                                   .json()['manual_enabled'],timeout=10)
+                        manual_sid=client.get('/api/browser-capture',
+                            headers=dashboard).json()['manual_session_id']
+                        target.bring_to_front()
+                        def manual_bound():
+                            with sqlite3.connect(db) as con:
+                                row=con.execute("""SELECT status FROM browser_capture_sessions
+                                    WHERE id=?""",(manual_sid,)).fetchone()
+                                return row and row[0]=='capturing'
+                        eventually(manual_bound,timeout=18)
+                        target.locator('#add').click()
+                        eventually(lambda:len(events(db,manual_sid))>=1,timeout=12)
+                        count_before=len(events(db,manual_sid))
+                        target.locator('#next').click()
+                        eventually(lambda:len(events(db,manual_sid))>count_before,timeout=12)
+                        eventually(manual_bound,timeout=12)
+                        target.locator('#save').click()
+                        eventually(lambda:any('保存' in label for _,kind,label in
+                                   events(db,manual_sid) if kind=='click'),timeout=12)
+                        assert manual_bound(),"manual mode stopped on same-site navigation"
+                        dashboard_page.bring_to_front()
+                        dashboard_page.locator('#browser-manual-toggle').click()
+                        eventually(lambda:not client.get('/api/browser-capture',
+                            headers=dashboard).json()['manual_enabled'],timeout=10)
+                        dashboard_page.locator('#browser-record-refresh').click()
+                        eventually(lambda:dashboard_page.locator(
+                            '[data-capture-session="'+manual_sid+'"]').count()==1,timeout=10)
+                        dashboard_page.locator('[data-capture-session="'+manual_sid+'"]').click()
+                        eventually(lambda:'完整操作时间线' in
+                            dashboard_page.locator('#overlay-root').inner_text(),timeout=10)
+                        assert '#1' in dashboard_page.locator('#overlay-root').inner_text()
+                        # Each manual site is summarized into one grounded
+                        # knowledge page, reached from the recording itself.
+                        def site_guide():
+                            notes=client.get('/api/knowledge',headers=dashboard,
+                                params={'status':'all','limit':200}).json()
+                            matches=[n for n in notes if n['kind']=='process' and
+                                     n['project_key'].startswith('browser-site:')]
+                            return matches[0] if matches else None
+                        guide=eventually(site_guide,timeout=15)
+                        assert '新增审批规则' in guide['body'],guide
+                        dashboard_page.locator('#capture-open-guide').click()
+                        eventually(lambda:guide['title'] in dashboard_page.locator(
+                            '.drawer-title').inner_text(),timeout=10)
+                        # An existing revised article exposes a nonintrusive
+                        # log entry and local last-updated tip in its header.
+                        updated=client.put(f"/api/knowledge/{guide['id']}",
+                            headers=dashboard,json={'title':guide['title'],
+                              'body':guide['body']+'\\n\\n人工补充',
+                              'kind':'process','status':'confirmed'})
+                        assert updated.status_code==200,updated.text
+                        dashboard_page.locator('#drawer-close').click()
+                        dashboard_page.locator('[data-page="sources"]').click()
+                        eventually(lambda:dashboard_page.locator('#browser-manual-site').count()>0)
+                        dashboard_page.locator('[data-page="knowledge"]').click()
+                        dashboard_page.locator(f'[data-entry="{guide["id"]}"]').click()
+                        eventually(lambda:dashboard_page.locator(
+                            '#drawer-history-jump').count()==1,timeout=8)
+                        assert '更新于 ' in dashboard_page.locator(
+                            '.drawer-actions').inner_text()
+                        dashboard_page.locator('#drawer-history-jump').click()
+                        assert dashboard_page.locator('#knowledge-history').count()==1
+                        listing=client.get('/api/browser-capture/sessions',
+                            headers=dashboard).json()
+                        assert any(x['id']==manual_sid and x['mode']=='manual'
+                                   for x in listing)
+                        timeline=client.get('/api/browser-capture/sessions/'
+                            +manual_sid+'/events',headers=dashboard).json()
+                        assert any(e['kind']=='navigation' for e in timeline),timeline
+                        assert all('secret=' not in e['location'] for e in timeline)
                         print(json.dumps({"result":"PASS","extension":"MV3 Chromium",
                             "events":count,"first_page_only":True,"no_unrelated_tabs":True,
                             "summary":data["summary"]},ensure_ascii=False))

@@ -32,7 +32,8 @@ def actions_from_events(rows):
             label={"feedback_success":"页面提示成功","feedback_failure":"页面提示失败"}.get(
                 label,"页面出现提示（结果未核实）")
         if kind=="navigation":
-            label="页面跳转后停止观察"
+            label=("站内跳转，继续记录" if "继续观察" in str(r["label"] or "")
+                   else "页面跳转后停止观察")
         if kind=="tab_closed":
             label="关闭页面"
         action={"seq":int(r["seq"]),"kind":kind,"label":label}
@@ -62,7 +63,7 @@ def rule_summary(actions):
         elif kind=="feedback":
             text=label
         elif kind=="navigation":
-            text="页面发生跳转，后续操作未被记录"
+            text=label
         elif kind=="tab_closed":
             text="关闭页面"
         else:
@@ -108,7 +109,9 @@ def parse_model_summary(raw, actions):
 
 class BrowserSummaryService:
     def __init__(self,db,model):
+        from .browser_site_manual import BrowserSiteManuals
         self.db,self.model=db,model
+        self.site_manuals=BrowserSiteManuals(db)
 
     def get(self,sid):
         with self.db.connect() as con:
@@ -133,6 +136,10 @@ class BrowserSummaryService:
             previous=con.execute("SELECT * FROM browser_capture_summaries WHERE session_id=?",(sid,)).fetchone()
             if not force and previous and previous["event_seq"]>=s["last_seq"] and (
                 previous["status"]=="final" or s["status"] not in TERMINAL):
+                # Summary may be final although its site guide was not yet
+                # materialized (e.g. interrupted worker).
+                if s["mode"]=="manual" and previous["status"]=="final":
+                    self.site_manuals.sync(sid)
                 return self.get(sid)
             allow_ai=bool(con.execute("SELECT allow_ai FROM browser_capture_settings WHERE id=1").fetchone()[0])
         actions=actions_from_events(rows)
@@ -182,15 +189,23 @@ class BrowserSummaryService:
                 status=excluded.status,updated_at=excluded.updated_at""",
                 (sid,current["last_seq"],summary,json.dumps(evidence),
                  source,state,int(time.time())))
+        if s["mode"]=="manual" and state=="final":
+            # Manual recordings alone become site knowledge; enterprise flow
+            # tasks remain separate even though they share event storage.
+            self.site_manuals.sync(sid)
         return self.get(sid)
 
     def process_due(self,*,limit=3):
         with self.db.connect() as con:
             ids=[r["id"] for r in con.execute("""SELECT s.id FROM browser_capture_sessions s
                 LEFT JOIN browser_capture_summaries r ON r.session_id=s.id
+                LEFT JOIN browser_site_observations o ON o.session_id=s.id
                 WHERE s.event_count>0 AND
                 (r.event_seq IS NULL OR r.event_seq<s.last_seq OR
-                 (r.status!='final' AND s.status NOT IN ('armed','capturing')))
+                 (r.status!='final' AND s.status NOT IN ('armed','capturing')) OR
+                 (s.mode='manual' AND s.status NOT IN ('armed','capturing')
+                  AND r.status='final' AND
+                  (o.session_id IS NULL OR o.event_seq<s.last_seq)))
                 AND (s.event_count>=3 OR s.status NOT IN ('armed','capturing'))
                 ORDER BY s.created_at,s.id LIMIT ?""",(limit,))]
         for sid in ids:

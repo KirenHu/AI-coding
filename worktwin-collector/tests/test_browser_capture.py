@@ -167,3 +167,90 @@ def test_navigation_to_browser_internal_url_closes_session(monkeypatch,tmp_path)
         with app.state.db.connect() as con:
             row=con.execute("SELECT location FROM browser_capture_events").fetchone()
             assert row["location"]=="[离开 HTTPS 网页]"
+
+
+def test_manual_capture_same_site_navigation_and_viewable_event_history(monkeypatch,tmp_path):
+    from worktwin.browser_capture_manual import manual_site
+    assert manual_site('github.com/issues?token=private')=='https://github.com'
+    assert manual_site('http://localhost:8123/workflow')=='http://localhost:8123'
+    app=create_app(tmp_path/'manual.sqlite',start_worker=False)
+    with TestClient(app) as client:
+        auth=dashboard_token(client)
+        assert client.put('/api/browser-capture/manual',headers=auth,
+                 json={'enabled':True,'url':'https://example.com'}).status_code==409
+        client.put('/api/browser-capture',headers=auth,json={'enabled':True})
+        pairing=client.post('/api/browser-capture/pairing',headers=auth).json()['code']
+        token=client.post('/capture/pair',json={'code':pairing}).json()['token']
+        ext={'Authorization':'Bearer '+token}
+        started=client.put('/api/browser-capture/manual',headers=auth,
+            json={'enabled':True,'url':'https://example.com/orders?token=private'})
+        assert started.status_code==200,started.text
+        assert started.json()['manual_site']=='https://example.com'
+        sid=started.json()['manual_session_id']
+        current=client.post('/capture/manual/current',headers=ext).json()
+        assert current['enabled'] and current['session_id']==sid
+        # Wrong domain or a second browser tab cannot be used to record.
+        wrong=client.post('/capture/bind',headers=ext,json={'session_id':sid,
+            'tab_id':3,'document_id':'doc1','current_url':'https://wrong.example.com'})
+        assert wrong.status_code==409
+        ok=client.post('/capture/bind',headers=ext,json={'session_id':sid,
+            'tab_id':3,'document_id':'doc1','current_url':'https://example.com/orders'})
+        assert ok.status_code==200
+        def event(seq,kind,url='https://example.com/orders',doc='doc1',tab=3,label=''):
+            return client.post('/capture/event',headers=ext,json={
+                'session_id':sid,'seq':seq,'kind':kind,'tab_id':tab,
+                'document_id':doc,'current_url':url,'label':label})
+        assert event(1,'click',label='查询订单').status_code==200
+        assert event(2,'change',label='password').status_code==200
+        assert event(3,'click',tab=4,label='不应采集').status_code==403
+        navigation=event(3,'navigation',url='https://example.com/orders/next?secret=q')
+        assert navigation.json()['status']=='capturing'
+        assert client.post('/capture/manual/rebind',headers=ext,json={
+            'session_id':sid,'tab_id':3,'document_id':'doc2',
+            'current_url':'https://example.com/orders/next'}).status_code==200
+        assert event(4,'click',url='https://example.com/orders/next',
+                     doc='doc2',label='保存订单').status_code==200
+        detail=client.get(f'/api/browser-capture/sessions/{sid}/events',headers=auth)
+        assert detail.status_code==200
+        events=detail.json()
+        assert [x['seq'] for x in events]==[1,2,3,4]
+        assert events[1]['label']=='[隐藏]'
+        assert events[2]['location']=='https://example.com/orders/next'
+        assert 'secret=' not in str(events)
+        assert client.get(f'/api/browser-capture/sessions/{sid}/events?limit=1&offset=2',
+                          headers=auth).json()[0]['seq']==3
+        assert client.get('/api/browser-capture/sessions',headers=auth).json()[0]['mode']=='manual'
+        assert client.post(f'/api/browser-capture/sessions/{sid}/summarize',headers=auth).status_code==200
+        # Leaving the selected website ends the session without recording other tabs.
+        assert event(5,'navigation',url='https://elsewhere.example.com/',
+                     doc='doc2').json()['status']=='navigation_stopped'
+        assert not client.get('/api/browser-capture',headers=auth).json()['manual_enabled']
+        assert not client.post('/capture/manual/current',headers=ext).json()['enabled']
+        with app.state.db.connect() as con:
+            assert con.execute('SELECT count(*) FROM knowledge').fetchone()[0]==0
+
+
+def test_manual_capture_can_be_stopped_and_does_not_resume_after_restart(tmp_path):
+    db=tmp_path/'manual-restart.sqlite'
+    app=create_app(db,start_worker=False)
+    with TestClient(app) as client:
+        auth=dashboard_token(client)
+        assert client.put('/api/browser-capture',headers=auth,
+                          json={'enabled':True}).status_code==200
+        started=client.put('/api/browser-capture/manual',headers=auth,
+            json={'enabled':True,'url':'http://localhost:8000/test'})
+        assert started.status_code==200
+        sid=started.json()['manual_session_id']
+        assert client.put('/api/browser-capture/manual',headers=auth,
+            json={'enabled':False}).status_code==200
+        assert client.get('/api/browser-capture',headers=auth).json()['manual_enabled'] is False
+        new=client.put('/api/browser-capture/manual',headers=auth,
+            json={'enabled':True,'url':'https://example.org'})
+        assert new.json()['manual_session_id']!=sid
+    restarted=create_app(db,start_worker=False)
+    with TestClient(restarted) as client:
+        auth=dashboard_token(client)
+        status=client.get('/api/browser-capture',headers=auth).json()
+        assert status['enabled'] and not status['manual_enabled']
+        assert all(r['status']!='capturing' for r in client.get(
+            '/api/browser-capture/sessions',headers=auth).json())

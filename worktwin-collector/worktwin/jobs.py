@@ -13,6 +13,7 @@ from .reconcile import existing_for_project, make_consolidation_plan, store_prop
 from .gardener import KnowledgeGardener
 from .scope import document_scope
 from .projects import catalog, plan_work_units, apply_assignments
+from .project_recheck import ProjectRechecker
 from .decision_model import DecisionRouter
 from .credentials import DesktopSecrets
 from .automation import activate_new, apply_additions, model_signature
@@ -30,6 +31,7 @@ class KnowledgeWorker:
         self.processing = False
         self.gardener = KnowledgeGardener(db, client=self.client)
         self.decision_router=decision_router or DecisionRouter(db,DesktopSecrets(db.path),self.client)
+        self.project_rechecker=ProjectRechecker(db,self.decision_router)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -64,6 +66,10 @@ class KnowledgeWorker:
                 # Maintenance is lower priority than fresh capture: one note
                 # per idle cycle and no call if extraction is still backed up.
                 if result == "idle" and not self._stop.is_set():
+                    # A new project may resolve previously isolated sessions.
+                    # Work through a bounded batch before lower priority text
+                    # curation; no user confirmation or full-corpus re-extraction.
+                    self.project_rechecker.process_next()
                     self.gardener.client = self.client
                     self.gardener.process_next()
 

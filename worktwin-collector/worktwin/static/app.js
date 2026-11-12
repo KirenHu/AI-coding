@@ -9,6 +9,14 @@ const content=el('page-content');
 let toastTimer;
 function notify(message){const t=el('toast');t.textContent=message;t.className='show';clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.className='',3500)}
 function formatTime(value){return value?String(value).replace('T',' ').slice(0,16):'—'}
+function localUpdateTime(value){
+  if(!value)return '—';
+  const utc=String(value).replace(' ','T');
+  const parsed=new Date(utc.endsWith('Z')||/[+-]\d\d:\d\d$/.test(utc)?utc:utc+'Z');
+  return Number.isNaN(parsed.getTime())?formatTime(value):
+    parsed.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',
+      hour:'2-digit',minute:'2-digit',hour12:false});
+}
 function short(value,length=90){const s=String(value||'').replace(/\s+/g,' ').trim();return esc(s.length>length?s.slice(0,length)+'…':s)}
 function pageHeader(eyebrow,title,description,action=''){return `<div class="page-title-row"><div><div class="eyebrow">${esc(eyebrow)}</div><h1 class="page-title">${esc(title)}</h1><p class="page-caption">${esc(description)}</p></div>${action}</div>`}
 function emptyState(ico,title,description,action=''){return `<div class="empty-state"><div class="empty-graphic">${icon(ico)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`}
@@ -70,16 +78,23 @@ async function renderSources(){
   const types=[['folder','本地文件夹', 'Word、PDF、Markdown、代码等授权目录','folder'],['codex','Codex','历史会话与后续产生的对话','book'],['claude','Claude Code','历史会话与后续产生的对话','spark']];
   content.innerHTML=pageHeader('INFORMATION SOURCES','信息采集','只采集你允许的工作资料。随时暂停，也可以彻底撤销授权。',`<button class="btn secondary" id="scan">${icon('refresh')} 立即检查更新</button>`)+
     `<div class="source-overview">${types.map(([kind,name,desc,ico])=>`<div class="source-type"><div class="type-symbol">${icon(ico)}</div><b>${name}</b><small>${desc}</small><button class="btn secondary small" data-add-source="${kind}">${icon('plus')} ${count(kind)?'再添加':'授权采集'}</button></div>`).join('')}</div>`+
-    '<div class="group-heading"><h2>任务触发式浏览器行为采集</h2><span class="soft-caption">与其他信息源并列 · 默认关闭</span></div>'+
+    '<div class="group-heading"><h2>浏览器行为采集</h2><span class="soft-caption">指定网站手动记录 / 企业任务触发</span></div>'+
     '<div class="card" style="padding:20px;margin-bottom:18px">'+
-      '<div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div><b>浏览器操作</b><p class="soft-caption">只有可信流程平台触发的指定任务页面才会被观察；页面发生跳转后停止采集。</p></div>'+
+      '<div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div><b>浏览器操作</b><p class="soft-caption">手动指定网站并开启记录，或由可信流程平台自动触发。两类记录彼此独立。</p></div>'+
       '<label class="permission-cell"><input class="toggle" id="browser-capture-enabled" type="checkbox" '+(capture.enabled?'checked':'')+'/> 手动启用</label></div>'+
       '<div class="field-note">插件状态：'+(capture.extension_connected?'已连接':'未连接（无法据此区分未安装和未运行）')+
       ' · 进行中任务：'+capture.active_tasks+' · 流程平台：'+(capture.flow_configured?'已配置':'尚未配置')+'</div>'+
+      `<div class="divider" style="margin:18px 0"></div><h3>手动记录指定网站</h3>
+      <p class="soft-caption">输入地址并开启，然后切换到对应的活动标签页。只记录这一标签页；同一网站内跳转继续记录，离开网站或手动结束立即停止。结束后按网站自动维护一篇个人操作手册，原始记录仍可单独查看。</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+        <input id="browser-manual-site" style="min-width:240px;flex:1" placeholder="https://github.com" value="${esc(capture.manual_site||'')}" ${capture.manual_enabled?'disabled':''}/>
+        <button class="btn ${capture.manual_enabled?'secondary':''}" id="browser-manual-toggle">${capture.manual_enabled?'结束记录':'开始记录'}</button>
+      </div><p class="field-note">${capture.manual_enabled?'已开启：'+esc(capture.manual_site)+'，切换至目标网页开始记录':'支持 HTTPS 网站；本地测试也可用 http://localhost。'}</p>`+
       '<label class="check-row" style="margin:12px 0"><input id="browser-capture-ai" type="checkbox" '+(capture.allow_ai?'checked':'')+' '+(capture.enabled?'':'disabled')+'/> <span>允许 AI 概括网页操作（独立授权）<small class="soft-caption">只发送脱敏操作事件到已配置模型；不提炼知识，不进入数字分身。</small></span></label>'+
       '<button class="btn secondary small" id="browser-extension-guide">安装或连接浏览器插件</button> '+
-      '<button class="btn secondary small" id="browser-capture-history">查看操作摘要</button> '+
+      '<button class="btn secondary small" id="browser-capture-history">查看操作记录</button> '+
       '<button class="btn secondary small" id="browser-capture-refresh">刷新连接状态</button></div>'+
+    '<div class="group-heading"><h2>网页操作记录</h2><span class="soft-caption">历史操作会话与完整事件时间线</span></div><div class="card" id="browser-records">正在加载记录…</div>'+
     `<div class="group-heading"><h2>已授权的数据范围</h2><span class="soft-caption">${sources.length} 个数据源</span></div>`+
     `<div class="card">${sources.length?sources.map(sourceRow).join(''):emptyState('folder','还没有授权任何数据源','选择上方的信息类型，授权工作目录后即可自动、增量采集。')}</div>`+
     `<div class="scan-status"><span>系统会自动检测文件变化 · 最近扫描：${esc(stats.last_scan)}</span><span>${stats.documents} 份已索引资料 · ${stats.ai_jobs.queued} 项待整理 · ${stats.ai_jobs.running} 项处理中 · ${stats.ai_jobs.error} 项失败</span></div>`+
@@ -93,6 +108,22 @@ async function renderSources(){
       if(updated.enabled&&!updated.extension_connected)await browserExtensionGuide();
     }catch(error){e.target.checked=previous;notify(error.message)}
   };
+  el('browser-manual-toggle').onclick=async()=>{
+    const button=el('browser-manual-toggle');
+    await busy(button,async()=>{
+      try{
+        if(!capture.manual_enabled&&!capture.enabled){
+          await api('browser-capture',{method:'PUT',body:{enabled:true}});
+        }
+        const result=await api('browser-capture/manual',{method:'PUT',body:{
+          enabled:!capture.manual_enabled,url:el('browser-manual-site').value.trim()
+        }});
+        await go('sources',true);
+        notify(result.manual_enabled?'已开启手动记录，请切换到目标网站':'已结束手动记录');
+        if(result.manual_enabled&&!result.extension_connected)await browserExtensionGuide();
+      }catch(error){notify(error.message)}
+    });
+  };
   el('browser-extension-guide').onclick=browserExtensionGuide;
   el('browser-capture-history').onclick=browserCaptureHistory;
   el('browser-capture-ai').onchange=async e=>{
@@ -103,6 +134,7 @@ async function renderSources(){
     }catch(error){e.target.checked=old;notify(error.message)}
   };
   el('browser-capture-refresh').onclick=()=>go('sources',true);
+  await renderBrowserRecords(0);
   el('scan').onclick=()=>busy(el('scan'),async()=>{if(await perform(()=>api('scan',{method:'POST'}),'sources'))notify('已安排检查更新')});
   el('source-settings')?.addEventListener('click',()=>go('settings'));
   el('retry-ai')?.addEventListener('click',()=>busy(el('retry-ai'),async()=>{if(await perform(()=>api('ai/jobs/retry',{method:'POST'}),'sources'))notify('失败任务已重新排队')}));
@@ -134,32 +166,84 @@ async function renderSources(){
     },3500);
   }
 }
+let browserRecordsPage=0;
+const captureStatuses={armed:'等待目标网页',capturing:'记录中',completed:'已结束',
+  navigation_stopped:'已离开授权网站',tab_closed:'标签页已关闭',disabled:'已停止',
+  expired:'已过期',status_unavailable:'任务连接中断'};
+function captureDate(value){return value?new Date(value*1000).toLocaleString():'—'}
+async function renderBrowserRecords(page=0){
+  browserRecordsPage=page;
+  const holder=el('browser-records');
+  if(!holder)return;
+  const rows=await api('browser-capture/sessions?limit=20&offset='+(page*20));
+  const reports=await Promise.all(rows.map(async row=>{
+    const report=await api('browser-capture/sessions/'+encodeURIComponent(row.id)+'/summary');
+    return {...row,report};
+  }));
+  holder.innerHTML=reports.length?reports.map(row=>`
+    <section class="source-item" style="display:block;padding:14px 0">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+        <b>${esc(row.mode==='manual'?'手动 · '+row.page_key:'任务 · '+row.task_id)}</b>
+        <span class="state-label ${row.status==='capturing'?'':'grey'}">${esc(captureStatuses[row.status]||row.status)}</span>
+      </div>
+      <div class="soft-caption">${captureDate(row.created_at)} · ${row.event_count} 个事件</div>
+      <p style="margin:8px 0">${esc(row.report.summary||'尚未检测到操作')}</p>
+      <button class="btn secondary small" data-capture-session="${esc(row.id)}">查看操作详情</button>
+    </section>`).join(''):'<p class="field-note">暂无网页操作记录。开始记录指定网站后，这里将展示每次采集的结果。</p>';
+  holder.innerHTML+=`<div style="display:flex;gap:10px;margin-top:12px">
+    ${page>0?'<button class="btn secondary small" id="browser-record-prev">上一页</button>':''}
+    ${reports.length===20?'<button class="btn secondary small" id="browser-record-next">下一页</button>':''}
+    <button class="btn secondary small" id="browser-record-refresh">刷新记录</button></div>`;
+  holder.querySelectorAll('[data-capture-session]').forEach(b=>b.onclick=()=>browserSessionDetails(b.dataset.captureSession));
+  el('browser-record-prev')?.addEventListener('click',()=>renderBrowserRecords(page-1));
+  el('browser-record-next')?.addEventListener('click',()=>renderBrowserRecords(page+1));
+  el('browser-record-refresh')?.addEventListener('click',()=>renderBrowserRecords(page));
+}
 async function browserCaptureHistory(){
-  try{
-    const sessions=await api('browser-capture/sessions');
-    const reports=await Promise.all(sessions.slice(0,15).map(async session=>{
-      try{
-        return {...session,report:await api('browser-capture/sessions/'+encodeURIComponent(session.id)+'/summary')};
-      }catch(error){return {...session,report:{summary:'暂时无法读取操作摘要'}}}
-    }));
-    const body='<p class="soft-caption">这里只显示当前任务网页的操作摘要和证据序号，不会写入个人知识库，也不会自动共享给流程平台。</p>'+
-      (reports.length?reports.map(s=>'<section class="source-reference" style="margin:14px 0;padding:12px;border:1px solid #e9e9e6;border-radius:9px">'+
-        '<div><b>'+esc(s.task_id)+'</b> · '+esc(s.status)+' · '+s.event_count+' 个事件</div>'+
-        '<p>'+esc(s.report.summary||'正在积累操作事件，尚无摘要')+'</p>'+
-        '<small class="soft-caption">依据事件：'+esc((s.report.evidence_seq||[]).join('、')||'无')+
-        ' · '+esc(s.report.summary_source==='model'?'AI 概括':s.report.summary_source==='rule'?'本地概括':'待生成')+'</small>'+
-        '<div style="margin-top:8px"><button class="btn secondary small" data-browser-summarize="'+esc(s.id)+'">更新摘要</button></div></section>').join(''):
-        '<p class="field-note">尚未产生浏览器采集会话。</p>');
-    dialog('网页操作摘要',body,'',true);
-    el('overlay-root').querySelectorAll('[data-browser-summarize]').forEach(button=>{
-      button.onclick=()=>busy(button,async()=>{
-        try{
-          await api('browser-capture/sessions/'+encodeURIComponent(button.dataset.browserSummarize)+'/summarize',{method:'POST'});
-          await browserCaptureHistory();
-        }catch(error){notify(error.message)}
-      });
-    });
-  }catch(error){notify(error.message)}
+  if(state.page!=='sources')await go('sources',true);
+  await renderBrowserRecords(browserRecordsPage);
+  el('browser-records')?.scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function browserSessionDetails(sessionId,offset=0){
+  const [summary,events,siteManual]=await Promise.all([
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/summary'),
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/events?limit=100&offset='+offset),
+    api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/site-manual')
+  ]);
+  const kindNames={click:'点击',change:'修改',submit:'尝试提交',feedback:'页面提示',
+    navigation:'页面导航',tab_closed:'关闭标签页'};
+  const body=`<p class="soft-caption">采集方式：${summary.task_id.startsWith('manual-')?'手动网站采集':'流程任务采集'} ·
+    ${esc(captureStatuses[summary.capture_status]||summary.capture_status)} · ${summary.event_count} 条事件</p>
+    <section class="source-reference"><h3>本次操作摘要</h3>
+      <p>${esc(summary.summary||'尚未生成操作摘要')}</p>
+      <small class="soft-caption">依据事件：${esc((summary.evidence_seq||[]).join('、')||'暂无')} ·
+      ${summary.summary_source==='model'?'AI 概括':'本地规则概括'}</small>
+      <div style="margin-top:10px"><button class="btn secondary small" id="capture-resummarize">刷新摘要</button>
+      ${siteManual.knowledge_id?`<button class="btn secondary small" id="capture-open-guide">查看网站操作手册</button>`:''}</div>
+    </section>
+    <section class="source-reference"><h3>完整操作时间线</h3>
+      ${events.length?events.map(e=>`<div style="padding:10px 0;border-bottom:1px solid #eee">
+        <div><b>#${e.seq} · ${esc(kindNames[e.kind]||e.kind)}</b>
+        <small class="soft-caption"> · ${captureDate(e.at)}</small></div>
+        <p style="margin:5px 0">${esc(e.label||'无控件标签')}</p>
+        <small class="soft-caption">${esc(e.location||'')}</small></div>`).join(''):'<p>此页没有操作事件。</p>'}
+      <div style="display:flex;gap:10px;margin-top:12px">
+        ${offset>0?'<button class="btn secondary small" id="capture-previous-events">上一页</button>':''}
+        ${events.length===100?'<button class="btn secondary small" id="capture-more-events">下一页</button>':''}
+      </div>
+    </section><p class="field-note">仅保留脱敏动作、控件标签及页面反馈；不采集输入值、完整 DOM 或视频。</p>`;
+  dialog('网页操作详情',body,'',true);
+  el('capture-open-guide')?.addEventListener('click',async()=>{
+    closeOverlay(true);
+    await go('knowledge',true);
+    await openKnowledge(siteManual.knowledge_id);
+  });
+  el('capture-resummarize')?.addEventListener('click',async()=>{
+    await api('browser-capture/sessions/'+encodeURIComponent(sessionId)+'/summarize',{method:'POST'});
+    await browserSessionDetails(sessionId,offset);
+  });
+  el('capture-previous-events')?.addEventListener('click',()=>browserSessionDetails(sessionId,offset-100));
+  el('capture-more-events')?.addEventListener('click',()=>browserSessionDetails(sessionId,offset+100));
 }
 
 async function browserExtensionGuide(){
@@ -170,11 +254,11 @@ async function browserExtensionGuide(){
     '<button class="btn secondary" id="browser-extension-download">下载插件 ZIP</button> '+
     '<button class="btn secondary" id="browser-extension-pair">生成配对码</button>'+
     '<p id="browser-extension-code" class="field-note">请在插件弹窗中输入 WorkTwin 生成的配对码。</p>'+
-    '<p class="field-note">企业部署时还需设置可信流程平台域名与签名密钥，并在扩展 manifest 中声明该平台域名。</p>');
+    '<p class="field-note">只有流程任务触发模式需要配置企业流程平台域名与签名密钥。手动网站采集无需流程平台。</p>');
   el('browser-extension-download').onclick=()=>downloadFile('browser-capture/extension','WorkTwin-Browser-Extension.zip');
   el('browser-extension-pair').onclick=async()=>{
     try{
-      if(!info.enabled){notify('请先启用任务触发式浏览器行为采集');return}
+      if(!info.enabled){notify('请先启用浏览器行为采集');return}
       const r=await api('browser-capture/pairing',{method:'POST'});
       const node=el('browser-extension-code');
       node.textContent='配对码（5 分钟有效）：'+r.code;
@@ -284,7 +368,7 @@ async function openKnowledge(id){
   if(!closeOverlay())return;
   let k=id?state.knowledge.find(x=>x.id===id):null;
   if(id&&!k){try{k=await api(`knowledge-item/${id}`)}catch(e){notify(e.message);return}}
-  el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="知识详情"><div class="drawer-top"><small>我的知识库 / ${esc(k?entryProject(k):'新知识')}</small><div class="drawer-actions"><button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></div><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
+  el('overlay-root').innerHTML=`<div class="drawer-mask" id="drawer-mask"><section class="detail-drawer" role="dialog" aria-modal="true" aria-label="知识详情"><div class="drawer-top"><small>我的知识库 / ${esc(k?entryProject(k):'新知识')}</small><div class="drawer-actions">${k&&k.version>1?`<button class="btn secondary small" id="drawer-history-jump">变更日志</button><span class="soft-caption" style="white-space:nowrap">更新于 ${esc(localUpdateTime(k.updated_at))}</span>`:''}<button class="icon-button" id="drawer-close" aria-label="关闭">${icon('close')}</button></div></div><div class="drawer-inner" id="drawer-inner"></div><div class="drawer-bottom" id="drawer-bottom"></div></section></div>`;
   el('drawer-mask').onclick=e=>{if(e.target.id==='drawer-mask')closeDrawer()};el('drawer-close').onclick=closeDrawer;
   document.addEventListener('keydown',onEscape);
   const details=el('drawer-inner'),footer=el('drawer-bottom');
@@ -293,10 +377,21 @@ async function openKnowledge(id){
   const relations=k?await api(`knowledge/${k.id}/relations`):null;
   const versions=k?await api(`knowledge/${k.id}/history`):[];
   function linkedSection(){if(!relations)return '';const groups=[['文中链接',relations.outgoing],['提到这篇的知识',relations.backlinks],['同一份资料的其他知识',relations.same_source]];return `<section class="source-reference"><h3>关联知识</h3>${groups.filter(([_,rows])=>rows.length).map(([name,rows])=>`<p class="soft-caption">${name}</p>${rows.map(r=>`<button class="info-link relation-link" data-open-knowledge="${r.id}">${esc(r.title)} ${icon('arrow')}</button>`).join('')}`).join('')||'<p class="soft-caption">暂无已确认的关联。编辑时可用 [[K编号|显示名称]] 添加链接。</p>'}${relations.unresolved_ids.length?'<p class="field-note">部分链接已失效或知识需要复核。</p>':''}</section>`}
-  function historySection(){return versions.length?`<section class="source-reference"><h3>变更历史</h3>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${formatTime(v.changed_at)} · ${esc(v.title)}</summary><div class="proposal-body">${esc(v.body)}</div></details>`).join('')}</section>`:''}
+  function historySection(){return versions.length?`<section class="source-reference" id="knowledge-history"><h3>变更历史</h3><p class="field-note">选择历史版本，将其内容复制为新的当前版本。原版本历史仍会保留，当前项目归属和来源权限不变。</p>${versions.map(v=>`<details class="history-version"><summary>v${v.version} · ${formatTime(v.changed_at)} · ${esc(v.title)}</summary><div class="proposal-body">${esc(v.body)}</div><button class="btn secondary small" data-restore-version="${v.version}">回退至 v${v.version}</button></details>`).join('')}</section>`:''}
   function referenceRows(){return sources.length?`<section class="source-reference"><h3>来源依据 <span class="soft-caption">${sources.length} 条</span></h3>${sources.map((e,i)=>`<div class="reference-row"><div class="ref-title">${icon('file')} ${esc(e.document_title)}</div><div class="ref-quote">${short(e.quote,550)}</div>${!e.is_current?'<span class="state-label warn">来源已变更，需要重新核对</span>':e.superseded?'<span class="state-label grey">旧版历史引用</span>':`<button data-read-source="${e.document_id}">查看原始资料 ${icon('arrow')}</button>`}</div>`).join('')}</section>`:''}
   function view(){details.innerHTML=`<div class="drawer-category"><span class="page-icon">${icon('book')}</span> ${esc(kindNames[k?.kind]||'个人知识')}</div><h1 class="drawer-title">${esc(k?.title||'新知识')}</h1><div class="drawer-meta">${k?.needs_review?'<span class="state-label warn">原始依据待核实</span>':k?.status==='confirmed'?(k?.created_by==='enterprise_ai'?'<span class="state-label">AI 自动生效</span>':'<span class="state-label">已人工确认</span>'):k?.status==='archived'?'<span class="state-label grey">已归档</span>':'<span class="state-label grey">待确认</span>'}<span>${esc(entryProject(k||{evidence:[]}))}</span><span>${k?'版本 '+k.version:''}</span></div><section class="knowledge-scope"><b>适用范围</b><p>${esc(scopeNames[k?.scope]||'范围待核对')} · ${esc(k?.scope_detail||'请核对该要求适用于哪个项目、对象或条件')}</p><b>主题</b><p>${esc(k?.topic||'待核对')}</p>${k?.quality_reason?`<p class="field-note">${esc(k.quality_reason)}</p>`:''}${k?.outcome!=='none'&&outcomeNames[k?.outcome]?`<span class="state-label warn">${esc(outcomeNames[k.outcome])}</span>`:''}</section><div class="drawer-body markdown-body">${k?.rendered_body||esc(k?.body||'')}</div>${referenceRows()}${linkedSection()}${historySection()}`;
     footer.innerHTML=`${k?.status==='archived'?'<button class="btn secondary" id="restore-entry">恢复为待确认</button>':k?'<button class="btn secondary" id="archive-entry">归档知识</button>':''}${k&&(k.kind==='preference'||k.status==='archived')?'<button class="btn danger" id="delete-entry">彻底删除</button>':''}${k&&k.status==='draft'&&k.scope!=='unknown'&&k.quality==='useful'?'<button class="btn secondary" id="confirm-entry">确认内容</button>':''}${k&&k.quality!=='noise'?'<button class="btn secondary" id="disable-entry">停用知识</button>':''}<button class="btn" id="edit-entry">${icon('file')} 编辑内容</button>`;
+    details.querySelectorAll('[data-restore-version]').forEach(b=>b.onclick=()=>busy(b,async()=>{
+      const version=Number(b.dataset.restoreVersion);
+      if(!confirm(`回退至 v${version}？该版本将被复制为新的当前版本，原有变更历史不会删除。`))return;
+      try{
+        const r=await api(`knowledge/${k.id}/versions/${version}/restore`,{method:'POST'});
+        closeOverlay(true);
+        notify(`已回退至 v${version}，创建新版本 v${r.version}`);
+        await go('knowledge',true);
+        await openKnowledge(k.id);
+      }catch(e){notify(e.message)}
+    }));
     details.querySelectorAll('[data-open-knowledge]').forEach(b=>b.onclick=()=>openKnowledge(Number(b.dataset.openKnowledge)));
     details.querySelectorAll('.markdown-body a[href^="#knowledge-"]').forEach(a=>a.onclick=e=>{e.preventDefault();openKnowledge(Number(a.getAttribute('href').slice(11)))});
     el('edit-entry').onclick=edit;
@@ -320,6 +415,10 @@ async function openKnowledge(id){
     details.querySelectorAll('[data-read-source]').forEach(x=>x.onclick=()=>showDocument(Number(x.dataset.readSource)));
   }
   if(k)view();else edit();
+  el('drawer-history-jump')?.addEventListener('click',()=>{
+    if(!el('knowledge-history'))view();
+    el('knowledge-history')?.scrollIntoView({behavior:'smooth',block:'start'});
+  });
 }
 async function showDocument(id){
   try{
